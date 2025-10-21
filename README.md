@@ -79,36 +79,37 @@ App will:
 ✅ The model is auto-cached (download once only).    
 ✅ GPU (CUDA) automatically detected — falls back to CPU if unavailable.
 
+      
+🧮 ETA Calculation      
+Upload ETA: computed in frontend via sliding average (5s window)      
+Transcription ETA: computed in backend using actual processing speed (processed_seconds / elapsed_time)      
+Both update every ~0.8 seconds to give near real-time feedback.      
+      
 
-🧮 ETA Calculation
-Upload ETA: computed in frontend via sliding average (5s window)
-Transcription ETA: computed in backend using actual processing speed (processed_seconds / elapsed_time)
-Both update every ~0.8 seconds to give near real-time feedback.
+🧾 Outputs Example      
+After transcription, results are saved in:            
+outputs/<job_id>/      
+ ├── transcript.txt   ← Full plain text      
+ ├── subtitles.srt    ← SubRip subtitle      
+ └── subtitles.vtt    ← WebVTT subtitle      
+      
 
+🧠 Credits    
+Faster-Whisper    
+OpenCC    
+FastAPI    
+ffmpeg    
+    
+    
+📜 License      
+MIT License © 2025 [Your Name]    
+    
+🌟 Future Improvements (可选后续优化)    
+ 添加任务队列与并行处理（Celery + Redis）    
+ 自动检测音频语言、批量转录目录    
+ WebSocket 实时推送转写进度    
+ 前端样式美化（Tailwind / Bootstrap）    
 
-🧾 Outputs Example
-After transcription, results are saved in:
-outputs/<job_id>/
- ├── transcript.txt   ← Full plain text
- ├── subtitles.srt    ← SubRip subtitle
- └── subtitles.vtt    ← WebVTT subtitle
-
-
-🧠 Credits
-Faster-Whisper
-OpenCC
-FastAPI
-ffmpeg
-
-
-📜 License
-MIT License © 2025 [Your Name]
-
-🌟 Future Improvements (可选后续优化)
- 添加任务队列与并行处理（Celery + Redis）
- 自动检测音频语言、批量转录目录
- WebSocket 实时推送转写进度
- 前端样式美化（Tailwind / Bootstrap）
 
 
 
