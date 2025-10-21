@@ -1,6 +1,6 @@
-📘 Video-to-Text Transcriber
-A FastAPI-based web app for converting audio/video into text and subtitles (TXT/SRT/VTT) using Faster-Whisper.
-🧠 支持 GPU 加速、自动语言识别、实时上传与转写进度条、准确 ETA 预估，并输出中英文字稿与字幕文件。
+📘 Video-to-Text Transcriber    
+A FastAPI-based web app for converting audio/video into text and subtitles (TXT/SRT/VTT) using Faster-Whisper.    
+🧠 支持 GPU 加速、自动语言识别、实时上传与转写进度条、准确 ETA 预估，并输出中英文字稿与字幕文件。    
 
 
 🚀 Features
@@ -109,5 +109,6 @@ MIT License © 2025 [Your Name]
  自动检测音频语言、批量转录目录
  WebSocket 实时推送转写进度
  前端样式美化（Tailwind / Bootstrap）
+
 
 
