@@ -4,44 +4,32 @@ A FastAPI-based web app for converting audio/video into text and subtitles (TXT/
 
 
 🚀 Features
-✅ Accurate transcription using Faster-Whisper
-✅ GPU acceleration (CUDA 12.1) – runs much faster on RTX cards
-✅ Supports large-v2 & medium models (auto cached locally)
-✅ Automatic language detection (auto / English / Chinese)
-✅ Simplified Chinese conversion (via OpenCC)
-✅ Downloadable results: .txt, .srt, .vtt
-✅ Upload & transcription progress bars with ETA
-✅ FastAPI web UI (frontend auto-updates progress in real time)
+✅ Accurate transcription using Faster-Whisper    
+✅ GPU acceleration (CUDA 12.1) – runs much faster on RTX cards  
+✅ Supports large-v2 & medium models (auto cached locally)  
+✅ Automatic language detection (auto / English / Chinese)  
+✅ Simplified Chinese conversion (via OpenCC)  
+✅ Downloadable results: .txt, .srt, .vtt  
+✅ Upload & transcription progress bars with ETA  
+✅ FastAPI web UI (frontend auto-updates progress in real time)  
 
 
-🧩 Directory Structure
-D:\Video2Text
-│
-├── app.py                     # FastAPI main app (backend API & routing)
-├── transcrive.py              # Core transcription logic (ffmpeg + Faster-Whisper)
-│
-├── templates/
-│   └── index.html             # Web UI (upload, progress, download)
-│
-├── static/                    # Static resources (optional)
-│   ├── style.css
-│   └── script.js
-│
-├── outputs/                   # Generated files per job (auto-created)
-│   ├── <job_id>/
-│   │   ├── original.MOV
-│   │   ├── original.16k.wav
-│   │   ├── transcript.txt
-│   │   ├── subtitles.srt
-│   │   ├── subtitles.vtt
-│   │   ├── request.json
-│   │   └── result.json
-│   └── ...
-│
-├── requirements.txt           # Dependency list
-└── README.md                  # (this file)
+🧩 Directory Structure    
+D:\Video2Text  
+│  
+├── app.py                     # FastAPI main app (backend API & routing)  
+├── transcrive.py              # Core transcription logic (ffmpeg + Faster-Whisper)  
+│  
+├── templates/  
+│   └── index.html             # Web UI (upload, progress, download)  
+│  
+├── static/                    # Static resources (optional)  
+│   └── style.css   
+│    
+├── requirements.txt           # Dependency list  
+└── README.md                  # (this file)  
 
-
+  
 ⚙️ Installation
 1️⃣ Clone or copy project
 git clone https://github.com/<yourname>/Video2Text.git
@@ -87,7 +75,8 @@ App will:
 | ---------- | -------- | ------------ | ---------- | --------------------------------- |
 | `medium`   | ⚡ Fast   | Good         | ~2 GB      | For short videos or quick results |
 | `large-v2` | ⏳ Slower | 🔥 Very High | ~5–7 GB    | For full accuracy or long talks   |
-✅ The model is auto-cached (download once only).
+
+✅ The model is auto-cached (download once only).    
 ✅ GPU (CUDA) automatically detected — falls back to CPU if unavailable.
 
 
@@ -120,4 +109,5 @@ MIT License © 2025 [Your Name]
  自动检测音频语言、批量转录目录
  WebSocket 实时推送转写进度
  前端样式美化（Tailwind / Bootstrap）
+
 
