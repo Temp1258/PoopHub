@@ -1,3 +1,6 @@
+// Set to true to use mock data without a backend server
+export const DEMO_MODE = true;
+
 // Update this to your VPS domain
 export const API_URL = 'https://your-domain.com';
 
