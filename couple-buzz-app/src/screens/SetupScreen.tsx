@@ -39,6 +39,8 @@ export default function SetupScreen({ onRegistered }: Props) {
       await storage.setUserId(result.user_id);
       await storage.setPairCode(result.pair_code);
       await storage.setUserName(trimmed);
+      await storage.setAccessToken(result.access_token);
+      await storage.setRefreshToken(result.refresh_token);
 
       onRegistered(result.pair_code);
     } catch (error: any) {

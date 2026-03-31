@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ActivityIndicator, View, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -8,6 +8,7 @@ import { Text } from 'react-native';
 import { COLORS } from './src/constants';
 import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
+import { api } from './src/services/api';
 import SetupScreen from './src/screens/SetupScreen';
 import PairScreen from './src/screens/PairScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -42,9 +43,33 @@ export default function App() {
       setPartnerName(savedPartnerName);
       setAppState('ready');
 
-      // Update device token on each launch
       registerAndUpdateToken();
     })();
+  }, []);
+
+  const handleUnpair = useCallback(async () => {
+    try {
+      const result = await api.unpair();
+      await storage.clearPartnerData();
+      await storage.setPairCode(result.new_pair_code);
+      setPairCode(result.new_pair_code);
+      setPartnerName('');
+      setAppState('pair');
+    } catch (error: any) {
+      console.warn('Unpair failed:', error.message);
+    }
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await api.logout();
+    } catch {
+      // Continue with local cleanup even if server call fails
+    }
+    await storage.clearAll();
+    setPairCode('');
+    setPartnerName('');
+    setAppState('setup');
   }, []);
 
   if (appState === 'loading') {
@@ -114,7 +139,13 @@ export default function App() {
               tabBarIcon: ({ color }) => <Text style={{ fontSize: 22, color }}>🏠</Text>,
             }}
           >
-            {() => <HomeScreen partnerName={partnerName} />}
+            {() => (
+              <HomeScreen
+                partnerName={partnerName}
+                onUnpair={handleUnpair}
+                onLogout={handleLogout}
+              />
+            )}
           </Tab.Screen>
           <Tab.Screen
             name="History"

@@ -1,7 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { api } from './api';
-import { storage } from '../utils/storage';
 
 // Configure how notifications appear when app is in foreground
 Notifications.setNotificationHandler({
@@ -43,11 +42,8 @@ export async function registerAndUpdateToken(): Promise<void> {
   const token = await getDeviceToken();
   if (!token) return;
 
-  const userId = await storage.getUserId();
-  if (!userId) return;
-
   try {
-    await api.updateToken(userId, token);
+    await api.updateToken(token);
   } catch (error) {
     console.warn('Failed to update device token:', error);
   }

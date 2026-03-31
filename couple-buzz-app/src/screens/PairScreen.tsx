@@ -11,7 +11,6 @@ import {
 } from 'react-native';
 import { COLORS } from '../constants';
 import { api } from '../services/api';
-import { storage } from '../utils/storage';
 
 interface Props {
   pairCode: string;
@@ -31,10 +30,7 @@ export default function PairScreen({ pairCode, onPaired }: Props) {
 
     setLoading(true);
     try {
-      const userId = await storage.getUserId();
-      if (!userId) throw new Error('User not found');
-
-      const result = await api.pair(userId, trimmed);
+      const result = await api.pair(trimmed);
       await storage.setPartnerName(result.partner_name);
 
       onPaired(result.partner_name);

@@ -60,12 +60,9 @@ export default function HistoryScreen() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const userId = await storage.getUserId();
       const userName = await storage.getUserName();
-      if (!userId) return;
-
       setMyName(userName || '');
-      const result = await api.getHistory(userId, 100);
+      const result = await api.getHistory(100);
       setSections(groupByDate(result.actions));
     } catch (error) {
       console.warn('Failed to load history:', error);

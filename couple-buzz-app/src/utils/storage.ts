@@ -5,6 +5,8 @@ const KEYS = {
   PAIR_CODE: 'couple_buzz_pair_code',
   PARTNER_NAME: 'couple_buzz_partner_name',
   USER_NAME: 'couple_buzz_user_name',
+  ACCESS_TOKEN: 'couple_buzz_access_token',
+  REFRESH_TOKEN: 'couple_buzz_refresh_token',
 };
 
 export const storage = {
@@ -38,6 +40,26 @@ export const storage = {
 
   async setUserName(name: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.USER_NAME, name);
+  },
+
+  async getAccessToken(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.ACCESS_TOKEN);
+  },
+
+  async setAccessToken(token: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.ACCESS_TOKEN, token);
+  },
+
+  async getRefreshToken(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.REFRESH_TOKEN);
+  },
+
+  async setRefreshToken(token: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.REFRESH_TOKEN, token);
+  },
+
+  async clearPartnerData(): Promise<void> {
+    await AsyncStorage.removeItem(KEYS.PARTNER_NAME);
   },
 
   async clearAll(): Promise<void> {

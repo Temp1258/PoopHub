@@ -5,7 +5,8 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   miss: { title: '💭 想你', body: '{name} 在想你～' },
   kiss: { title: '😘 亲亲', body: '{name} 亲了你一下！' },
   poop: { title: '💩 拉屎', body: '{name} 在拉屎哈哈哈' },
-  pat:  { title: '🫶 拍拍', body: '{name} 拍了拍你～' },
+  pat:    { title: '🫶 拍拍', body: '{name} 拍了拍你～' },
+  unpair: { title: '💔 已解除配对', body: '{name} 解除了配对' },
 };
 
 let provider: apn.Provider | null = null;

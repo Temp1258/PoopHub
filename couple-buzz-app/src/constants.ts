@@ -1,11 +1,8 @@
-// Set to true to use mock data without a backend server
-export const DEMO_MODE = true;
+import Constants from 'expo-constants';
 
-// Update this to your VPS domain
-export const API_URL = 'https://your-domain.com';
+export const DEMO_MODE = false;
 
-// Optional: fixed API key (must match server .env)
-export const API_KEY = 'your-random-secret-key-here';
+export const API_URL = Constants.expoConfig?.extra?.apiUrl ?? 'http://localhost:3000';
 
 export const COLORS = {
   background: '#FFF5F5',

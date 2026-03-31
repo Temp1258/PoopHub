@@ -1,13 +1,23 @@
 import { Router, Request, Response } from 'express';
 import { nanoid } from 'nanoid';
-import { dbOps } from './db';
-import { sendPush } from './push';
+import { DbOps } from './db';
+import {
+  generateAccessToken,
+  generateRefreshToken,
+  hashToken,
+  getRefreshTokenExpiresAt,
+  createAuthMiddleware,
+} from './auth';
 
-const router = Router();
+export type SendPushFn = (
+  deviceToken: string,
+  actionType: string,
+  senderName: string
+) => Promise<boolean>;
 
 // Generate a random 4-digit pair code
-function generatePairCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // exclude confusing chars
+export function generatePairCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 4; i++) {
     code += chars[Math.floor(Math.random() * chars.length)];
@@ -15,129 +25,261 @@ function generatePairCode(): string {
   return code;
 }
 
-// POST /api/register
-router.post('/register', (req: Request, res: Response) => {
-  const { name, device_token } = req.body;
+function issueTokens(dbOps: DbOps, userId: string, tokenVersion: number) {
+  const accessToken = generateAccessToken(userId, tokenVersion);
+  const refreshToken = generateRefreshToken();
+  const expiresAt = getRefreshTokenExpiresAt();
 
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'name is required' });
-  }
+  dbOps.insertRefreshToken(userId, hashToken(refreshToken), expiresAt);
 
-  const userId = nanoid(12);
-  let pairCode = generatePairCode();
+  return { access_token: accessToken, refresh_token: refreshToken };
+}
 
-  // Ensure pair code is unique
-  while (dbOps.getUserByPairCode(pairCode)) {
-    pairCode = generatePairCode();
-  }
+export function createPublicRouter(dbOps: DbOps): Router {
+  const router = Router();
 
-  dbOps.createUser(userId, name.trim(), pairCode);
+  // POST /api/register — public, no auth required
+  router.post('/register', (req: Request, res: Response) => {
+    const { name, device_token } = req.body;
 
-  if (device_token) {
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'name is required' });
+    }
+
+    const userId = nanoid(12);
+    let pairCode = generatePairCode();
+
+    while (dbOps.getUserByPairCode(pairCode)) {
+      pairCode = generatePairCode();
+    }
+
+    dbOps.createUser(userId, name.trim(), pairCode);
+
+    if (device_token) {
+      dbOps.setDeviceToken(userId, device_token);
+    }
+
+    const user = dbOps.getUser(userId)!;
+    const tokens = issueTokens(dbOps, userId, user.token_version);
+
+    res.json({ user_id: userId, pair_code: pairCode, ...tokens });
+  });
+
+  // POST /api/auth/refresh — public, uses refresh token
+  router.post('/auth/refresh', (req: Request, res: Response) => {
+    const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+      return res.status(400).json({ error: 'refresh_token is required' });
+    }
+
+    const tokenHash = hashToken(refresh_token);
+    const stored = dbOps.getRefreshToken(tokenHash);
+
+    if (!stored) {
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+
+    // Check expiry
+    if (new Date(stored.expires_at) < new Date()) {
+      dbOps.deleteRefreshToken(tokenHash);
+      return res.status(401).json({ error: 'Refresh token expired' });
+    }
+
+    const user = dbOps.getUser(stored.user_id);
+    if (!user) {
+      dbOps.deleteRefreshToken(tokenHash);
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    // Rotate: delete old, issue new
+    dbOps.deleteRefreshToken(tokenHash);
+    const tokens = issueTokens(dbOps, user.id, user.token_version);
+
+    res.json(tokens);
+  });
+
+  return router;
+}
+
+export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router {
+  const router = Router();
+
+  // POST /api/pair
+  router.post('/pair', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { partner_pair_code } = req.body;
+
+    if (!partner_pair_code) {
+      return res.status(400).json({ error: 'partner_pair_code is required' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.partner_id) {
+      return res.status(400).json({ error: 'Already paired' });
+    }
+
+    const partner = dbOps.getUserByPairCode(partner_pair_code.toUpperCase());
+    if (!partner) {
+      return res.status(404).json({ error: 'Invalid pair code' });
+    }
+
+    if (partner.id === userId) {
+      return res.status(400).json({ error: 'Cannot pair with yourself' });
+    }
+
+    dbOps.pairUsers(userId, partner.id);
+
+    res.json({ success: true, partner_name: partner.name });
+  });
+
+  // POST /api/action
+  router.post('/action', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { action_type } = req.body;
+
+    if (!action_type) {
+      return res.status(400).json({ error: 'action_type is required' });
+    }
+
+    const validActions = ['miss', 'kiss', 'poop', 'pat'];
+    if (!validActions.includes(action_type)) {
+      return res.status(400).json({ error: 'Invalid action_type' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.partner_id) {
+      return res.status(400).json({ error: 'Not paired yet' });
+    }
+
+    dbOps.addAction(userId, action_type);
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, action_type, user.name);
+    }
+
+    res.json({ success: true });
+  });
+
+  // GET /api/history
+  router.get('/history', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const actions = dbOps.getHistory(userId, Math.min(limit, 200));
+    res.json({ actions });
+  });
+
+  // PUT /api/device-token
+  router.put('/device-token', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { device_token } = req.body;
+
+    if (!device_token) {
+      return res.status(400).json({ error: 'device_token is required' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     dbOps.setDeviceToken(userId, device_token);
-  }
+    res.json({ success: true });
+  });
 
-  res.json({ user_id: userId, pair_code: pairCode });
-});
+  // POST /api/unpair
+  router.post('/unpair', async (req: Request, res: Response) => {
+    const userId = req.userId!;
 
-// POST /api/pair
-router.post('/pair', (req: Request, res: Response) => {
-  const { user_id, partner_pair_code } = req.body;
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
-  if (!user_id || !partner_pair_code) {
-    return res.status(400).json({ error: 'user_id and partner_pair_code are required' });
-  }
+    if (!user.partner_id) {
+      return res.status(400).json({ error: 'Not paired' });
+    }
 
-  const user = dbOps.getUser(user_id);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
+    const partner = dbOps.getUser(user.partner_id);
 
-  if (user.partner_id) {
-    return res.status(400).json({ error: 'Already paired' });
-  }
+    dbOps.unpairUsers(userId, user.partner_id);
 
-  const partner = dbOps.getUserByPairCode(partner_pair_code.toUpperCase());
-  if (!partner) {
-    return res.status(404).json({ error: 'Invalid pair code' });
-  }
+    // Generate new pair codes for both
+    let newPairCode = generatePairCode();
+    while (dbOps.getUserByPairCode(newPairCode)) {
+      newPairCode = generatePairCode();
+    }
+    dbOps.updatePairCode(userId, newPairCode);
 
-  if (partner.id === user_id) {
-    return res.status(400).json({ error: 'Cannot pair with yourself' });
-  }
+    let partnerPairCode = generatePairCode();
+    while (dbOps.getUserByPairCode(partnerPairCode)) {
+      partnerPairCode = generatePairCode();
+    }
+    if (partner) {
+      dbOps.updatePairCode(partner.id, partnerPairCode);
+    }
 
-  dbOps.pairUsers(user_id, partner.id);
+    // Notify partner via push
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, 'unpair', user.name);
+    }
 
-  res.json({ success: true, partner_name: partner.name });
-});
+    res.json({ success: true, new_pair_code: newPairCode });
+  });
 
-// POST /api/action
-router.post('/action', async (req: Request, res: Response) => {
-  const { user_id, action_type } = req.body;
+  // POST /api/logout
+  router.post('/logout', (req: Request, res: Response) => {
+    const userId = req.userId!;
 
-  if (!user_id || !action_type) {
-    return res.status(400).json({ error: 'user_id and action_type are required' });
-  }
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
-  const validActions = ['miss', 'kiss', 'poop', 'pat'];
-  if (!validActions.includes(action_type)) {
-    return res.status(400).json({ error: 'Invalid action_type' });
-  }
+    // Clear device token
+    dbOps.clearDeviceToken(userId);
 
-  const user = dbOps.getUser(user_id);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
+    // Revoke all tokens
+    dbOps.deleteAllRefreshTokens(userId);
+    dbOps.incrementTokenVersion(userId);
 
-  if (!user.partner_id) {
-    return res.status(400).json({ error: 'Not paired yet' });
-  }
+    res.json({ success: true });
+  });
 
-  // Save action to database
-  dbOps.addAction(user_id, action_type);
+  return router;
+}
 
-  // Send push notification to partner
-  const partner = dbOps.getUser(user.partner_id);
-  if (partner?.device_token) {
-    await sendPush(partner.device_token, action_type, user.name);
-  }
+// Default export for backward compatibility
+import { dbOps } from './db';
+import { sendPush } from './push';
 
-  res.json({ success: true });
-});
+const defaultPublicRouter = createPublicRouter(dbOps);
+const defaultProtectedRouter = createProtectedRouter(dbOps, sendPush);
+const defaultAuthMiddleware = createAuthMiddleware(dbOps);
 
-// GET /api/history
-router.get('/history', (req: Request, res: Response) => {
-  const userId = req.query.user_id as string;
-  const limit = parseInt(req.query.limit as string) || 50;
+export {
+  defaultPublicRouter,
+  defaultProtectedRouter,
+  defaultAuthMiddleware,
+};
 
-  if (!userId) {
-    return res.status(400).json({ error: 'user_id is required' });
-  }
-
-  const user = dbOps.getUser(userId);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  const actions = dbOps.getHistory(userId, Math.min(limit, 200));
-  res.json({ actions });
-});
-
-// PUT /api/device-token
-router.put('/device-token', (req: Request, res: Response) => {
-  const { user_id, device_token } = req.body;
-
-  if (!user_id || !device_token) {
-    return res.status(400).json({ error: 'user_id and device_token are required' });
-  }
-
-  const user = dbOps.getUser(user_id);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  dbOps.setDeviceToken(user_id, device_token);
-  res.json({ success: true });
-});
-
-export default router;
+// Combined default router (used by index.ts)
+const combined = Router();
+combined.use(defaultPublicRouter);
+combined.use(defaultAuthMiddleware, defaultProtectedRouter);
+export default combined;
