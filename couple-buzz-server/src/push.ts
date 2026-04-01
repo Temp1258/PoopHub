@@ -12,18 +12,29 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
 let provider: apn.Provider | null = null;
 
 export function initAPNs(): void {
+  const keyId = process.env.APN_KEY_ID;
+  const teamId = process.env.APN_TEAM_ID;
   const keyPath = process.env.APN_KEY_PATH || './certs/AuthKey.p8';
 
-  provider = new apn.Provider({
-    token: {
-      key: path.resolve(keyPath),
-      keyId: process.env.APN_KEY_ID || '',
-      teamId: process.env.APN_TEAM_ID || '',
-    },
-    production: process.env.APN_PRODUCTION === 'true',
-  });
+  if (!keyId || !teamId) {
+    console.log('[APNs] Not configured, skipping initialization');
+    return;
+  }
 
-  console.log('[APNs] Provider initialized');
+  try {
+    provider = new apn.Provider({
+      token: {
+        key: path.resolve(keyPath),
+        keyId,
+        teamId,
+      },
+      production: process.env.APN_PRODUCTION === 'true',
+    });
+    console.log('[APNs] Provider initialized');
+  } catch (error) {
+    console.error('[APNs] Failed to initialize:', error);
+    provider = null;
+  }
 }
 
 export async function sendPush(
