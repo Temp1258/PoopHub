@@ -65,6 +65,8 @@ app.get('/health', (_req, res) => {
 // Initialize APNs and start server
 initAPNs();
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[Server] Couple Buzz running on 127.0.0.1:${PORT}`);
+const HOST = process.env.HOST || '127.0.0.1';
+
+app.listen(PORT, HOST, () => {
+  console.log(`[Server] Couple Buzz running on ${HOST}:${PORT}`);
 });

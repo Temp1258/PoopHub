@@ -1,27 +1,65 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
+  TextInput,
+  TouchableOpacity,
   SectionList,
   StyleSheet,
   RefreshControl,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
-import { COLORS } from '../constants';
+import { useFocusEffect } from '@react-navigation/native';
+import { COLORS, ACTION_EMOJI } from '../constants';
 import { api, HistoryAction } from '../services/api';
 import { storage } from '../utils/storage';
 import ActionRecord from '../components/ActionRecord';
+
+const TIMEZONE_LABELS: Record<string, string> = {
+  'Asia/Shanghai': '北京时间 (UTC+8)',
+  'Asia/Hong_Kong': '香港 (UTC+8)',
+  'Asia/Taipei': '台北 (UTC+8)',
+  'Asia/Tokyo': '东京 (UTC+9)',
+  'Asia/Seoul': '首尔 (UTC+9)',
+  'Asia/Singapore': '新加坡 (UTC+8)',
+  'America/New_York': '纽约 (UTC-5)',
+  'America/Los_Angeles': '洛杉矶 (UTC-8)',
+  'America/Chicago': '芝加哥 (UTC-6)',
+  'Europe/London': '伦敦 (UTC+0)',
+  'Europe/Paris': '巴黎 (UTC+1)',
+  'Europe/Berlin': '柏林 (UTC+1)',
+  'Australia/Sydney': '悉尼 (UTC+11)',
+  'Pacific/Auckland': '奥克兰 (UTC+13)',
+};
 
 interface Section {
   title: string;
   data: HistoryAction[];
 }
 
-function formatTime(dateStr: string): string {
-  const date = new Date(dateStr + 'Z'); // treat as UTC
-  const hours = date.getHours().toString().padStart(2, '0');
-  const minutes = date.getMinutes().toString().padStart(2, '0');
-  return `${hours}:${minutes}`;
+function formatTimeInZone(dateStr: string, timezone: string): string {
+  const date = new Date(dateStr + 'Z');
+  try {
+    return date.toLocaleTimeString('zh-CN', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    return `${hours}:${minutes}`;
+  }
+}
+
+function getDeviceTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return 'Asia/Shanghai';
+  }
 }
 
 function groupByDate(actions: HistoryAction[]): Section[] {
@@ -56,14 +94,47 @@ export default function HistoryScreen() {
   const [sections, setSections] = useState<Section[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [myUserId, setMyUserId] = useState('');
+  const [myTz, setMyTz] = useState(getDeviceTimezone());
+  const [partnerTz, setPartnerTz] = useState('Asia/Shanghai');
+  const [partnerRemark, setPartnerRemark] = useState('');
+  const [selectedItem, setSelectedItem] = useState<HistoryAction | null>(null);
+  const [editingRemark, setEditingRemark] = useState('');
+  const [savingRemark, setSavingRemark] = useState(false);
+  const listRef = useRef<SectionList>(null);
+
+  // For saving remark we need current profile values
   const [myName, setMyName] = useState('');
+  const [myTimezone, setMyTimezone] = useState('');
+  const [myPartnerTz, setMyPartnerTz] = useState('');
+
+  const scrollToBottom = useCallback(() => {
+    if (sections.length === 0) return;
+    setTimeout(() => {
+      (listRef.current as any)?.getScrollResponder?.()?.scrollToEnd?.({ animated: false });
+    }, 100);
+  }, [sections]);
 
   const loadHistory = useCallback(async () => {
     try {
-      const userName = await storage.getUserName();
-      setMyName(userName || '');
+      const userId = await storage.getUserId();
+      setMyUserId(userId || '');
+      const savedTz = await storage.getTimezone();
+      const savedPartnerTz = await storage.getPartnerTimezone();
+      const savedRemark = await storage.getPartnerRemark();
+      if (savedTz) setMyTz(savedTz);
+      if (savedPartnerTz) setPartnerTz(savedPartnerTz);
+      setPartnerRemark(savedRemark || '');
+
+      // Load current profile for remark saving
+      const savedName = await storage.getUserName();
+      setMyName(savedName || '');
+      setMyTimezone(savedTz || getDeviceTimezone());
+      setMyPartnerTz(savedPartnerTz || 'Asia/Shanghai');
+
       const result = await api.getHistory(100);
-      setSections(groupByDate(result.actions));
+      const reversed = [...result.actions].reverse();
+      setSections(groupByDate(reversed));
     } catch (error) {
       console.warn('Failed to load history:', error);
     } finally {
@@ -72,14 +143,35 @@ export default function HistoryScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
+  useFocusEffect(
+    useCallback(() => {
+      loadHistory();
+    }, [loadHistory])
+  );
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     loadHistory();
   }, [loadHistory]);
+
+  const handleItemPress = useCallback((item: HistoryAction) => {
+    setSelectedItem(item);
+    setEditingRemark(partnerRemark);
+  }, [partnerRemark]);
+
+  const handleSaveRemark = useCallback(async () => {
+    setSavingRemark(true);
+    try {
+      const result = await api.updateProfile(myName, myTimezone, myPartnerTz, editingRemark);
+      await storage.setPartnerRemark(result.partner_remark);
+      setPartnerRemark(result.partner_remark);
+      setSelectedItem(null);
+    } catch (error: any) {
+      Alert.alert('保存失败', error.message);
+    } finally {
+      setSavingRemark(false);
+    }
+  }, [myName, myTimezone, myPartnerTz, editingRemark]);
 
   if (loading) {
     return (
@@ -89,19 +181,35 @@ export default function HistoryScreen() {
     );
   }
 
+  const selectedIsMine = selectedItem ? selectedItem.user_id === myUserId : false;
+  const selectedTz = selectedItem
+    ? (selectedIsMine ? myTz : partnerTz)
+    : '';
+  const selectedTzLabel = TIMEZONE_LABELS[selectedTz] || selectedTz;
+
   return (
     <View style={styles.container}>
       <SectionList
+        ref={listRef}
         sections={sections}
         keyExtractor={(item) => item.id.toString()}
-        renderItem={({ item }) => (
-          <ActionRecord
-            userName={item.user_name}
-            actionType={item.action_type}
-            time={formatTime(item.created_at)}
-            isMine={item.user_name === myName}
-          />
-        )}
+        onContentSizeChange={scrollToBottom}
+        renderItem={({ item }) => {
+          const isMine = item.user_id === myUserId;
+          const myTime = formatTimeInZone(item.created_at, myTz);
+          const pTime = !isMine ? formatTimeInZone(item.created_at, partnerTz) : undefined;
+          return (
+            <ActionRecord
+              userName={item.user_name}
+              actionType={item.action_type}
+              time={myTime}
+              partnerTime={pTime}
+              isMine={isMine}
+              remark={!isMine ? partnerRemark : undefined}
+              onPress={() => handleItemPress(item)}
+            />
+          );
+        }}
         renderSectionHeader={({ section: { title } }) => (
           <Text style={styles.sectionHeader}>{title}</Text>
         )}
@@ -116,6 +224,52 @@ export default function HistoryScreen() {
         contentContainerStyle={sections.length === 0 ? styles.emptyContainer : styles.list}
         stickySectionHeadersEnabled={false}
       />
+
+      {selectedItem && (
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setSelectedItem(null)}>
+          <TouchableOpacity style={styles.modalContent} activeOpacity={1}>
+            <View style={styles.modalBody}>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>表情</Text>
+                <Text style={styles.detailValue}>
+                  {ACTION_EMOJI[selectedItem.action_type] || '?'}
+                </Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>昵称</Text>
+                <Text style={styles.detailValue}>{selectedItem.user_name}</Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>时区</Text>
+                <Text style={styles.detailValue}>{selectedTzLabel}</Text>
+              </View>
+
+              {!selectedIsMine && (
+                <>
+                  <Text style={styles.remarkLabel}>备注</Text>
+                  <TextInput
+                    style={styles.remarkInput}
+                    value={editingRemark}
+                    onChangeText={setEditingRemark}
+                    placeholder="给 ta 起个备注"
+                    placeholderTextColor={COLORS.textLight}
+                    maxLength={20}
+                  />
+                  <TouchableOpacity
+                    style={[styles.saveButton, savingRemark && styles.saveButtonDisabled]}
+                    onPress={handleSaveRemark}
+                    disabled={savingRemark}
+                  >
+                    <Text style={styles.saveButtonText}>
+                      {savingRemark ? '保存中...' : '保存备注'}
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -149,5 +303,73 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     color: COLORS.textLight,
+  },
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  modalContent: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    width: '72%',
+    maxWidth: 300,
+    paddingBottom: 16,
+  },
+  modalBody: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  detailLabel: {
+    fontSize: 15,
+    color: COLORS.textLight,
+  },
+  detailValue: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.text,
+  },
+  remarkLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textLight,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  remarkInput: {
+    height: 44,
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: COLORS.text,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  saveButton: {
+    height: 44,
+    backgroundColor: COLORS.kiss,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  saveButtonDisabled: {
+    opacity: 0.5,
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.white,
   },
 });

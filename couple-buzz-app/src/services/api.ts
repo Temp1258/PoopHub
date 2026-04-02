@@ -55,7 +55,12 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
     }
   }
 
-  const data = await res.json();
+  let data: any;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`Server error (${res.status})`);
+  }
 
   if (!res.ok) {
     throw new Error(data.error || 'Request failed');
@@ -67,23 +72,38 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
 export interface RegisterResponse {
   user_id: string;
   pair_code: string;
+  partner_name: string | null;
   access_token: string;
   refresh_token: string;
 }
 
-export interface PairResponse {
-  success: boolean;
-  partner_name: string;
+export interface StatusResponse {
+  paired: boolean;
+  partner_name?: string;
+  name: string;
+  timezone: string;
+  partner_timezone: string;
+  partner_remark: string;
 }
 
 export interface ActionResponse {
   success: boolean;
 }
 
+export interface ProfileResponse {
+  success: boolean;
+  name: string;
+  timezone: string;
+  partner_timezone: string;
+  partner_remark: string;
+}
+
 export interface HistoryAction {
   id: number;
+  user_id: string;
   user_name: string;
   action_type: string;
+  sender_timezone: string;
   created_at: string;
 }
 
@@ -91,32 +111,33 @@ export interface HistoryResponse {
   actions: HistoryAction[];
 }
 
-export interface UnpairResponse {
-  success: boolean;
-  new_pair_code: string;
+function getDeviceTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return 'Asia/Shanghai';
+  }
 }
 
 const mockHistory: HistoryAction[] = [
-  { id: 1, user_name: '我', action_type: 'miss', created_at: new Date().toISOString().slice(0, 19) },
-  { id: 2, user_name: '宝贝', action_type: 'kiss', created_at: new Date().toISOString().slice(0, 19) },
-  { id: 3, user_name: '我', action_type: 'poop', created_at: new Date(Date.now() - 3600000).toISOString().slice(0, 19) },
-  { id: 4, user_name: '宝贝', action_type: 'pat', created_at: new Date(Date.now() - 7200000).toISOString().slice(0, 19) },
-  { id: 5, user_name: '我', action_type: 'kiss', created_at: new Date(Date.now() - 86400000).toISOString().slice(0, 19) },
-  { id: 6, user_name: '宝贝', action_type: 'miss', created_at: new Date(Date.now() - 86400000).toISOString().slice(0, 19) },
+  { id: 1, user_id: 'demo-user-001', user_name: '我', action_type: 'miss', sender_timezone: 'Asia/Shanghai', created_at: new Date().toISOString().slice(0, 19) },
+  { id: 2, user_id: 'demo-user-002', user_name: '宝贝', action_type: 'kiss', sender_timezone: 'America/New_York', created_at: new Date().toISOString().slice(0, 19) },
+  { id: 3, user_id: 'demo-user-001', user_name: '我', action_type: 'poop', sender_timezone: 'Asia/Shanghai', created_at: new Date(Date.now() - 3600000).toISOString().slice(0, 19) },
+  { id: 4, user_id: 'demo-user-002', user_name: '宝贝', action_type: 'pat', sender_timezone: 'America/New_York', created_at: new Date(Date.now() - 7200000).toISOString().slice(0, 19) },
 ];
 
 const demoApi = {
   async register(name: string, _deviceToken: string): Promise<RegisterResponse> {
     await new Promise(r => setTimeout(r, 500));
-    return { user_id: 'demo-user-001', pair_code: 'AB12', access_token: 'demo-at', refresh_token: 'demo-rt' };
+    return { user_id: 'demo-user-001', pair_code: 'AB12', partner_name: '宝贝', access_token: 'demo-at', refresh_token: 'demo-rt' };
   },
 
-  async pair(_partnerPairCode: string): Promise<PairResponse> {
-    await new Promise(r => setTimeout(r, 500));
-    return { success: true, partner_name: '宝贝' };
+  async getStatus(): Promise<StatusResponse> {
+    await new Promise(r => setTimeout(r, 300));
+    return { paired: true, partner_name: '宝贝', name: '我', timezone: 'Asia/Shanghai', partner_timezone: 'America/New_York', partner_remark: '' };
   },
 
-  async sendAction(actionType: string): Promise<ActionResponse> {
+  async sendAction(_actionType: string): Promise<ActionResponse> {
     await new Promise(r => setTimeout(r, 300));
     return { success: true };
   },
@@ -130,13 +151,9 @@ const demoApi = {
     return { success: true };
   },
 
-  async unpair(): Promise<UnpairResponse> {
+  async updateProfile(_name: string, _timezone: string, _partnerTimezone: string, _partnerRemark: string): Promise<ProfileResponse> {
     await new Promise(r => setTimeout(r, 300));
-    return { success: true, new_pair_code: 'XY34' };
-  },
-
-  async logout(): Promise<{ success: boolean }> {
-    return { success: true };
+    return { success: true, name: _name, timezone: _timezone, partner_timezone: _partnerTimezone, partner_remark: _partnerRemark };
   },
 };
 
@@ -144,21 +161,18 @@ const realApi = {
   register(name: string, deviceToken: string): Promise<RegisterResponse> {
     return request('/api/register', {
       method: 'POST',
-      body: JSON.stringify({ name, device_token: deviceToken }),
+      body: JSON.stringify({ name, device_token: deviceToken, timezone: getDeviceTimezone() }),
     }, false);
   },
 
-  pair(partnerPairCode: string): Promise<PairResponse> {
-    return request('/api/pair', {
-      method: 'POST',
-      body: JSON.stringify({ partner_pair_code: partnerPairCode }),
-    });
+  getStatus(): Promise<StatusResponse> {
+    return request('/api/status');
   },
 
   sendAction(actionType: string): Promise<ActionResponse> {
     return request('/api/action', {
       method: 'POST',
-      body: JSON.stringify({ action_type: actionType }),
+      body: JSON.stringify({ action_type: actionType, timezone: getDeviceTimezone() }),
     });
   },
 
@@ -173,15 +187,10 @@ const realApi = {
     });
   },
 
-  unpair(): Promise<UnpairResponse> {
-    return request('/api/unpair', {
-      method: 'POST',
-    });
-  },
-
-  logout(): Promise<{ success: boolean }> {
-    return request('/api/logout', {
-      method: 'POST',
+  updateProfile(name: string, timezone: string, partnerTimezone: string, partnerRemark: string): Promise<ProfileResponse> {
+    return request('/api/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ name, timezone, partner_timezone: partnerTimezone, partner_remark: partnerRemark }),
     });
   },
 };

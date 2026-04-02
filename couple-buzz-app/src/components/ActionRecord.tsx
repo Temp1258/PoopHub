@@ -1,26 +1,40 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { COLORS, ACTION_EMOJI } from '../constants';
 
 interface Props {
   userName: string;
   actionType: string;
   time: string;
+  partnerTime?: string;
   isMine: boolean;
+  remark?: string;
+  onPress?: () => void;
 }
 
-export default function ActionRecord({ userName, actionType, time, isMine }: Props) {
+export default function ActionRecord({ userName, actionType, time, partnerTime, isMine, remark, onPress }: Props) {
   const emoji = ACTION_EMOJI[actionType] || '?';
+  const displayName = !isMine && remark ? `${userName} (${remark})` : userName;
 
   return (
     <View style={[styles.container, isMine ? styles.mine : styles.theirs]}>
-      <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}>
+      <TouchableOpacity
+        style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}
+        onPress={onPress}
+        activeOpacity={0.7}
+      >
         <Text style={styles.emoji}>{emoji}</Text>
         <View style={styles.info}>
-          <Text style={styles.name}>{userName}</Text>
-          <Text style={styles.time}>{time}</Text>
+          <Text style={styles.name}>{displayName}</Text>
+          {partnerTime && !isMine ? (
+            <Text style={styles.time}>
+              对方 {partnerTime} · 我 {time}
+            </Text>
+          ) : (
+            <Text style={styles.time}>{time}</Text>
+          )}
         </View>
-      </View>
+      </TouchableOpacity>
     </View>
   );
 }

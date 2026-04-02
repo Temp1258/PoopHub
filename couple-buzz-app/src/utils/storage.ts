@@ -2,11 +2,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEYS = {
   USER_ID: 'couple_buzz_user_id',
-  PAIR_CODE: 'couple_buzz_pair_code',
   PARTNER_NAME: 'couple_buzz_partner_name',
   USER_NAME: 'couple_buzz_user_name',
   ACCESS_TOKEN: 'couple_buzz_access_token',
   REFRESH_TOKEN: 'couple_buzz_refresh_token',
+  TIMEZONE: 'couple_buzz_timezone',
+  PARTNER_TIMEZONE: 'couple_buzz_partner_timezone',
+  PARTNER_REMARK: 'couple_buzz_partner_remark',
 };
 
 export const storage = {
@@ -16,14 +18,6 @@ export const storage = {
 
   async setUserId(id: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.USER_ID, id);
-  },
-
-  async getPairCode(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.PAIR_CODE);
-  },
-
-  async setPairCode(code: string): Promise<void> {
-    await AsyncStorage.setItem(KEYS.PAIR_CODE, code);
   },
 
   async getPartnerName(): Promise<string | null> {
@@ -58,8 +52,28 @@ export const storage = {
     await AsyncStorage.setItem(KEYS.REFRESH_TOKEN, token);
   },
 
-  async clearPartnerData(): Promise<void> {
-    await AsyncStorage.removeItem(KEYS.PARTNER_NAME);
+  async getTimezone(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.TIMEZONE);
+  },
+
+  async setTimezone(tz: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.TIMEZONE, tz);
+  },
+
+  async getPartnerTimezone(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.PARTNER_TIMEZONE);
+  },
+
+  async setPartnerTimezone(tz: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.PARTNER_TIMEZONE, tz);
+  },
+
+  async getPartnerRemark(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.PARTNER_REMARK);
+  },
+
+  async setPartnerRemark(remark: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.PARTNER_REMARK, remark);
   },
 
   async clearAll(): Promise<void> {

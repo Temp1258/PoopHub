@@ -40,7 +40,7 @@ export function createPublicRouter(dbOps: DbOps): Router {
 
   // POST /api/register — public, no auth required
   router.post('/register', (req: Request, res: Response) => {
-    const { name, device_token } = req.body;
+    const { name, device_token, timezone } = req.body;
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ error: 'name is required' });
@@ -53,16 +53,24 @@ export function createPublicRouter(dbOps: DbOps): Router {
       pairCode = generatePairCode();
     }
 
-    dbOps.createUser(userId, name.trim(), pairCode);
+    dbOps.createUser(userId, name.trim(), pairCode, timezone || 'Asia/Shanghai');
 
     if (device_token) {
       dbOps.setDeviceToken(userId, device_token);
     }
 
+    // Auto-pair with existing unpaired user
+    let partnerName: string | null = null;
+    const existingUser = dbOps.getUnpairedUser(userId);
+    if (existingUser) {
+      dbOps.pairUsers(userId, existingUser.id);
+      partnerName = existingUser.name;
+    }
+
     const user = dbOps.getUser(userId)!;
     const tokens = issueTokens(dbOps, userId, user.token_version);
 
-    res.json({ user_id: userId, pair_code: pairCode, ...tokens });
+    res.json({ user_id: userId, pair_code: pairCode, partner_name: partnerName, ...tokens });
   });
 
   // POST /api/auth/refresh — public, uses refresh token
@@ -105,6 +113,48 @@ export function createPublicRouter(dbOps: DbOps): Router {
 export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router {
   const router = Router();
 
+  // GET /api/status — check if paired
+  router.get('/status', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.partner_id) {
+      const partner = dbOps.getUser(user.partner_id);
+      return res.json({
+        paired: true,
+        partner_name: partner?.name ?? null,
+        name: user.name,
+        timezone: user.timezone,
+        partner_timezone: user.partner_timezone,
+        partner_remark: user.partner_remark,
+      });
+    }
+
+    res.json({ paired: false, name: user.name, timezone: user.timezone, partner_timezone: user.partner_timezone, partner_remark: user.partner_remark });
+  });
+
+  // PUT /api/profile — update name and/or timezone
+  router.put('/profile', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { name, timezone, partner_timezone, partner_remark } = req.body;
+
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const newName = (name && typeof name === 'string' && name.trim()) ? name.trim() : user.name;
+    const newTimezone = (timezone && typeof timezone === 'string') ? timezone : user.timezone;
+    const newPartnerTz = (partner_timezone && typeof partner_timezone === 'string') ? partner_timezone : user.partner_timezone;
+    const newRemark = (typeof partner_remark === 'string') ? partner_remark : user.partner_remark;
+
+    dbOps.updateProfile(userId, newName, newTimezone, newPartnerTz, newRemark);
+    res.json({ success: true, name: newName, timezone: newTimezone, partner_timezone: newPartnerTz, partner_remark: newRemark });
+  });
+
   // POST /api/pair
   router.post('/pair', (req: Request, res: Response) => {
     const userId = req.userId!;
@@ -140,15 +190,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // POST /api/action
   router.post('/action', async (req: Request, res: Response) => {
     const userId = req.userId!;
-    const { action_type } = req.body;
+    const { action_type, timezone } = req.body;
 
-    if (!action_type) {
+    if (!action_type || typeof action_type !== 'string') {
       return res.status(400).json({ error: 'action_type is required' });
-    }
-
-    const validActions = ['miss', 'kiss', 'poop', 'pat'];
-    if (!validActions.includes(action_type)) {
-      return res.status(400).json({ error: 'Invalid action_type' });
     }
 
     const user = dbOps.getUser(userId);
@@ -160,7 +205,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Not paired yet' });
     }
 
-    dbOps.addAction(userId, action_type);
+    dbOps.addAction(userId, action_type, timezone || user.timezone, user.name);
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {

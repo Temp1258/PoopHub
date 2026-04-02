@@ -15,7 +15,7 @@ import { storage } from '../utils/storage';
 import { requestPermissions, getDeviceToken } from '../services/notification';
 
 interface Props {
-  onRegistered: (pairCode: string) => void;
+  onRegistered: (result: { partner_name: string | null }) => void;
 }
 
 export default function SetupScreen({ onRegistered }: Props) {
@@ -37,12 +37,11 @@ export default function SetupScreen({ onRegistered }: Props) {
       const result = await api.register(trimmed, token);
 
       await storage.setUserId(result.user_id);
-      await storage.setPairCode(result.pair_code);
       await storage.setUserName(trimmed);
       await storage.setAccessToken(result.access_token);
       await storage.setRefreshToken(result.refresh_token);
 
-      onRegistered(result.pair_code);
+      onRegistered({ partner_name: result.partner_name });
     } catch (error: any) {
       Alert.alert('注册失败', error.message || '请检查网络连接');
     } finally {

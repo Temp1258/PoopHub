@@ -32,6 +32,7 @@ async function registerUser(app: express.Express, name: string) {
   return res.body as {
     user_id: string;
     pair_code: string;
+    partner_name: string | null;
     access_token: string;
     refresh_token: string;
   };
@@ -47,6 +48,7 @@ describe('POST /api/register', () => {
     expect(res.status).toBe(200);
     expect(res.body.user_id).toBeDefined();
     expect(res.body.pair_code).toHaveLength(4);
+    expect(res.body.partner_name).toBeNull();
     expect(res.body.access_token).toBeDefined();
     expect(res.body.refresh_token).toBeDefined();
   });
@@ -64,6 +66,15 @@ describe('POST /api/register', () => {
       .send({ name: 'Bob' });
     expect(res.status).toBe(200);
     expect(res.body.user_id).toBeDefined();
+  });
+
+  it('should auto-pair with existing unpaired user', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    expect(alice.partner_name).toBeNull();
+
+    const bob = await registerUser(app, 'Bob');
+    expect(bob.partner_name).toBe('Alice');
   });
 });
 
@@ -108,20 +119,94 @@ describe('POST /api/auth/refresh', () => {
   });
 });
 
-describe('POST /api/pair', () => {
-  it('should pair two users', async () => {
+describe('GET /api/status', () => {
+  it('should return not paired for solo user', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
 
+    const res = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.paired).toBe(false);
+  });
+
+  it('should return paired with partner name', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob'); // auto-pairs with Alice
+
+    const res = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.paired).toBe(true);
+    expect(res.body.partner_name).toBe('Bob');
+    expect(res.body.name).toBe('Alice');
+    expect(res.body.timezone).toBeDefined();
+  });
+});
+
+describe('PUT /api/profile', () => {
+  it('should update name and timezone', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const res = await request(app)
+      .put('/api/profile')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ name: 'Alice New', timezone: 'America/New_York' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe('Alice New');
+    expect(res.body.timezone).toBe('America/New_York');
+
+    // Verify via status
+    const statusRes = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(statusRes.body.name).toBe('Alice New');
+    expect(statusRes.body.timezone).toBe('America/New_York');
+  });
+
+  it('should keep existing values when fields are omitted', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const res = await request(app)
+      .put('/api/profile')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ name: 'New Name' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe('New Name');
+    expect(res.body.timezone).toBeDefined();
+  });
+});
+
+describe('POST /api/pair', () => {
+  it('should pair two unpaired users manually', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob'); // auto-pairs with Alice
+    const charlie = await registerUser(app, 'Charlie'); // unpaired
+
+    // Unpair Alice and Bob first
+    await request(app)
+      .post('/api/unpair')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    // Now manually pair Alice with Charlie
     const res = await request(app)
       .post('/api/pair')
       .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: bob.pair_code });
+      .send({ partner_pair_code: charlie.pair_code });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.partner_name).toBe('Bob');
+    expect(res.body.partner_name).toBe('Charlie');
   });
 
   it('should return 401 without auth', async () => {
@@ -156,20 +241,14 @@ describe('POST /api/pair', () => {
 
   it('should return 400 when already paired', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
-    const charlie = await registerUser(app, 'Charlie');
+    await registerUser(app, 'Alice');
+    const bob = await registerUser(app, 'Bob'); // auto-paired with Alice
+    const charlie = await registerUser(app, 'Charlie'); // unpaired
 
-    // Pair Alice with Bob
-    await request(app)
-      .post('/api/pair')
-      .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: bob.pair_code });
-
-    // Try to pair Alice with Charlie
+    // Bob is already paired with Alice, try to pair with Charlie
     const res = await request(app)
       .post('/api/pair')
-      .set('Authorization', `Bearer ${alice.access_token}`)
+      .set('Authorization', `Bearer ${bob.access_token}`)
       .send({ partner_pair_code: charlie.pair_code });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Already paired');
@@ -180,13 +259,7 @@ describe('POST /api/action', () => {
   it('should send an action and trigger push', async () => {
     const { app, mockPush } = createTestApp();
     const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
-
-    // Pair them
-    await request(app)
-      .post('/api/pair')
-      .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: bob.pair_code });
+    await registerUser(app, 'Bob'); // auto-paired
 
     const res = await request(app)
       .post('/api/action')
@@ -226,15 +299,8 @@ describe('GET /api/history', () => {
   it('should return action history for both users', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
+    const bob = await registerUser(app, 'Bob'); // auto-paired
 
-    // Pair
-    await request(app)
-      .post('/api/pair')
-      .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: bob.pair_code });
-
-    // Send actions from both sides
     await request(app)
       .post('/api/action')
       .set('Authorization', `Bearer ${alice.access_token}`)
@@ -256,14 +322,8 @@ describe('GET /api/history', () => {
   it('should respect limit parameter', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
+    await registerUser(app, 'Bob'); // auto-paired
 
-    await request(app)
-      .post('/api/pair')
-      .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: bob.pair_code });
-
-    // Send 3 actions
     for (const type of ['miss', 'kiss', 'poop']) {
       await request(app)
         .post('/api/action')
@@ -310,12 +370,7 @@ describe('POST /api/unpair', () => {
   it('should unpair both users and return new pair code', async () => {
     const { app, mockPush } = createTestApp();
     const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
-
-    await request(app)
-      .post('/api/pair')
-      .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: bob.pair_code });
+    await registerUser(app, 'Bob'); // auto-paired
 
     const res = await request(app)
       .post('/api/unpair')
@@ -329,12 +384,12 @@ describe('POST /api/unpair', () => {
     expect(mockPush).toHaveBeenCalledWith('test-device-token', 'unpair', 'Alice');
 
     // Verify Alice is no longer paired
-    const historyRes = await request(app)
+    const actionRes = await request(app)
       .post('/api/action')
       .set('Authorization', `Bearer ${alice.access_token}`)
       .send({ action_type: 'miss' });
-    expect(historyRes.status).toBe(400);
-    expect(historyRes.body.error).toBe('Not paired yet');
+    expect(actionRes.status).toBe(400);
+    expect(actionRes.body.error).toBe('Not paired yet');
   });
 
   it('should return 400 when not paired', async () => {

@@ -1,5 +1,5 @@
 node_modules/
 dist/
-data/app.db
+data/
 certs/*.p8
 .env

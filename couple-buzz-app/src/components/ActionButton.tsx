@@ -75,11 +75,11 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   emoji: {
-    fontSize: 48,
-    marginBottom: 8,
+    fontSize: 36,
+    marginBottom: 6,
   },
   label: {
-    fontSize: 20,
+    fontSize: 14,
     fontWeight: '600',
     color: COLORS.text,
   },

@@ -5,23 +5,22 @@ import {
   StyleSheet,
   Animated as RNAnimated,
   Dimensions,
-  TouchableOpacity,
-  Alert,
+  ScrollView,
 } from 'react-native';
-import { COLORS, ACTIONS } from '../constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { COLORS, ACTION_CATEGORIES } from '../constants';
 import { api } from '../services/api';
 import ActionButton from '../components/ActionButton';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const BUTTON_SIZE = (SCREEN_WIDTH - 80) / 2;
+const BUTTON_SIZE = (SCREEN_WIDTH - 90) / 3;
 
 interface Props {
   partnerName: string;
-  onUnpair: () => void;
-  onLogout: () => void;
 }
 
-export default function HomeScreen({ partnerName, onUnpair, onLogout }: Props) {
+export default function HomeScreen({ partnerName }: Props) {
+  const insets = useSafeAreaInsets();
   const [disabledButtons, setDisabledButtons] = useState<Record<string, boolean>>({});
   const toastOpacity = useRef(new RNAnimated.Value(0)).current;
   const [toastText, setToastText] = useState('');
@@ -39,7 +38,7 @@ export default function HomeScreen({ partnerName, onUnpair, onLogout }: Props) {
     setDisabledButtons((prev) => ({ ...prev, [actionType]: true }));
     setTimeout(() => {
       setDisabledButtons((prev) => ({ ...prev, [actionType]: false }));
-    }, 3000);
+    }, 50);
 
     try {
       await api.sendAction(actionType);
@@ -49,57 +48,31 @@ export default function HomeScreen({ partnerName, onUnpair, onLogout }: Props) {
     }
   }, [partnerName, showToast]);
 
-  const showSettings = useCallback(() => {
-    Alert.alert('设置', '', [
-      {
-        text: '解除配对',
-        style: 'destructive',
-        onPress: () => {
-          Alert.alert('确认解除配对？', '解除后需要重新配对', [
-            { text: '取消', style: 'cancel' },
-            { text: '确认', style: 'destructive', onPress: onUnpair },
-          ]);
-        },
-      },
-      {
-        text: '退出登录',
-        style: 'destructive',
-        onPress: () => {
-          Alert.alert('确认退出？', '退出后需要重新注册', [
-            { text: '取消', style: 'cancel' },
-            { text: '确认退出', style: 'destructive', onPress: onLogout },
-          ]);
-        },
-      },
-      { text: '取消', style: 'cancel' },
-    ]);
-  }, [onUnpair, onLogout]);
-
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.headerContent}>
-          <View style={styles.headerCenter}>
-            <Text style={styles.title}>couple buzz 💕</Text>
-            <Text style={styles.subtitle}>与 {partnerName} 已连接</Text>
-          </View>
-          <TouchableOpacity style={styles.settingsButton} onPress={showSettings}>
-            <Text style={styles.settingsIcon}>⚙️</Text>
-          </TouchableOpacity>
-        </View>
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+        <Text style={styles.title}>香宝聚集地 💕</Text>
+        <Text style={styles.subtitle}>与 {partnerName} 已连接</Text>
       </View>
 
-      <View style={styles.grid}>
-        {ACTIONS.map((action) => (
-          <View key={action.type} style={[styles.buttonWrapper, { width: BUTTON_SIZE }]}>
-            <ActionButton
-              action={action}
-              onPress={handleAction}
-              disabled={!!disabledButtons[action.type]}
-            />
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        {ACTION_CATEGORIES.map((category) => (
+          <View key={category.title}>
+            <Text style={styles.categoryTitle}>{category.title}</Text>
+            <View style={[styles.grid, category.actions.length < 3 && styles.gridCentered]}>
+              {category.actions.map((action) => (
+                <View key={action.type} style={[styles.buttonWrapper, { width: BUTTON_SIZE }]}>
+                  <ActionButton
+                    action={action}
+                    onPress={handleAction}
+                    disabled={!!disabledButtons[action.type]}
+                  />
+                </View>
+              ))}
+            </View>
           </View>
         ))}
-      </View>
+      </ScrollView>
 
       <RNAnimated.View style={[styles.toast, { opacity: toastOpacity }]}>
         <Text style={styles.toastText}>{toastText}</Text>
@@ -114,16 +87,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    paddingTop: 60,
-    paddingBottom: 24,
+    paddingBottom: 8,
     paddingHorizontal: 20,
-  },
-  headerContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerCenter: {
-    flex: 1,
     alignItems: 'center',
   },
   title: {
@@ -136,23 +101,25 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     marginTop: 4,
   },
-  settingsButton: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    padding: 4,
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
   },
-  settingsIcon: {
-    fontSize: 22,
+  categoryTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textLight,
+    marginTop: 16,
+    marginBottom: 10,
+    marginLeft: 4,
   },
   grid: {
-    flex: 1,
     flexDirection: 'row',
     flexWrap: 'wrap',
+    gap: 15,
+  },
+  gridCentered: {
     justifyContent: 'center',
-    alignContent: 'center',
-    gap: 20,
-    paddingHorizontal: 30,
   },
   buttonWrapper: {
     aspectRatio: 1,

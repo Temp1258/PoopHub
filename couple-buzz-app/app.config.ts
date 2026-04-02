@@ -2,7 +2,7 @@ import { ExpoConfig, ConfigContext } from 'expo/config';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: 'Couple Buzz',
+  name: '香宝聚集地',
   slug: 'couple-buzz',
   version: '1.0.0',
   orientation: 'portrait',
