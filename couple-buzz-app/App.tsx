@@ -157,6 +157,9 @@ export default function App() {
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
+          setStreak(status.streak ?? 0);
+          const uid = await storage.getUserId();
+          if (uid) myUserIdRef.current = uid;
           setAppState('ready');
           registerAndUpdateToken();
         }
@@ -196,7 +199,7 @@ export default function App() {
       } catch {}
     };
 
-    const interval = setInterval(poll, 5000);
+    const interval = setInterval(poll, 10000);
     return () => clearInterval(interval);
   }, [appState]);
 
@@ -210,6 +213,9 @@ export default function App() {
   }, []);
 
   const handleRegistered = useCallback(async (result: { partner_name: string | null }) => {
+    const uid = await storage.getUserId();
+    if (uid) myUserIdRef.current = uid;
+
     if (result.partner_name) {
       await storage.setPartnerName(result.partner_name);
       setPartnerName(result.partner_name);

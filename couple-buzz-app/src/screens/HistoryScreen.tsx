@@ -163,7 +163,7 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
             if (latestId > 0) onLatestSeenRef.current?.(latestId);
           }
         } catch {}
-      }, 3000);
+      }, 5000);
       return () => clearInterval(interval);
     }, [loadHistory])
   );
