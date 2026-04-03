@@ -31,6 +31,8 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   work: { title: '💻 工作', body: '{name} 在工作' },
   ping: { title: '🛎️ Ping', body: '{name} 按了一下铃！' },
   unpair: { title: '💔 已解除配对', body: '{name} 解除了配对' },
+  daily_answer: { title: '📝 每日问答', body: '{name} 回答了今天的问题' },
+  daily_both: { title: '📝 每日问答', body: '你们都回答了！快来看看对方的答案' },
 };
 
 let provider: apn.Provider | null = null;

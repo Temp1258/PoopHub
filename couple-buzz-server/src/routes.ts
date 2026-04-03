@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { nanoid } from 'nanoid';
 import { DbOps } from './db';
+import { getTodayQuestion } from './questions';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -123,6 +124,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     if (user.partner_id) {
       const partner = dbOps.getUser(user.partner_id);
+      const streak = dbOps.getStreak(userId, user.partner_id);
       return res.json({
         paired: true,
         partner_name: partner?.name ?? null,
@@ -130,10 +132,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         timezone: user.timezone,
         partner_timezone: user.partner_timezone,
         partner_remark: user.partner_remark,
+        streak,
       });
     }
 
-    res.json({ paired: false, name: user.name, timezone: user.timezone, partner_timezone: user.partner_timezone, partner_remark: user.partner_remark });
+    res.json({ paired: false, name: user.name, timezone: user.timezone, partner_timezone: user.partner_timezone, partner_remark: user.partner_remark, streak: 0 });
   });
 
   // PUT /api/profile — update name and/or timezone
@@ -285,6 +288,179 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     res.json({ success: true, new_pair_code: newPairCode });
+  });
+
+  // GET /api/dates
+  router.get('/dates', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ dates: [], nearest: null });
+
+    const dates = dbOps.getImportantDates(userId, user.partner_id);
+
+    // Compute nearest upcoming date
+    const today = new Date().toISOString().slice(0, 10);
+    let nearest: { title: string; date: string; days_away: number } | null = null;
+
+    for (const d of dates) {
+      let targetDate = d.date;
+      if (d.recurring) {
+        const thisYear = new Date().getFullYear();
+        const mmdd = d.date.slice(5);
+        targetDate = `${thisYear}-${mmdd}`;
+        if (targetDate < today) {
+          targetDate = `${thisYear + 1}-${mmdd}`;
+        }
+      }
+      if (targetDate < today) continue;
+
+      const daysAway = Math.ceil((new Date(targetDate).getTime() - new Date(today).getTime()) / 86400000);
+      if (!nearest || daysAway < nearest.days_away) {
+        nearest = { title: d.title, date: targetDate, days_away: daysAway };
+      }
+    }
+
+    res.json({ dates, nearest });
+  });
+
+  // POST /api/dates
+  router.post('/dates', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { title, date, recurring } = req.body;
+
+    if (!title || typeof title !== 'string' || !date || typeof date !== 'string') {
+      return res.status(400).json({ error: 'title and date are required' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const created = dbOps.createImportantDate(userId, user.partner_id, title.trim(), date, !!recurring);
+    res.json({ date: created });
+  });
+
+  // PUT /api/dates/:id
+  router.put('/dates/:id', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+    const { title, date, recurring } = req.body;
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    if (!title || !date) {
+      return res.status(400).json({ error: 'title and date are required' });
+    }
+
+    const updated = dbOps.updateImportantDate(id, title.trim(), date, !!recurring);
+    if (!updated) return res.status(404).json({ error: 'Date not found' });
+
+    res.json({ success: true });
+  });
+
+  // DELETE /api/dates/:id
+  router.delete('/dates/:id', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const deleted = dbOps.deleteImportantDate(id, userId, user.partner_id);
+    if (!deleted) return res.status(404).json({ error: 'Date not found' });
+
+    res.json({ success: true });
+  });
+
+  // GET /api/daily-question
+  router.get('/daily-question', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const { index, question } = getTodayQuestion();
+    const today = new Date().toISOString().slice(0, 10);
+    const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+    const bothAnswered = !!answers.mine && !!answers.partner;
+
+    res.json({
+      question,
+      question_index: index,
+      date: today,
+      my_answer: answers.mine?.answer ?? null,
+      partner_answer: bothAnswered ? answers.partner!.answer : null,
+      both_answered: bothAnswered,
+    });
+  });
+
+  // POST /api/daily-question/answer
+  router.post('/daily-question/answer', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { answer } = req.body;
+
+    if (!answer || typeof answer !== 'string' || !answer.trim()) {
+      return res.status(400).json({ error: 'answer is required' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const { index } = getTodayQuestion();
+    const today = new Date().toISOString().slice(0, 10);
+
+    dbOps.submitDailyAnswer(userId, today, index, answer.trim());
+
+    const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+    const bothAnswered = !!answers.mine && !!answers.partner;
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      if (bothAnswered) {
+        await pushFn(partner.device_token, 'daily_both', user.name);
+      } else {
+        await pushFn(partner.device_token, 'daily_answer', user.name);
+      }
+    }
+
+    res.json({
+      success: true,
+      both_answered: bothAnswered,
+      partner_answer: bothAnswered ? answers.partner!.answer : null,
+    });
+  });
+
+  // GET /api/stats
+  router.get('/stats', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ total_actions: 0, my_actions: 0, partner_actions: 0, top_actions: [], hourly: [], monthly: [], first_action_date: null });
+
+    const stats = dbOps.getStats(userId, user.partner_id);
+    res.json(stats);
+  });
+
+  // GET /api/calendar?month=2026-04
+  router.get('/calendar', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const month = req.query.month as string;
+
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month parameter required (YYYY-MM)' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ days: [] });
+
+    const days = dbOps.getCalendarData(userId, user.partner_id, month);
+    res.json({ days });
   });
 
   // POST /api/logout

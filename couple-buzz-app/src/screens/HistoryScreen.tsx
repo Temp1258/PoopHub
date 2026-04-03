@@ -90,7 +90,7 @@ function groupByDate(actions: HistoryAction[]): Section[] {
   return Object.entries(groups).map(([title, data]) => ({ title, data }));
 }
 
-export default function HistoryScreen() {
+export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: number) => void }) {
   const [sections, setSections] = useState<Section[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -102,6 +102,9 @@ export default function HistoryScreen() {
   const [editingRemark, setEditingRemark] = useState('');
   const [savingRemark, setSavingRemark] = useState(false);
   const listRef = useRef<SectionList>(null);
+  const onLatestSeenRef = useRef(onLatestSeen);
+  onLatestSeenRef.current = onLatestSeen;
+  const prevLatestIdRef = useRef(0);
 
   // For saving remark we need current profile values
   const [myName, setMyName] = useState('');
@@ -135,6 +138,9 @@ export default function HistoryScreen() {
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       setSections(groupByDate(reversed));
+      const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
+      prevLatestIdRef.current = latestId;
+      if (latestId > 0) onLatestSeenRef.current?.(latestId);
     } catch (error) {
       console.warn('Failed to load history:', error);
     } finally {
@@ -146,6 +152,19 @@ export default function HistoryScreen() {
   useFocusEffect(
     useCallback(() => {
       loadHistory();
+      const interval = setInterval(async () => {
+        try {
+          const result = await api.getHistory(100);
+          const reversed = [...result.actions].reverse();
+          const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
+          if (latestId !== prevLatestIdRef.current) {
+            setSections(groupByDate(reversed));
+            prevLatestIdRef.current = latestId;
+            if (latestId > 0) onLatestSeenRef.current?.(latestId);
+          }
+        } catch {}
+      }, 3000);
+      return () => clearInterval(interval);
     }, [loadHistory])
   );
 

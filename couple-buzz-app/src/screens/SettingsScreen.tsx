@@ -13,7 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
-import { api } from '../services/api';
+import { api, ImportantDate } from '../services/api';
 import { storage } from '../utils/storage';
 
 const TIMEZONES = [
@@ -45,6 +45,18 @@ export default function SettingsScreen() {
   const [originalPartnerTz, setOriginalPartnerTz] = useState('');
   const [saving, setSaving] = useState(false);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
+  const [dates, setDates] = useState<ImportantDate[]>([]);
+  const [newDateTitle, setNewDateTitle] = useState('');
+  const [newDateValue, setNewDateValue] = useState('');
+  const [newDateRecurring, setNewDateRecurring] = useState(false);
+  const [showAddDate, setShowAddDate] = useState(false);
+
+  const loadDates = useCallback(async () => {
+    try {
+      const result = await api.getDates();
+      setDates(result.dates);
+    } catch {}
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -62,7 +74,8 @@ export default function SettingsScreen() {
           if (localName) setName(localName);
         }
       })();
-    }, [])
+      loadDates();
+    }, [loadDates])
   );
 
   const hasChanges = name.trim() !== originalName || timezone !== originalTimezone || partnerTimezone !== originalPartnerTz;
@@ -93,6 +106,34 @@ export default function SettingsScreen() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleAddDate = async () => {
+    const title = newDateTitle.trim();
+    if (!title) { Alert.alert('', '请输入标题'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDateValue)) { Alert.alert('', '日期格式: YYYY-MM-DD'); return; }
+
+    try {
+      await api.createDate(title, newDateValue, newDateRecurring);
+      setNewDateTitle('');
+      setNewDateValue('');
+      setNewDateRecurring(false);
+      setShowAddDate(false);
+      loadDates();
+    } catch (e: any) {
+      Alert.alert('添加失败', e.message);
+    }
+  };
+
+  const handleDeleteDate = (id: number, title: string) => {
+    Alert.alert('删除纪念日', `确定删除"${title}"？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除', style: 'destructive', onPress: async () => {
+          try { await api.deleteDate(id); loadDates(); } catch {}
+        },
+      },
+    ]);
   };
 
   const formatTzDisplay = (tz: string) => {
@@ -140,6 +181,61 @@ export default function SettingsScreen() {
           {saving ? '保存中...' : '保存'}
         </Text>
       </TouchableOpacity>
+
+      <Text style={[styles.sectionTitle, { marginTop: 40 }]}>纪念日管理</Text>
+      {dates.map((d) => (
+        <View key={d.id} style={styles.dateRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.dateTitle}>{d.title}{d.recurring ? ' 🔁' : ''}</Text>
+            <Text style={styles.dateValue}>{d.date}</Text>
+          </View>
+          <TouchableOpacity onPress={() => handleDeleteDate(d.id, d.title)}>
+            <Text style={styles.dateDelete}>删除</Text>
+          </TouchableOpacity>
+        </View>
+      ))}
+
+      {showAddDate ? (
+        <View style={styles.addDateForm}>
+          <TextInput
+            style={styles.input}
+            value={newDateTitle}
+            onChangeText={setNewDateTitle}
+            placeholder="标题（如：纪念日）"
+            placeholderTextColor={COLORS.textLight}
+            maxLength={20}
+          />
+          <TextInput
+            style={[styles.input, { marginTop: 8 }]}
+            value={newDateValue}
+            onChangeText={setNewDateValue}
+            placeholder="日期 YYYY-MM-DD"
+            placeholderTextColor={COLORS.textLight}
+            maxLength={10}
+            keyboardType="numbers-and-punctuation"
+          />
+          <TouchableOpacity
+            style={styles.recurringToggle}
+            onPress={() => setNewDateRecurring(!newDateRecurring)}
+          >
+            <Text style={styles.recurringText}>
+              {newDateRecurring ? '✅ 每年重复' : '⬜ 每年重复'}
+            </Text>
+          </TouchableOpacity>
+          <View style={styles.addDateActions}>
+            <TouchableOpacity style={styles.addDateCancel} onPress={() => setShowAddDate(false)}>
+              <Text style={styles.addDateCancelText}>取消</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.addDateConfirm} onPress={handleAddDate}>
+              <Text style={styles.addDateConfirmText}>添加</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.addDateButton} onPress={() => setShowAddDate(true)}>
+          <Text style={styles.addDateButtonText}>+ 添加纪念日</Text>
+        </TouchableOpacity>
+      )}
 
       <Modal visible={modalTarget !== null} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
@@ -298,6 +394,88 @@ const styles = StyleSheet.create({
   },
   tzOffset: {
     fontSize: 14,
+    color: COLORS.textLight,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 8,
+  },
+  dateTitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: COLORS.text,
+  },
+  dateValue: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  dateDelete: {
+    fontSize: 14,
+    color: '#FF6B6B',
+    fontWeight: '500',
+  },
+  addDateForm: {
+    marginTop: 8,
+  },
+  recurringToggle: {
+    marginTop: 10,
+    paddingVertical: 6,
+  },
+  recurringText: {
+    fontSize: 15,
+    color: COLORS.text,
+  },
+  addDateActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  addDateCancel: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  addDateCancelText: {
+    fontSize: 15,
+    color: COLORS.textLight,
+  },
+  addDateConfirm: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.kiss,
+  },
+  addDateConfirmText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.white,
+  },
+  addDateButton: {
+    height: 44,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderStyle: 'dashed',
+    marginTop: 4,
+  },
+  addDateButtonText: {
+    fontSize: 15,
     color: COLORS.textLight,
   },
 });

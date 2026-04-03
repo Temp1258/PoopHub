@@ -8,8 +8,9 @@ import {
   ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, ACTION_CATEGORIES } from '../constants';
-import { api } from '../services/api';
+import { api, DatesResponse } from '../services/api';
 import ActionButton from '../components/ActionButton';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -17,13 +18,26 @@ const BUTTON_SIZE = (SCREEN_WIDTH - 90) / 3;
 
 interface Props {
   partnerName: string;
+  streak: number;
 }
 
-export default function HomeScreen({ partnerName }: Props) {
+export default function HomeScreen({ partnerName, streak }: Props) {
   const insets = useSafeAreaInsets();
   const [disabledButtons, setDisabledButtons] = useState<Record<string, boolean>>({});
   const toastOpacity = useRef(new RNAnimated.Value(0)).current;
   const [toastText, setToastText] = useState('');
+  const [nearestDate, setNearestDate] = useState<DatesResponse['nearest']>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        try {
+          const result = await api.getDates();
+          setNearestDate(result.nearest);
+        } catch {}
+      })();
+    }, [])
+  );
 
   const showToast = useCallback((text: string) => {
     setToastText(text);
@@ -52,6 +66,24 @@ export default function HomeScreen({ partnerName }: Props) {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.title}>香宝聚集地 💕</Text>
+        {(streak > 0 || nearestDate) && (
+          <View style={styles.badgeRow}>
+            {streak > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>🔥 {streak}天</Text>
+              </View>
+            )}
+            {nearestDate && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>
+                  {nearestDate.days_away === 0
+                    ? `🎉 今天是${nearestDate.title}！`
+                    : `📅 ${nearestDate.title} 还有${nearestDate.days_away}天`}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
         <Text style={styles.subtitle}>与 {partnerName} 已连接</Text>
       </View>
 
@@ -96,10 +128,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
   },
+  badgeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  badge: {
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  badgeText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: COLORS.text,
+  },
   subtitle: {
     fontSize: 14,
     color: COLORS.textLight,
-    marginTop: 4,
+    marginTop: 6,
   },
   scrollContent: {
     paddingHorizontal: 20,

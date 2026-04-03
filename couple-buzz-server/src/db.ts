@@ -26,6 +26,43 @@ export interface Action {
   created_at: string;
 }
 
+export interface ImportantDate {
+  id: number;
+  user_id: string;
+  partner_id: string;
+  title: string;
+  date: string;
+  recurring: number;
+  created_at: string;
+}
+
+export interface DailyAnswer {
+  id: number;
+  user_id: string;
+  question_date: string;
+  question_index: number;
+  answer: string;
+  created_at: string;
+}
+
+export interface StatsData {
+  total_actions: number;
+  my_actions: number;
+  partner_actions: number;
+  top_actions: { action_type: string; count: number }[];
+  hourly: { hour: number; count: number }[];
+  monthly: { month: string; count: number }[];
+  first_action_date: string | null;
+}
+
+export interface CalendarDay {
+  date: string;
+  count: number;
+  my_count: number;
+  partner_count: number;
+  top_action: string | null;
+}
+
 export interface RefreshToken {
   id: number;
   user_id: string;
@@ -52,6 +89,15 @@ export interface DbOps {
   deleteAllRefreshTokens(userId: string): void;
   incrementTokenVersion(userId: string): void;
   getUnpairedUser(excludeId: string): User | undefined;
+  getStreak(userId: string, partnerId: string): number;
+  createImportantDate(userId: string, partnerId: string, title: string, date: string, recurring: boolean): ImportantDate;
+  getImportantDates(userId: string, partnerId: string): ImportantDate[];
+  updateImportantDate(id: number, title: string, date: string, recurring: boolean): boolean;
+  deleteImportantDate(id: number, userId: string, partnerId: string): boolean;
+  submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void;
+  getDailyAnswers(questionDate: string, userId: string, partnerId: string): { mine?: DailyAnswer; partner?: DailyAnswer };
+  getStats(userId: string, partnerId: string): StatsData;
+  getCalendarData(userId: string, partnerId: string, yearMonth: string): CalendarDay[];
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -101,6 +147,28 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       expires_at DATETIME NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS important_dates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      date TEXT NOT NULL,
+      recurring INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_answers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      question_date TEXT NOT NULL,
+      question_index INTEGER NOT NULL,
+      answer TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      UNIQUE(user_id, question_date)
     );
 
     CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
@@ -187,6 +255,74 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'SELECT * FROM users WHERE partner_id IS NULL AND id != ? LIMIT 1'
   );
 
+  const stmtGetStreak = db.prepare(`
+    WITH daily_activity AS (
+      SELECT DATE(created_at) AS day, user_id
+      FROM actions
+      WHERE user_id IN (?, ?)
+      GROUP BY DATE(created_at), user_id
+    ),
+    both_active AS (
+      SELECT day FROM daily_activity
+      GROUP BY day HAVING COUNT(DISTINCT user_id) = 2
+    ),
+    numbered AS (
+      SELECT day,
+        JULIANDAY(day) - ROW_NUMBER() OVER (ORDER BY day) AS grp
+      FROM both_active
+    ),
+    streaks AS (
+      SELECT grp, MAX(day) AS end_day, COUNT(*) AS length
+      FROM numbered GROUP BY grp
+    )
+    SELECT length FROM streaks
+    WHERE end_day >= DATE('now', '-1 day')
+    ORDER BY end_day DESC LIMIT 1
+  `);
+
+  const stmtInsertDate = db.prepare(
+    'INSERT INTO important_dates (user_id, partner_id, title, date, recurring) VALUES (?, ?, ?, ?, ?)'
+  );
+  const stmtGetDateById = db.prepare('SELECT * FROM important_dates WHERE id = ?');
+  const stmtGetDates = db.prepare(
+    'SELECT * FROM important_dates WHERE user_id IN (?, ?) ORDER BY date ASC'
+  );
+  const stmtUpdateDate = db.prepare(
+    'UPDATE important_dates SET title = ?, date = ?, recurring = ? WHERE id = ?'
+  );
+  const stmtDeleteDate = db.prepare(
+    'DELETE FROM important_dates WHERE id = ? AND user_id IN (?, ?)'
+  );
+
+  const stmtSubmitAnswer = db.prepare(
+    'INSERT OR REPLACE INTO daily_answers (user_id, question_date, question_index, answer) VALUES (?, ?, ?, ?)'
+  );
+  const stmtGetDailyAnswers = db.prepare(
+    'SELECT * FROM daily_answers WHERE question_date = ? AND user_id IN (?, ?)'
+  );
+
+  const stmtStatsTotalByUser = db.prepare(
+    'SELECT user_id, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY user_id'
+  );
+  const stmtStatsTopActions = db.prepare(
+    'SELECT action_type, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY action_type ORDER BY count DESC LIMIT 10'
+  );
+  const stmtStatsHourly = db.prepare(
+    "SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY hour ORDER BY hour"
+  );
+  const stmtStatsMonthly = db.prepare(
+    "SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY month ORDER BY month DESC LIMIT 12"
+  );
+  const stmtStatsFirstDate = db.prepare(
+    'SELECT MIN(created_at) as first_date FROM actions WHERE user_id IN (?, ?)'
+  );
+  const stmtCalendarDays = db.prepare(
+    "SELECT DATE(created_at) as date, COUNT(*) as count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as my_count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as partner_count FROM actions WHERE user_id IN (?, ?) AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at)"
+  );
+  const stmtCalendarTopAction = db.prepare(
+    "SELECT date, action_type FROM (SELECT DATE(created_at) as date, action_type, COUNT(*) as cnt, ROW_NUMBER() OVER (PARTITION BY DATE(created_at) ORDER BY COUNT(*) DESC) as rn FROM actions WHERE user_id IN (?, ?) AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at), action_type) WHERE rn = 1"
+  );
+
   const dbOps: DbOps = {
     createUser(id: string, name: string, pairCode: string, timezone: string): void {
       insertUser.run(id, name, pairCode, timezone);
@@ -260,6 +396,83 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     getUnpairedUser(excludeId: string): User | undefined {
       return stmtGetUnpairedUser.get(excludeId) as User | undefined;
+    },
+
+    getStreak(userId: string, partnerId: string): number {
+      const row = stmtGetStreak.get(userId, partnerId) as { length: number } | undefined;
+      return row?.length ?? 0;
+    },
+
+    createImportantDate(userId: string, partnerId: string, title: string, date: string, recurring: boolean): ImportantDate {
+      const result = stmtInsertDate.run(userId, partnerId, title, date, recurring ? 1 : 0);
+      return stmtGetDateById.get(result.lastInsertRowid) as ImportantDate;
+    },
+
+    getImportantDates(userId: string, partnerId: string): ImportantDate[] {
+      return stmtGetDates.all(userId, partnerId) as ImportantDate[];
+    },
+
+    updateImportantDate(id: number, title: string, date: string, recurring: boolean): boolean {
+      const result = stmtUpdateDate.run(title, date, recurring ? 1 : 0, id);
+      return result.changes > 0;
+    },
+
+    deleteImportantDate(id: number, userId: string, partnerId: string): boolean {
+      const result = stmtDeleteDate.run(id, userId, partnerId);
+      return result.changes > 0;
+    },
+
+    submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void {
+      stmtSubmitAnswer.run(userId, questionDate, questionIndex, answer);
+    },
+
+    getDailyAnswers(questionDate: string, userId: string, partnerId: string): { mine?: DailyAnswer; partner?: DailyAnswer } {
+      const rows = stmtGetDailyAnswers.all(questionDate, userId, partnerId) as DailyAnswer[];
+      let mine: DailyAnswer | undefined;
+      let partner: DailyAnswer | undefined;
+      for (const row of rows) {
+        if (row.user_id === userId) mine = row;
+        else partner = row;
+      }
+      return { mine, partner };
+    },
+
+    getStats(userId: string, partnerId: string): StatsData {
+      const byUser = stmtStatsTotalByUser.all(userId, partnerId) as { user_id: string; count: number }[];
+      let myActions = 0, partnerActions = 0;
+      for (const row of byUser) {
+        if (row.user_id === userId) myActions = row.count;
+        else partnerActions = row.count;
+      }
+      const topActions = stmtStatsTopActions.all(userId, partnerId) as { action_type: string; count: number }[];
+      const hourly = stmtStatsHourly.all(userId, partnerId) as { hour: number; count: number }[];
+      const monthly = stmtStatsMonthly.all(userId, partnerId) as { month: string; count: number }[];
+      const firstRow = stmtStatsFirstDate.get(userId, partnerId) as { first_date: string | null } | undefined;
+
+      return {
+        total_actions: myActions + partnerActions,
+        my_actions: myActions,
+        partner_actions: partnerActions,
+        top_actions: topActions,
+        hourly,
+        monthly,
+        first_action_date: firstRow?.first_date?.slice(0, 10) ?? null,
+      };
+    },
+
+    getCalendarData(userId: string, partnerId: string, yearMonth: string): CalendarDay[] {
+      const startDate = `${yearMonth}-01`;
+      const [y, m] = yearMonth.split('-').map(Number);
+      const nextMonth = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
+
+      const days = stmtCalendarDays.all(userId, partnerId, userId, partnerId, startDate, nextMonth) as { date: string; count: number; my_count: number; partner_count: number }[];
+      const topActions = stmtCalendarTopAction.all(userId, partnerId, startDate, nextMonth) as { date: string; action_type: string }[];
+      const topMap = new Map(topActions.map(r => [r.date, r.action_type]));
+
+      return days.map(d => ({
+        ...d,
+        top_action: topMap.get(d.date) ?? null,
+      }));
     },
   };
 

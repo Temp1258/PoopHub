@@ -84,6 +84,7 @@ export interface StatusResponse {
   timezone: string;
   partner_timezone: string;
   partner_remark: string;
+  streak: number;
 }
 
 export interface ActionResponse {
@@ -111,6 +112,58 @@ export interface HistoryResponse {
   actions: HistoryAction[];
 }
 
+export interface ImportantDate {
+  id: number;
+  user_id: string;
+  partner_id: string;
+  title: string;
+  date: string;
+  recurring: number;
+  created_at: string;
+}
+
+export interface DatesResponse {
+  dates: ImportantDate[];
+  nearest: { title: string; date: string; days_away: number } | null;
+}
+
+export interface DailyQuestionResponse {
+  question: string;
+  question_index: number;
+  date: string;
+  my_answer: string | null;
+  partner_answer: string | null;
+  both_answered: boolean;
+}
+
+export interface StatsResponse {
+  total_actions: number;
+  my_actions: number;
+  partner_actions: number;
+  top_actions: { action_type: string; count: number }[];
+  hourly: { hour: number; count: number }[];
+  monthly: { month: string; count: number }[];
+  first_action_date: string | null;
+}
+
+export interface CalendarDay {
+  date: string;
+  count: number;
+  my_count: number;
+  partner_count: number;
+  top_action: string | null;
+}
+
+export interface CalendarResponse {
+  days: CalendarDay[];
+}
+
+export interface DailyAnswerResponse {
+  success: boolean;
+  both_answered: boolean;
+  partner_answer: string | null;
+}
+
 function getDeviceTimezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -134,7 +187,7 @@ const demoApi = {
 
   async getStatus(): Promise<StatusResponse> {
     await new Promise(r => setTimeout(r, 300));
-    return { paired: true, partner_name: '宝贝', name: '我', timezone: 'Asia/Shanghai', partner_timezone: 'America/New_York', partner_remark: '' };
+    return { paired: true, partner_name: '宝贝', name: '我', timezone: 'Asia/Shanghai', partner_timezone: 'America/New_York', partner_remark: '', streak: 7 };
   },
 
   async sendAction(_actionType: string): Promise<ActionResponse> {
@@ -154,6 +207,34 @@ const demoApi = {
   async updateProfile(_name: string, _timezone: string, _partnerTimezone: string, _partnerRemark: string): Promise<ProfileResponse> {
     await new Promise(r => setTimeout(r, 300));
     return { success: true, name: _name, timezone: _timezone, partner_timezone: _partnerTimezone, partner_remark: _partnerRemark };
+  },
+
+  async getDates(): Promise<DatesResponse> {
+    return { dates: [], nearest: { title: '见面', date: '2026-04-15', days_away: 12 } };
+  },
+
+  async createDate(_title: string, _date: string, _recurring: boolean): Promise<{ date: ImportantDate }> {
+    return { date: { id: 1, user_id: '', partner_id: '', title: _title, date: _date, recurring: _recurring ? 1 : 0, created_at: '' } };
+  },
+
+  async deleteDate(_id: number): Promise<{ success: boolean }> {
+    return { success: true };
+  },
+
+  async getDailyQuestion(): Promise<DailyQuestionResponse> {
+    return { question: '你最喜欢对方的哪个特点？', question_index: 0, date: new Date().toISOString().slice(0, 10), my_answer: null, partner_answer: null, both_answered: false };
+  },
+
+  async submitDailyAnswer(_answer: string): Promise<DailyAnswerResponse> {
+    return { success: true, both_answered: false, partner_answer: null };
+  },
+
+  async getStats(): Promise<StatsResponse> {
+    return { total_actions: 0, my_actions: 0, partner_actions: 0, top_actions: [], hourly: [], monthly: [], first_action_date: null };
+  },
+
+  async getCalendar(_month: string): Promise<CalendarResponse> {
+    return { days: [] };
   },
 };
 
@@ -192,6 +273,40 @@ const realApi = {
       method: 'PUT',
       body: JSON.stringify({ name, timezone, partner_timezone: partnerTimezone, partner_remark: partnerRemark }),
     });
+  },
+
+  getDates(): Promise<DatesResponse> {
+    return request('/api/dates');
+  },
+
+  createDate(title: string, date: string, recurring: boolean): Promise<{ date: ImportantDate }> {
+    return request('/api/dates', {
+      method: 'POST',
+      body: JSON.stringify({ title, date, recurring }),
+    });
+  },
+
+  deleteDate(id: number): Promise<{ success: boolean }> {
+    return request(`/api/dates/${id}`, { method: 'DELETE' });
+  },
+
+  getDailyQuestion(): Promise<DailyQuestionResponse> {
+    return request('/api/daily-question');
+  },
+
+  submitDailyAnswer(answer: string): Promise<DailyAnswerResponse> {
+    return request('/api/daily-question/answer', {
+      method: 'POST',
+      body: JSON.stringify({ answer }),
+    });
+  },
+
+  getStats(): Promise<StatsResponse> {
+    return request('/api/stats');
+  },
+
+  getCalendar(month: string): Promise<CalendarResponse> {
+    return request(`/api/calendar?month=${month}`);
   },
 };
 

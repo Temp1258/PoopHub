@@ -403,6 +403,256 @@ describe('POST /api/unpair', () => {
   });
 });
 
+describe('GET /api/status — streak', () => {
+  it('should return streak 0 when no actions', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    const res = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.body.streak).toBe(0);
+  });
+
+  it('should return streak 1 when both users acted today', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const bob = await registerUser(app, 'Bob');
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'kiss' });
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ action_type: 'miss' });
+
+    const res = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.body.streak).toBe(1);
+  });
+
+  it('should return streak 0 when only one user acted', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'kiss' });
+
+    const res = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.body.streak).toBe(0);
+  });
+});
+
+describe('Important Dates CRUD', () => {
+  it('should create and list dates', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    const createRes = await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '纪念日', date: '2026-05-01', recurring: true });
+
+    expect(createRes.status).toBe(200);
+    expect(createRes.body.date.title).toBe('纪念日');
+    expect(createRes.body.date.recurring).toBe(1);
+
+    const listRes = await request(app)
+      .get('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(listRes.body.dates).toHaveLength(1);
+    expect(listRes.body.nearest).toBeDefined();
+    expect(listRes.body.nearest.title).toBe('纪念日');
+  });
+
+  it('should allow partner to see dates created by the other', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const bob = await registerUser(app, 'Bob');
+
+    await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '生日', date: '2026-12-25' });
+
+    const res = await request(app)
+      .get('/api/dates')
+      .set('Authorization', `Bearer ${bob.access_token}`);
+
+    expect(res.body.dates).toHaveLength(1);
+    expect(res.body.dates[0].title).toBe('生日');
+  });
+
+  it('should update a date', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    const createRes = await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '旧标题', date: '2026-06-01' });
+
+    const id = createRes.body.date.id;
+
+    const updateRes = await request(app)
+      .put(`/api/dates/${id}`)
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '新标题', date: '2026-07-01', recurring: true });
+
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.success).toBe(true);
+  });
+
+  it('should delete a date', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    const createRes = await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '删除测试', date: '2026-08-01' });
+
+    const id = createRes.body.date.id;
+
+    const deleteRes = await request(app)
+      .delete(`/api/dates/${id}`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(deleteRes.status).toBe(200);
+
+    const listRes = await request(app)
+      .get('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(listRes.body.dates).toHaveLength(0);
+  });
+
+  it('should return 400 when not paired', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const res = await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: 'test', date: '2026-01-01' });
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('Daily Question', () => {
+  it('should return question with no answers initially', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    const res = await request(app)
+      .get('/api/daily-question')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.question).toBeDefined();
+    expect(res.body.date).toBeDefined();
+    expect(res.body.my_answer).toBeNull();
+    expect(res.body.partner_answer).toBeNull();
+    expect(res.body.both_answered).toBe(false);
+  });
+
+  it('should save answer and not reveal partner answer until both answered', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const bob = await registerUser(app, 'Bob');
+
+    // Alice answers
+    const answerRes = await request(app)
+      .post('/api/daily-question/answer')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ answer: 'Alice的回答' });
+
+    expect(answerRes.status).toBe(200);
+    expect(answerRes.body.both_answered).toBe(false);
+    expect(answerRes.body.partner_answer).toBeNull();
+
+    // Alice checks — should see her answer but not Bob's
+    const checkRes = await request(app)
+      .get('/api/daily-question')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(checkRes.body.my_answer).toBe('Alice的回答');
+    expect(checkRes.body.partner_answer).toBeNull();
+    expect(checkRes.body.both_answered).toBe(false);
+
+    // Bob answers
+    const bobRes = await request(app)
+      .post('/api/daily-question/answer')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ answer: 'Bob的回答' });
+
+    expect(bobRes.body.both_answered).toBe(true);
+    expect(bobRes.body.partner_answer).toBe('Alice的回答');
+
+    // Now Alice should see both
+    const revealRes = await request(app)
+      .get('/api/daily-question')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(revealRes.body.both_answered).toBe(true);
+    expect(revealRes.body.my_answer).toBe('Alice的回答');
+    expect(revealRes.body.partner_answer).toBe('Bob的回答');
+  });
+
+  it('should allow updating answer', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    await request(app)
+      .post('/api/daily-question/answer')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ answer: '第一次' });
+
+    await request(app)
+      .post('/api/daily-question/answer')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ answer: '修改后' });
+
+    const res = await request(app)
+      .get('/api/daily-question')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.body.my_answer).toBe('修改后');
+  });
+
+  it('should send push notification on answer', async () => {
+    const { app, mockPush } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await registerUser(app, 'Bob');
+
+    await request(app)
+      .post('/api/daily-question/answer')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ answer: '测试' });
+
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'daily_answer', 'Alice');
+  });
+});
+
 describe('POST /api/logout', () => {
   it('should clear device token and revoke tokens', async () => {
     const { app } = createTestApp();

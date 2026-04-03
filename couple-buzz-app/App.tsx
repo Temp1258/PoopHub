@@ -6,6 +6,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 
 import { COLORS } from './src/constants';
 import { storage } from './src/utils/storage';
@@ -15,12 +16,13 @@ import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import UsScreen from './src/screens/UsScreen';
 
 const Tab = createMaterialTopTabNavigator();
 
 type AppState = 'loading' | 'setup' | 'waiting' | 'ready';
 
-function MainTabs({ partnerName }: { partnerName: string }) {
+function MainTabs({ partnerName, streak, hasUnread, onLatestSeen }: { partnerName: string; streak: number; hasUnread: boolean; onLatestSeen: (id: number) => void }) {
   const insets = useSafeAreaInsets();
 
   return (
@@ -57,14 +59,38 @@ function MainTabs({ partnerName }: { partnerName: string }) {
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🏠</Text>,
         }}
       >
-        {() => <HomeScreen partnerName={partnerName} />}
+        {() => <HomeScreen partnerName={partnerName} streak={streak} />}
       </Tab.Screen>
       <Tab.Screen
         name="History"
-        component={HistoryScreen}
         options={{
           tabBarLabel: '废话区',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>💬</Text>,
+          tabBarIcon: ({ color }) => (
+            <View>
+              <Text style={{ fontSize: 20, color }}>💬</Text>
+              {hasUnread && (
+                <View style={{
+                  position: 'absolute',
+                  top: -2,
+                  right: -6,
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: COLORS.kiss,
+                }} />
+              )}
+            </View>
+          ),
+        }}
+      >
+        {() => <HistoryScreen onLatestSeen={onLatestSeen} />}
+      </Tab.Screen>
+      <Tab.Screen
+        name="Us"
+        component={UsScreen}
+        options={{
+          tabBarLabel: '我们',
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>💑</Text>,
         }}
       />
       <Tab.Screen
@@ -82,7 +108,12 @@ function MainTabs({ partnerName }: { partnerName: string }) {
 export default function App() {
   const [appState, setAppState] = useState<AppState>('loading');
   const [partnerName, setPartnerName] = useState('');
+  const [streak, setStreak] = useState(0);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const lastSeenIdRef = useRef(0);
+  const [hasUnread, setHasUnread] = useState(false);
+  const activeTabRef = useRef('Home');
+  const initializedRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -97,6 +128,7 @@ export default function App() {
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
+          setStreak(status.streak ?? 0);
           setAppState('ready');
           registerAndUpdateToken();
         } else {
@@ -128,6 +160,47 @@ export default function App() {
     pollRef.current = setInterval(check, 3000);
     return () => clearInterval(pollRef.current);
   }, [appState]);
+
+  useEffect(() => {
+    if (appState !== 'ready') return;
+
+    const init = async () => {
+      try {
+        const result = await api.getHistory(1);
+        if (result.actions.length > 0) {
+          lastSeenIdRef.current = result.actions[0].id;
+        }
+        initializedRef.current = true;
+      } catch {}
+    };
+    init();
+
+    const poll = async () => {
+      if (!initializedRef.current) return;
+      try {
+        const result = await api.getHistory(1);
+        if (result.actions.length > 0 && result.actions[0].id > lastSeenIdRef.current) {
+          if (activeTabRef.current === 'History') {
+            lastSeenIdRef.current = result.actions[0].id;
+          } else {
+            setHasUnread(true);
+          }
+        }
+      } catch {}
+    };
+
+    const interval = setInterval(poll, 5000);
+    return () => clearInterval(interval);
+  }, [appState]);
+
+  useEffect(() => {
+    Notifications.setBadgeCountAsync(hasUnread ? 1 : 0);
+  }, [hasUnread]);
+
+  const handleLatestSeen = useCallback((id: number) => {
+    lastSeenIdRef.current = id;
+    setHasUnread(false);
+  }, []);
 
   const handleRegistered = useCallback(async (result: { partner_name: string | null }) => {
     if (result.partner_name) {
@@ -174,8 +247,17 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      <NavigationContainer>
-        <MainTabs partnerName={partnerName} />
+      <NavigationContainer
+        onStateChange={(state) => {
+          if (!state) return;
+          const route = state.routes[state.index];
+          activeTabRef.current = route.name;
+          if (route.name === 'History') {
+            setHasUnread(false);
+          }
+        }}
+      >
+        <MainTabs partnerName={partnerName} streak={streak} hasUnread={hasUnread} onLatestSeen={handleLatestSeen} />
       </NavigationContainer>
     </SafeAreaProvider>
   );
