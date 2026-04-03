@@ -45,6 +45,7 @@ export default function SettingsScreen() {
   const [originalPartnerTz, setOriginalPartnerTz] = useState('');
   const [saving, setSaving] = useState(false);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
+  const [userId, setUserId] = useState('');
   const [dates, setDates] = useState<ImportantDate[]>([]);
   const [newDateTitle, setNewDateTitle] = useState('');
   const [newDateValue, setNewDateValue] = useState('');
@@ -73,6 +74,8 @@ export default function SettingsScreen() {
           const localName = await storage.getUserName();
           if (localName) setName(localName);
         }
+        const id = await storage.getUserId();
+        if (id) setUserId(id);
       })();
       loadDates();
     }, [loadDates])
@@ -159,6 +162,13 @@ export default function SettingsScreen() {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
     >
       <Text style={styles.screenTitle}>设置</Text>
+
+      {userId ? (
+        <View style={styles.idRow}>
+          <Text style={styles.idLabel}>我的 ID</Text>
+          <Text style={styles.idValue}>{userId}</Text>
+        </View>
+      ) : null}
 
       <Text style={styles.sectionTitle}>昵称</Text>
       <TextInput
@@ -322,6 +332,21 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     marginBottom: 32,
     textAlign: 'center',
+  },
+  idRow: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  idLabel: {
+    fontSize: 13,
+    color: COLORS.textLight,
+  },
+  idValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.kiss,
+    letterSpacing: 3,
+    marginTop: 2,
   },
   sectionTitle: {
     fontSize: 14,

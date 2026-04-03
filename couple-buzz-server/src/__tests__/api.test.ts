@@ -25,56 +25,83 @@ function createTestApp() {
 }
 
 // Helper: register a user and return tokens + user data
-async function registerUser(app: express.Express, name: string) {
+async function registerUser(app: express.Express, name: string, password = 'test1234') {
   const res = await request(app)
     .post('/api/register')
-    .send({ name, device_token: 'test-device-token' });
+    .send({ name, password, device_token: 'test-device-token' });
   return res.body as {
     user_id: string;
-    pair_code: string;
-    partner_name: string | null;
     access_token: string;
     refresh_token: string;
   };
 }
 
+// Helper: register two users and pair them
+async function registerPairedUsers(app: express.Express) {
+  const alice = await registerUser(app, 'Alice');
+  const bob = await registerUser(app, 'Bob');
+  await request(app)
+    .post('/api/pair')
+    .set('Authorization', `Bearer ${alice.access_token}`)
+    .send({ partner_id: bob.user_id });
+  return { alice, bob };
+}
+
 describe('POST /api/register', () => {
-  it('should register a user and return tokens', async () => {
+  it('should register a user with 6-char ID and return tokens', async () => {
     const { app } = createTestApp();
     const res = await request(app)
       .post('/api/register')
-      .send({ name: 'Alice', device_token: 'token123' });
+      .send({ name: 'Alice', password: 'test1234', device_token: 'token123' });
 
     expect(res.status).toBe(200);
-    expect(res.body.user_id).toBeDefined();
-    expect(res.body.pair_code).toHaveLength(4);
-    expect(res.body.partner_name).toBeNull();
+    expect(res.body.user_id).toHaveLength(6);
     expect(res.body.access_token).toBeDefined();
     expect(res.body.refresh_token).toBeDefined();
   });
 
-  it('should return 400 when name is missing', async () => {
+  it('should return 400 when name or password is missing', async () => {
     const { app } = createTestApp();
-    const res = await request(app).post('/api/register').send({});
-    expect(res.status).toBe(400);
+    expect((await request(app).post('/api/register').send({})).status).toBe(400);
+    expect((await request(app).post('/api/register').send({ name: 'A' })).status).toBe(400);
+    expect((await request(app).post('/api/register').send({ name: 'A', password: '12' })).status).toBe(400);
   });
+});
 
-  it('should work without device_token', async () => {
+describe('POST /api/login', () => {
+  it('should login with correct ID and password', async () => {
     const { app } = createTestApp();
+    const user = await registerUser(app, 'Alice', 'mypass123');
+
     const res = await request(app)
-      .post('/api/register')
-      .send({ name: 'Bob' });
+      .post('/api/login')
+      .send({ user_id: user.user_id, password: 'mypass123' });
+
     expect(res.status).toBe(200);
-    expect(res.body.user_id).toBeDefined();
+    expect(res.body.user_id).toBe(user.user_id);
+    expect(res.body.access_token).toBeDefined();
   });
 
-  it('should auto-pair with existing unpaired user', async () => {
+  it('should reject wrong password', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    expect(alice.partner_name).toBeNull();
+    const user = await registerUser(app, 'Alice', 'mypass123');
 
-    const bob = await registerUser(app, 'Bob');
-    expect(bob.partner_name).toBe('Alice');
+    const res = await request(app)
+      .post('/api/login')
+      .send({ user_id: user.user_id, password: 'wrong' });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('should return partner_name if paired', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .post('/api/login')
+      .send({ user_id: alice.user_id, password: 'test1234' });
+
+    expect(res.body.partner_name).toBe('Bob');
   });
 });
 
@@ -134,8 +161,7 @@ describe('GET /api/status', () => {
 
   it('should return paired with partner name', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob'); // auto-pairs with Alice
+    const { alice } = await registerPairedUsers(app);
 
     const res = await request(app)
       .get('/api/status')
@@ -187,44 +213,37 @@ describe('PUT /api/profile', () => {
 });
 
 describe('POST /api/pair', () => {
-  it('should pair two unpaired users manually', async () => {
+  it('should pair two users by partner ID', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob'); // auto-pairs with Alice
-    const charlie = await registerUser(app, 'Charlie'); // unpaired
+    const bob = await registerUser(app, 'Bob');
 
-    // Unpair Alice and Bob first
-    await request(app)
-      .post('/api/unpair')
-      .set('Authorization', `Bearer ${alice.access_token}`);
-
-    // Now manually pair Alice with Charlie
     const res = await request(app)
       .post('/api/pair')
       .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: charlie.pair_code });
+      .send({ partner_id: bob.user_id });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.partner_name).toBe('Charlie');
+    expect(res.body.partner_name).toBe('Bob');
   });
 
   it('should return 401 without auth', async () => {
     const { app } = createTestApp();
     const res = await request(app)
       .post('/api/pair')
-      .send({ partner_pair_code: 'ABCD' });
+      .send({ partner_id: 'ABCDEF' });
     expect(res.status).toBe(401);
   });
 
-  it('should return 404 for invalid pair code', async () => {
+  it('should return 404 for invalid partner ID', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');
 
     const res = await request(app)
       .post('/api/pair')
       .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: 'ZZZZ' });
+      .send({ partner_id: 'ZZZZZZ' });
     expect(res.status).toBe(404);
   });
 
@@ -235,21 +254,19 @@ describe('POST /api/pair', () => {
     const res = await request(app)
       .post('/api/pair')
       .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ partner_pair_code: alice.pair_code });
+      .send({ partner_id: alice.user_id });
     expect(res.status).toBe(400);
   });
 
   it('should return 400 when already paired', async () => {
     const { app } = createTestApp();
-    await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob'); // auto-paired with Alice
-    const charlie = await registerUser(app, 'Charlie'); // unpaired
+    const { bob } = await registerPairedUsers(app);
+    const charlie = await registerUser(app, 'Charlie');
 
-    // Bob is already paired with Alice, try to pair with Charlie
     const res = await request(app)
       .post('/api/pair')
       .set('Authorization', `Bearer ${bob.access_token}`)
-      .send({ partner_pair_code: charlie.pair_code });
+      .send({ partner_id: charlie.user_id });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Already paired');
   });
@@ -258,8 +275,7 @@ describe('POST /api/pair', () => {
 describe('POST /api/action', () => {
   it('should send an action and trigger push', async () => {
     const { app, mockPush } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob'); // auto-paired
+    const { alice, bob } = await registerPairedUsers(app);
 
     const res = await request(app)
       .post('/api/action')
@@ -298,8 +314,7 @@ describe('POST /api/action', () => {
 describe('GET /api/history', () => {
   it('should return action history for both users', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob'); // auto-paired
+    const { alice, bob } = await registerPairedUsers(app);
 
     await request(app)
       .post('/api/action')
@@ -321,8 +336,7 @@ describe('GET /api/history', () => {
 
   it('should respect limit parameter', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob'); // auto-paired
+    const { alice, bob } = await registerPairedUsers(app);
 
     for (const type of ['miss', 'kiss', 'poop']) {
       await request(app)
@@ -369,8 +383,7 @@ describe('PUT /api/device-token', () => {
 describe('POST /api/unpair', () => {
   it('should unpair both users and return new pair code', async () => {
     const { app, mockPush } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob'); // auto-paired
+    const { alice, bob } = await registerPairedUsers(app);
 
     const res = await request(app)
       .post('/api/unpair')
@@ -406,8 +419,7 @@ describe('POST /api/unpair', () => {
 describe('GET /api/status — streak', () => {
   it('should return streak 0 when no actions', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     const res = await request(app)
       .get('/api/status')
@@ -418,8 +430,7 @@ describe('GET /api/status — streak', () => {
 
   it('should return streak 1 when both users acted today', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
+    const { alice, bob } = await registerPairedUsers(app);
 
     await request(app)
       .post('/api/action')
@@ -439,8 +450,7 @@ describe('GET /api/status — streak', () => {
 
   it('should return streak 0 when only one user acted', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     await request(app)
       .post('/api/action')
@@ -458,8 +468,7 @@ describe('GET /api/status — streak', () => {
 describe('Important Dates CRUD', () => {
   it('should create and list dates', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     const createRes = await request(app)
       .post('/api/dates')
@@ -487,8 +496,7 @@ describe('Important Dates CRUD', () => {
 
   it('should allow partner to see dates created by the other', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
+    const { alice, bob } = await registerPairedUsers(app);
 
     await request(app)
       .post('/api/dates')
@@ -505,8 +513,7 @@ describe('Important Dates CRUD', () => {
 
   it('should update a date', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     const createRes = await request(app)
       .post('/api/dates')
@@ -526,8 +533,7 @@ describe('Important Dates CRUD', () => {
 
   it('should delete a date', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     const createRes = await request(app)
       .post('/api/dates')
@@ -565,8 +571,7 @@ describe('Important Dates CRUD', () => {
 describe('Daily Question', () => {
   it('should return question with no answers initially', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     const res = await request(app)
       .get('/api/daily-question')
@@ -582,8 +587,7 @@ describe('Daily Question', () => {
 
   it('should save answer and not reveal partner answer until both answered', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    const bob = await registerUser(app, 'Bob');
+    const { alice, bob } = await registerPairedUsers(app);
 
     // Alice answers
     const answerRes = await request(app)
@@ -625,8 +629,7 @@ describe('Daily Question', () => {
 
   it('should allow updating answer', async () => {
     const { app } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     await request(app)
       .post('/api/daily-question/answer')
@@ -647,8 +650,7 @@ describe('Daily Question', () => {
 
   it('should send push notification on answer', async () => {
     const { app, mockPush } = createTestApp();
-    const alice = await registerUser(app, 'Alice');
-    await registerUser(app, 'Bob');
+    const { alice } = await registerPairedUsers(app);
 
     await request(app)
       .post('/api/daily-question/answer')

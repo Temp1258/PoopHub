@@ -7,6 +7,7 @@ const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'app.db');
 export interface User {
   id: string;
   name: string;
+  password_hash: string;
   partner_id: string | null;
   device_token: string | null;
   pair_code: string;
@@ -73,7 +74,7 @@ export interface RefreshToken {
 }
 
 export interface DbOps {
-  createUser(id: string, name: string, pairCode: string, timezone: string): void;
+  createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void;
   getUser(id: string): User | undefined;
   getUserByPairCode(pairCode: string): User | undefined;
   pairUsers(userId: string, partnerId: string): void;
@@ -124,6 +125,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      password_hash TEXT NOT NULL DEFAULT '',
       partner_id TEXT,
       device_token TEXT,
       pair_code TEXT UNIQUE,
@@ -189,6 +191,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
   // Migrations for existing databases
   const userCols = db.pragma('table_info(users)') as { name: string }[];
+  if (!userCols.some((c) => c.name === 'password_hash')) {
+    db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''");
+  }
   if (!userCols.some((c) => c.name === 'token_version')) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1');
   }
@@ -237,7 +242,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   }
 
   const insertUser = db.prepare(
-    'INSERT INTO users (id, name, pair_code, timezone) VALUES (?, ?, ?, ?)'
+    'INSERT INTO users (id, name, password_hash, pair_code, timezone) VALUES (?, ?, ?, ?, ?)'
   );
   const getUserById = db.prepare('SELECT * FROM users WHERE id = ?');
   const stmtGetUserByPairCode = db.prepare('SELECT * FROM users WHERE pair_code = ?');
@@ -358,8 +363,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
 
   const dbOps: DbOps = {
-    createUser(id: string, name: string, pairCode: string, timezone: string): void {
-      insertUser.run(id, name, pairCode, timezone);
+    createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void {
+      insertUser.run(id, name, passwordHash, pairCode, timezone);
     },
 
     getUser(id: string): User | undefined {

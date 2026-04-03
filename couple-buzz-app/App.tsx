@@ -30,11 +30,12 @@ function MainTabs({ partnerName, streak, hasUnread, onLatestSeen }: { partnerNam
       tabBarPosition="bottom"
       screenOptions={{
         swipeEnabled: true,
+        tabBarScrollEnabled: false,
         tabBarStyle: {
           backgroundColor: COLORS.white,
           borderTopWidth: 1,
           borderTopColor: COLORS.border,
-          height: 56 + insets.bottom,
+          height: 64 + insets.bottom,
           paddingBottom: insets.bottom,
         },
         tabBarActiveTintColor: COLORS.kiss,
@@ -43,6 +44,10 @@ function MainTabs({ partnerName, streak, hasUnread, onLatestSeen }: { partnerNam
           fontSize: 12,
           fontWeight: '600',
           textTransform: 'none',
+        },
+        tabBarItemStyle: {
+          height: 64,
+          justifyContent: 'center',
         },
         tabBarIndicatorStyle: {
           backgroundColor: COLORS.kiss,

@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import { nanoid } from 'nanoid';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
 import {
@@ -8,6 +7,9 @@ import {
   hashToken,
   getRefreshTokenExpiresAt,
   createAuthMiddleware,
+  hashPassword,
+  verifyPassword,
+  generateUserId,
 } from './auth';
 
 export type SendPushFn = (
@@ -39,39 +41,62 @@ function issueTokens(dbOps: DbOps, userId: string, tokenVersion: number) {
 export function createPublicRouter(dbOps: DbOps): Router {
   const router = Router();
 
-  // POST /api/register — public, no auth required
+  // POST /api/register — create account with ID + password
   router.post('/register', (req: Request, res: Response) => {
-    const { name, device_token, timezone } = req.body;
+    const { name, password, device_token, timezone } = req.body;
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ error: 'name is required' });
     }
-
-    const userId = nanoid(12);
-    let pairCode = generatePairCode();
-
-    while (dbOps.getUserByPairCode(pairCode)) {
-      pairCode = generatePairCode();
+    if (!password || typeof password !== 'string' || password.length < 4) {
+      return res.status(400).json({ error: 'password is required (min 4 chars)' });
     }
 
-    dbOps.createUser(userId, name.trim(), pairCode, timezone || 'Asia/Shanghai');
+    let userId = generateUserId();
+    while (dbOps.getUser(userId)) {
+      userId = generateUserId();
+    }
+
+    const passwordHash = hashPassword(password);
+    const pairCode = userId; // ID itself is the connection code
+
+    dbOps.createUser(userId, name.trim(), passwordHash, pairCode, timezone || 'Asia/Shanghai');
 
     if (device_token) {
       dbOps.setDeviceToken(userId, device_token);
     }
 
-    // Auto-pair with existing unpaired user
-    let partnerName: string | null = null;
-    const existingUser = dbOps.getUnpairedUser(userId);
-    if (existingUser) {
-      dbOps.pairUsers(userId, existingUser.id);
-      partnerName = existingUser.name;
-    }
-
     const user = dbOps.getUser(userId)!;
     const tokens = issueTokens(dbOps, userId, user.token_version);
 
-    res.json({ user_id: userId, pair_code: pairCode, partner_name: partnerName, ...tokens });
+    res.json({ user_id: userId, ...tokens });
+  });
+
+  // POST /api/login — login with ID + password
+  router.post('/login', (req: Request, res: Response) => {
+    const { user_id, password, device_token } = req.body;
+
+    if (!user_id || !password) {
+      return res.status(400).json({ error: 'user_id and password are required' });
+    }
+
+    const user = dbOps.getUser(user_id.toUpperCase());
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid ID or password' });
+    }
+
+    if (!verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({ error: 'Invalid ID or password' });
+    }
+
+    if (device_token) {
+      dbOps.setDeviceToken(user.id, device_token);
+    }
+
+    const tokens = issueTokens(dbOps, user.id, user.token_version);
+    const partnerName = user.partner_id ? dbOps.getUser(user.partner_id)?.name ?? null : null;
+
+    res.json({ user_id: user.id, partner_name: partnerName, ...tokens });
   });
 
   // POST /api/auth/refresh — public, uses refresh token
@@ -158,13 +183,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true, name: newName, timezone: newTimezone, partner_timezone: newPartnerTz, partner_remark: newRemark });
   });
 
-  // POST /api/pair
+  // POST /api/pair — connect with partner using their user ID
   router.post('/pair', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const { partner_pair_code } = req.body;
+    const { partner_id: partnerId } = req.body;
 
-    if (!partner_pair_code) {
-      return res.status(400).json({ error: 'partner_pair_code is required' });
+    if (!partnerId) {
+      return res.status(400).json({ error: 'partner_id is required' });
     }
 
     const user = dbOps.getUser(userId);
@@ -176,9 +201,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Already paired' });
     }
 
-    const partner = dbOps.getUserByPairCode(partner_pair_code.toUpperCase());
+    const partner = dbOps.getUser(partnerId.toUpperCase());
     if (!partner) {
-      return res.status(404).json({ error: 'Invalid pair code' });
+      return res.status(404).json({ error: 'User not found' });
     }
 
     if (partner.id === userId) {

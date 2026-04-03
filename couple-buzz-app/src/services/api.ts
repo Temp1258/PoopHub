@@ -71,10 +71,20 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
 
 export interface RegisterResponse {
   user_id: string;
-  pair_code: string;
+  access_token: string;
+  refresh_token: string;
+}
+
+export interface LoginResponse {
+  user_id: string;
   partner_name: string | null;
   access_token: string;
   refresh_token: string;
+}
+
+export interface PairResponse {
+  success: boolean;
+  partner_name: string;
 }
 
 export interface StatusResponse {
@@ -181,9 +191,19 @@ const mockHistory: HistoryAction[] = [
 ];
 
 const demoApi = {
-  async register(name: string, _deviceToken: string): Promise<RegisterResponse> {
+  async register(name: string, _password: string): Promise<RegisterResponse> {
     await new Promise(r => setTimeout(r, 500));
-    return { user_id: 'demo-user-001', pair_code: 'AB12', partner_name: '宝贝', access_token: 'demo-at', refresh_token: 'demo-rt' };
+    return { user_id: 'AB12CD', access_token: 'demo-at', refresh_token: 'demo-rt' };
+  },
+
+  async login(_userId: string, _password: string): Promise<LoginResponse> {
+    await new Promise(r => setTimeout(r, 500));
+    return { user_id: 'AB12CD', partner_name: '宝贝', access_token: 'demo-at', refresh_token: 'demo-rt' };
+  },
+
+  async pair(_partnerId: string): Promise<PairResponse> {
+    await new Promise(r => setTimeout(r, 500));
+    return { success: true, partner_name: '宝贝' };
   },
 
   async getStatus(): Promise<StatusResponse> {
@@ -244,11 +264,25 @@ const demoApi = {
 };
 
 const realApi = {
-  register(name: string, deviceToken: string): Promise<RegisterResponse> {
+  register(name: string, password: string): Promise<RegisterResponse> {
     return request('/api/register', {
       method: 'POST',
-      body: JSON.stringify({ name, device_token: deviceToken, timezone: getDeviceTimezone() }),
+      body: JSON.stringify({ name, password, timezone: getDeviceTimezone() }),
     }, false);
+  },
+
+  login(userId: string, password: string): Promise<LoginResponse> {
+    return request('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, password }),
+    }, false);
+  },
+
+  pair(partnerId: string): Promise<PairResponse> {
+    return request('/api/pair', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: partnerId }),
+    });
   },
 
   getStatus(): Promise<StatusResponse> {

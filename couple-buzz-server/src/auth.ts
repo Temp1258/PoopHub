@@ -43,6 +43,27 @@ export function getRefreshTokenExpiresAt(): string {
   return date.toISOString();
 }
 
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+export function verifyPassword(password: string, stored: string): boolean {
+  const [salt, hash] = stored.split(':');
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return hash === derived;
+}
+
+export function generateUserId(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let id = '';
+  for (let i = 0; i < 6; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
 export function createAuthMiddleware(dbOps: DbOps) {
   return (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
