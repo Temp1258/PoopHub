@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,6 +30,26 @@ export default function SetupScreen({ onRegistered }: Props) {
   const [partnerId, setPartnerId] = useState('');
   const [myId, setMyId] = useState('');
   const [loading, setLoading] = useState(false);
+  const onRegisteredRef = useRef(onRegistered);
+  onRegisteredRef.current = onRegistered;
+
+  // Poll for partner pairing while on showId/connect steps
+  useEffect(() => {
+    if (step !== 'showId' && step !== 'connect') return;
+
+    const poll = setInterval(async () => {
+      try {
+        const status = await api.getStatus();
+        if (status.paired && status.partner_name) {
+          clearInterval(poll);
+          await storage.setPartnerName(status.partner_name);
+          onRegisteredRef.current({ partner_name: status.partner_name });
+        }
+      } catch {}
+    }, 3000);
+
+    return () => clearInterval(poll);
+  }, [step]);
 
   const handleRegister = async () => {
     if (!name.trim()) { Alert.alert('', '请输入昵称'); return; }
