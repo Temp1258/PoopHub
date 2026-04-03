@@ -119,12 +119,13 @@ export interface ImportantDate {
   title: string;
   date: string;
   recurring: number;
+  pinned: number;
   created_at: string;
 }
 
 export interface DatesResponse {
   dates: ImportantDate[];
-  nearest: { title: string; date: string; days_away: number } | null;
+  pinned: { title: string; date: string; days_away: number } | null;
 }
 
 export interface DailyQuestionResponse {
@@ -210,14 +211,18 @@ const demoApi = {
   },
 
   async getDates(): Promise<DatesResponse> {
-    return { dates: [], nearest: { title: '见面', date: '2026-04-15', days_away: 12 } };
+    return { dates: [], pinned: { title: '见面', date: '2026-04-15', days_away: 12 } };
   },
 
   async createDate(_title: string, _date: string, _recurring: boolean): Promise<{ date: ImportantDate }> {
-    return { date: { id: 1, user_id: '', partner_id: '', title: _title, date: _date, recurring: _recurring ? 1 : 0, created_at: '' } };
+    return { date: { id: 1, user_id: '', partner_id: '', title: _title, date: _date, recurring: _recurring ? 1 : 0, pinned: 0, created_at: '' } };
   },
 
   async deleteDate(_id: number): Promise<{ success: boolean }> {
+    return { success: true };
+  },
+
+  async pinDate(_id: number): Promise<{ success: boolean }> {
     return { success: true };
   },
 
@@ -288,6 +293,10 @@ const realApi = {
 
   deleteDate(id: number): Promise<{ success: boolean }> {
     return request(`/api/dates/${id}`, { method: 'DELETE' });
+  },
+
+  pinDate(id: number): Promise<{ success: boolean }> {
+    return request(`/api/dates/${id}/pin`, { method: 'POST' });
   },
 
   getDailyQuestion(): Promise<DailyQuestionResponse> {

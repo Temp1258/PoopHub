@@ -26,14 +26,14 @@ export default function HomeScreen({ partnerName, streak }: Props) {
   const [disabledButtons, setDisabledButtons] = useState<Record<string, boolean>>({});
   const toastOpacity = useRef(new RNAnimated.Value(0)).current;
   const [toastText, setToastText] = useState('');
-  const [nearestDate, setNearestDate] = useState<DatesResponse['nearest']>(null);
+  const [pinnedDate, setPinnedDate] = useState<DatesResponse['pinned']>(null);
 
   useFocusEffect(
     useCallback(() => {
       (async () => {
         try {
           const result = await api.getDates();
-          setNearestDate(result.nearest);
+          setPinnedDate(result.pinned);
         } catch {}
       })();
     }, [])
@@ -66,19 +66,19 @@ export default function HomeScreen({ partnerName, streak }: Props) {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.title}>香宝聚集地 💕</Text>
-        {(streak > 0 || nearestDate) && (
+        {(streak > 0 || pinnedDate) && (
           <View style={styles.badgeRow}>
             {streak > 0 && (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>🔥 {streak}天</Text>
               </View>
             )}
-            {nearestDate && (
+            {pinnedDate && (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>
-                  {nearestDate.days_away === 0
-                    ? `🎉 今天是${nearestDate.title}！`
-                    : `📅 ${nearestDate.title} 还有${nearestDate.days_away}天`}
+                  {pinnedDate.days_away === 0
+                    ? `🎉 今天是${pinnedDate.title}！`
+                    : `📅 ${pinnedDate.title} 还有${pinnedDate.days_away}天`}
                 </Text>
               </View>
             )}

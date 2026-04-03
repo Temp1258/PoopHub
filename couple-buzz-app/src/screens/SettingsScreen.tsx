@@ -108,10 +108,13 @@ export default function SettingsScreen() {
     }
   };
 
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(new Date().getMonth() + 1);
+
   const handleAddDate = async () => {
     const title = newDateTitle.trim();
     if (!title) { Alert.alert('', '请输入标题'); return; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDateValue)) { Alert.alert('', '日期格式: YYYY-MM-DD'); return; }
+    if (!newDateValue) { Alert.alert('', '请选择日期'); return; }
 
     try {
       await api.createDate(title, newDateValue, newDateRecurring);
@@ -123,6 +126,13 @@ export default function SettingsScreen() {
     } catch (e: any) {
       Alert.alert('添加失败', e.message);
     }
+  };
+
+  const handlePinDate = async (id: number) => {
+    try {
+      await api.pinDate(id);
+      loadDates();
+    } catch {}
   };
 
   const handleDeleteDate = (id: number, title: string) => {
@@ -184,11 +194,13 @@ export default function SettingsScreen() {
 
       <Text style={[styles.sectionTitle, { marginTop: 40 }]}>纪念日管理</Text>
       {dates.map((d) => (
-        <View key={d.id} style={styles.dateRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.dateTitle}>{d.title}{d.recurring ? ' 🔁' : ''}</Text>
-            <Text style={styles.dateValue}>{d.date}</Text>
-          </View>
+        <View key={d.id} style={[styles.dateRow, d.pinned ? styles.dateRowPinned : null]}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => handlePinDate(d.id)}>
+            <Text style={styles.dateTitle}>
+              {d.pinned ? '📌 ' : ''}{d.title}{d.recurring ? ' 🔁' : ''}
+            </Text>
+            <Text style={styles.dateValue}>{d.date}{!d.pinned ? '  点击置顶' : '  已置顶'}</Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => handleDeleteDate(d.id, d.title)}>
             <Text style={styles.dateDelete}>删除</Text>
           </TouchableOpacity>
@@ -205,15 +217,36 @@ export default function SettingsScreen() {
             placeholderTextColor={COLORS.textLight}
             maxLength={20}
           />
-          <TextInput
-            style={[styles.input, { marginTop: 8 }]}
-            value={newDateValue}
-            onChangeText={setNewDateValue}
-            placeholder="日期 YYYY-MM-DD"
-            placeholderTextColor={COLORS.textLight}
-            maxLength={10}
-            keyboardType="numbers-and-punctuation"
-          />
+          <View style={styles.calNav}>
+            <TouchableOpacity onPress={() => { if (calMonth === 1) { setCalYear(calYear - 1); setCalMonth(12); } else setCalMonth(calMonth - 1); }}>
+              <Text style={styles.calNavText}>‹</Text>
+            </TouchableOpacity>
+            <Text style={styles.calNavLabel}>{calYear}年{calMonth}月</Text>
+            <TouchableOpacity onPress={() => { if (calMonth === 12) { setCalYear(calYear + 1); setCalMonth(1); } else setCalMonth(calMonth + 1); }}>
+              <Text style={styles.calNavText}>›</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.calWeekRow}>
+            {['日','一','二','三','四','五','六'].map(d => (
+              <Text key={d} style={styles.calWeekDay}>{d}</Text>
+            ))}
+          </View>
+          <View style={styles.calGrid}>
+            {Array.from({ length: new Date(calYear, calMonth - 1, 1).getDay() }, (_, i) => (
+              <View key={`e${i}`} style={styles.calCell} />
+            ))}
+            {Array.from({ length: new Date(calYear, calMonth, 0).getDate() }, (_, i) => {
+              const day = i + 1;
+              const dateStr = `${calYear}-${String(calMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const isSelected = newDateValue === dateStr;
+              return (
+                <TouchableOpacity key={day} style={[styles.calCell, isSelected && styles.calCellSelected]} onPress={() => setNewDateValue(dateStr)}>
+                  <Text style={[styles.calCellText, isSelected && styles.calCellTextSelected]}>{day}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          {newDateValue ? <Text style={styles.calSelected}>已选: {newDateValue}</Text> : null}
           <TouchableOpacity
             style={styles.recurringToggle}
             onPress={() => setNewDateRecurring(!newDateRecurring)}
@@ -463,6 +496,70 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: COLORS.white,
+  },
+  dateRowPinned: {
+    borderColor: COLORS.kiss,
+    backgroundColor: '#FFF5F8',
+  },
+  calNav: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 16,
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  calNavText: {
+    fontSize: 24,
+    color: COLORS.textLight,
+    fontWeight: '300',
+    paddingHorizontal: 8,
+  },
+  calNavLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  calWeekRow: {
+    flexDirection: 'row',
+    marginBottom: 4,
+  },
+  calWeekDay: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textLight,
+    paddingVertical: 4,
+  },
+  calGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calCell: {
+    width: '14.28%',
+    aspectRatio: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  calCellSelected: {
+    backgroundColor: COLORS.kiss,
+    borderRadius: 20,
+  },
+  calCellText: {
+    fontSize: 14,
+    color: COLORS.text,
+  },
+  calCellTextSelected: {
+    color: COLORS.white,
+    fontWeight: '600',
+  },
+  calSelected: {
+    fontSize: 13,
+    color: COLORS.kiss,
+    textAlign: 'center',
+    marginTop: 8,
+    fontWeight: '500',
   },
   addDateButton: {
     height: 44,

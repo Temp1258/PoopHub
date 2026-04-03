@@ -114,6 +114,7 @@ export default function App() {
   const [hasUnread, setHasUnread] = useState(false);
   const activeTabRef = useRef('Home');
   const initializedRef = useRef(false);
+  const myUserIdRef = useRef('');
 
   useEffect(() => {
     (async () => {
@@ -122,6 +123,7 @@ export default function App() {
         setAppState('setup');
         return;
       }
+      myUserIdRef.current = userId;
 
       try {
         const status = await api.getStatus();
@@ -180,9 +182,9 @@ export default function App() {
       try {
         const result = await api.getHistory(1);
         if (result.actions.length > 0 && result.actions[0].id > lastSeenIdRef.current) {
-          if (activeTabRef.current === 'History') {
-            lastSeenIdRef.current = result.actions[0].id;
-          } else {
+          lastSeenIdRef.current = result.actions[0].id;
+          const isPartnerMsg = result.actions[0].user_id !== myUserIdRef.current;
+          if (isPartnerMsg && activeTabRef.current !== 'History') {
             setHasUnread(true);
           }
         }

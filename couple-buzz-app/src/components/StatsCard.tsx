@@ -8,16 +8,20 @@ export default function StatsCard() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const load = useCallback(async () => {
+    try {
+      const result = await api.getStats();
+      setStats(result);
+    } catch {}
+    setLoading(false);
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      (async () => {
-        try {
-          const result = await api.getStats();
-          setStats(result);
-        } catch {}
-        setLoading(false);
-      })();
-    }, [])
+      load();
+      const interval = setInterval(load, 5000);
+      return () => clearInterval(interval);
+    }, [load])
   );
 
   if (loading) {

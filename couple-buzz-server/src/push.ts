@@ -29,6 +29,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   haha: { title: '😆 哈哈', body: '{name} 在笑哈哈' },
   hehe: { title: '😏 嘿嘿', body: '{name} 嘿嘿嘿...' },
   work: { title: '💻 工作', body: '{name} 在工作' },
+  slap: { title: '👋 打你', body: '{name} 打了你一巴掌！' },
   ping: { title: '🛎️ Ping', body: '{name} 按了一下铃！' },
   unpair: { title: '💔 已解除配对', body: '{name} 解除了配对' },
   daily_answer: { title: '📝 每日问答', body: '{name} 回答了今天的问题' },

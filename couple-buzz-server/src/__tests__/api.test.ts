@@ -470,13 +470,19 @@ describe('Important Dates CRUD', () => {
     expect(createRes.body.date.title).toBe('纪念日');
     expect(createRes.body.date.recurring).toBe(1);
 
+    // Pin the date
+    const dateId = createRes.body.date.id;
+    await request(app)
+      .post(`/api/dates/${dateId}/pin`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
     const listRes = await request(app)
       .get('/api/dates')
       .set('Authorization', `Bearer ${alice.access_token}`);
 
     expect(listRes.body.dates).toHaveLength(1);
-    expect(listRes.body.nearest).toBeDefined();
-    expect(listRes.body.nearest.title).toBe('纪念日');
+    expect(listRes.body.pinned).toBeDefined();
+    expect(listRes.body.pinned.title).toBe('纪念日');
   });
 
   it('should allow partner to see dates created by the other', async () => {

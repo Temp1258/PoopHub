@@ -18,6 +18,7 @@ export type ActionType =
   | 'haha' | 'hehe' | 'cry' | 'wuwu' | 'sad' | 'clown'
   | 'angry_silent' | 'angry_talk'
   | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'play' | 'clean' | 'poop' | 'pick_nose'
+  | 'slap'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping';
 
 export interface ActionConfig {
@@ -43,6 +44,7 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'finger_heart', emoji: '🫰', label: '比心', color: '#FFCAD4' },
       { type: 'rose', emoji: '🌹', label: '玫瑰', color: '#FF8FAB' },
       { type: 'hug', emoji: '🤗', label: '抱抱', color: '#FFCAD4' },
+      { type: 'slap', emoji: '👋', label: '打你', color: '#FF9B9B' },
     ],
   },
   {

@@ -33,6 +33,7 @@ export interface ImportantDate {
   title: string;
   date: string;
   recurring: number;
+  pinned: number;
   created_at: string;
 }
 
@@ -94,8 +95,12 @@ export interface DbOps {
   getImportantDates(userId: string, partnerId: string): ImportantDate[];
   updateImportantDate(id: number, title: string, date: string, recurring: boolean): boolean;
   deleteImportantDate(id: number, userId: string, partnerId: string): boolean;
+  pinImportantDate(id: number, userId: string, partnerId: string): void;
   submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void;
   getDailyAnswers(questionDate: string, userId: string, partnerId: string): { mine?: DailyAnswer; partner?: DailyAnswer };
+  getQuestionAssignment(questionDate: string): number | null;
+  setQuestionAssignment(questionDate: string, questionIndex: number): void;
+  getCompletedQuestionIndexes(userId: string, partnerId: string): Set<number>;
   getStats(userId: string, partnerId: string): StatsData;
   getCalendarData(userId: string, partnerId: string, yearMonth: string): CalendarDay[];
 }
@@ -156,8 +161,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       title TEXT NOT NULL,
       date TEXT NOT NULL,
       recurring INTEGER NOT NULL DEFAULT 0,
+      pinned INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_question_assignments (
+      question_date TEXT PRIMARY KEY,
+      question_index INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS daily_answers (
@@ -217,6 +228,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       ALTER TABLE actions_new RENAME TO actions;
       CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
     `);
+  }
+
+  // Migration: add pinned column to important_dates
+  const dateCols = db.pragma('table_info(important_dates)') as { name: string }[];
+  if (dateCols.length > 0 && !dateCols.some((c) => c.name === 'pinned')) {
+    db.exec('ALTER TABLE important_dates ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
   }
 
   const insertUser = db.prepare(
@@ -293,6 +310,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtDeleteDate = db.prepare(
     'DELETE FROM important_dates WHERE id = ? AND user_id IN (?, ?)'
   );
+  const stmtUnpinAll = db.prepare(
+    'UPDATE important_dates SET pinned = 0 WHERE user_id IN (?, ?)'
+  );
+  const stmtPinDate = db.prepare(
+    'UPDATE important_dates SET pinned = 1 WHERE id = ?'
+  );
 
   const stmtSubmitAnswer = db.prepare(
     'INSERT OR REPLACE INTO daily_answers (user_id, question_date, question_index, answer) VALUES (?, ?, ?, ?)'
@@ -300,6 +323,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetDailyAnswers = db.prepare(
     'SELECT * FROM daily_answers WHERE question_date = ? AND user_id IN (?, ?)'
   );
+  const stmtGetAssignment = db.prepare(
+    'SELECT question_index FROM daily_question_assignments WHERE question_date = ?'
+  );
+  const stmtSetAssignment = db.prepare(
+    'INSERT OR IGNORE INTO daily_question_assignments (question_date, question_index) VALUES (?, ?)'
+  );
+  const stmtCompletedIndexes = db.prepare(`
+    SELECT DISTINCT a1.question_index FROM daily_answers a1
+    JOIN daily_answers a2 ON a1.question_date = a2.question_date AND a1.user_id != a2.user_id
+    WHERE a1.user_id IN (?, ?) AND a2.user_id IN (?, ?)
+  `);
 
   const stmtStatsTotalByUser = db.prepare(
     'SELECT user_id, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY user_id'
@@ -422,6 +456,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return result.changes > 0;
     },
 
+    pinImportantDate(id: number, userId: string, partnerId: string): void {
+      db.transaction(() => {
+        stmtUnpinAll.run(userId, partnerId);
+        stmtPinDate.run(id);
+      })();
+    },
+
     submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void {
       stmtSubmitAnswer.run(userId, questionDate, questionIndex, answer);
     },
@@ -435,6 +476,20 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         else partner = row;
       }
       return { mine, partner };
+    },
+
+    getQuestionAssignment(questionDate: string): number | null {
+      const row = stmtGetAssignment.get(questionDate) as { question_index: number } | undefined;
+      return row?.question_index ?? null;
+    },
+
+    setQuestionAssignment(questionDate: string, questionIndex: number): void {
+      stmtSetAssignment.run(questionDate, questionIndex);
+    },
+
+    getCompletedQuestionIndexes(userId: string, partnerId: string): Set<number> {
+      const rows = stmtCompletedIndexes.all(userId, partnerId, userId, partnerId) as { question_index: number }[];
+      return new Set(rows.map(r => r.question_index));
     },
 
     getStats(userId: string, partnerId: string): StatsData {

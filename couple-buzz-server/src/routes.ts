@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { nanoid } from 'nanoid';
 import { DbOps } from './db';
-import { getTodayQuestion } from './questions';
+import { QUESTIONS } from './questions';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -299,29 +299,26 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const dates = dbOps.getImportantDates(userId, user.partner_id);
 
-    // Compute nearest upcoming date
+    // Compute pinned date countdown (only pinned date shows on homepage)
     const today = new Date().toISOString().slice(0, 10);
-    let nearest: { title: string; date: string; days_away: number } | null = null;
+    let pinned: { title: string; date: string; days_away: number } | null = null;
 
-    for (const d of dates) {
-      let targetDate = d.date;
-      if (d.recurring) {
+    const pinnedDate = dates.find(d => d.pinned);
+    if (pinnedDate) {
+      let targetDate = pinnedDate.date;
+      if (pinnedDate.recurring) {
         const thisYear = new Date().getFullYear();
-        const mmdd = d.date.slice(5);
+        const mmdd = pinnedDate.date.slice(5);
         targetDate = `${thisYear}-${mmdd}`;
         if (targetDate < today) {
           targetDate = `${thisYear + 1}-${mmdd}`;
         }
       }
-      if (targetDate < today) continue;
-
-      const daysAway = Math.ceil((new Date(targetDate).getTime() - new Date(today).getTime()) / 86400000);
-      if (!nearest || daysAway < nearest.days_away) {
-        nearest = { title: d.title, date: targetDate, days_away: daysAway };
-      }
+      const daysAway = Math.max(0, Math.ceil((new Date(targetDate).getTime() - new Date(today).getTime()) / 86400000));
+      pinned = { title: pinnedDate.title, date: targetDate, days_away: daysAway };
     }
 
-    res.json({ dates, nearest });
+    res.json({ dates, pinned });
   });
 
   // POST /api/dates
@@ -361,6 +358,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
+  // POST /api/dates/:id/pin
+  router.post('/dates/:id/pin', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    dbOps.pinImportantDate(id, userId, user.partner_id);
+    res.json({ success: true });
+  });
+
   // DELETE /api/dates/:id
   router.delete('/dates/:id', (req: Request, res: Response) => {
     const userId = req.userId!;
@@ -383,8 +393,23 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const { index, question } = getTodayQuestion();
     const today = new Date().toISOString().slice(0, 10);
+
+    // Get or assign today's question (avoid repeating completed ones)
+    let index = dbOps.getQuestionAssignment(today);
+    if (index === null) {
+      const completed = dbOps.getCompletedQuestionIndexes(userId, user.partner_id);
+      const available = Array.from({ length: QUESTIONS.length }, (_, i) => i).filter(i => !completed.has(i));
+      if (available.length === 0) {
+        // All questions answered — reset by picking from full pool
+        index = Math.floor(Math.random() * QUESTIONS.length);
+      } else {
+        index = available[Math.floor(Math.random() * available.length)];
+      }
+      dbOps.setQuestionAssignment(today, index);
+    }
+    const question = QUESTIONS[index];
+
     const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
     const bothAnswered = !!answers.mine && !!answers.partner;
 
@@ -411,8 +436,16 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const { index } = getTodayQuestion();
     const today = new Date().toISOString().slice(0, 10);
+
+    // Get today's assigned question index
+    let index = dbOps.getQuestionAssignment(today);
+    if (index === null) {
+      const completed = dbOps.getCompletedQuestionIndexes(userId, user.partner_id);
+      const available = Array.from({ length: QUESTIONS.length }, (_, i) => i).filter(i => !completed.has(i));
+      index = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : Math.floor(Math.random() * QUESTIONS.length);
+      dbOps.setQuestionAssignment(today, index);
+    }
 
     dbOps.submitDailyAnswer(userId, today, index, answer.trim());
 
