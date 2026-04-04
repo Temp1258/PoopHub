@@ -1064,9 +1064,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     },
     filename: (req, _file, cb) => {
       const user = dbOps.getUser(req.userId!);
-      const tz = user?.timezone || 'UTC';
-      const today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
-      cb(null, `${today}.jpg`);
+      cb(null, `${getLocalDate(user?.timezone || 'Asia/Shanghai')}.jpg`);
     },
   });
   const snapUpload = multer({
