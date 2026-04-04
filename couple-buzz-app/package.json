@@ -8,6 +8,8 @@
     "android": "expo start --android"
   },
   "dependencies": {
+    "@bacons/apple-targets": "^4.0.6",
+    "@expo/ngrok": "^4.1.0",
     "@react-native-async-storage/async-storage": "2.1.2",
     "@react-native-community/slider": "5.0.1",
     "@react-navigation/bottom-tabs": "^7.2.0",
@@ -24,7 +26,8 @@
     "react-native": "0.77.3",
     "react-native-pager-view": "6.9.1",
     "react-native-safe-area-context": "~5.4.0",
-    "react-native-screens": "~4.10.0"
+    "react-native-screens": "~4.10.0",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@types/react": "~18.3.12",

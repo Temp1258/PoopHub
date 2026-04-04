@@ -34,6 +34,21 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   unpair: { title: '💔 已解除配对', body: '{name} 解除了配对' },
   daily_answer: { title: '📝 每日问答', body: '{name} 回答了今天的问题' },
   daily_both: { title: '📝 每日问答', body: '你们都回答了！快来看看对方的答案' },
+  reaction: { title: '💬 回应', body: '{name} 回应了你' },
+  ritual_morning: { title: '🌅 早安', body: '{name} 说早安了～' },
+  ritual_evening: { title: '🌙 晚安', body: '{name} 说晚安了～' },
+  ritual_both_morning: { title: '🌅 早安', body: '你们都说了早安！新的一天一起加油 💪' },
+  ritual_both_evening: { title: '🌙 晚安', body: '你们都说了晚安！今天辛苦了 💕' },
+  mailbox_open: { title: '📮 树洞信箱', body: '本周信箱已开启，写点什么给 ta 吧～' },
+  mailbox_reveal: { title: '📮 树洞信箱', body: '本周的信已揭晓！快来看看 💌' },
+  weekly_report: { title: '📊 恋爱周报', body: '本周恋爱报告来了！' },
+  capsule_unlock: { title: '💌 时间胶囊', body: '你有一封来自过去的信～' },
+  bucket_new: { title: '📝 新心愿', body: '{name} 添加了一个新心愿' },
+  bucket_complete: { title: '✅ 心愿达成', body: '{name} 完成了一个心愿！' },
+  snap_submitted: { title: '📸 每日快照', body: '{name} 拍了今天的快照～' },
+  snap_both: { title: '📸 每日快照', body: '你们都拍了今天的快照！快来看看 💕' },
+  challenge_complete: { title: '🎉 挑战完成', body: '你们完成了本周挑战！' },
+  challenge_response: { title: '📝 挑战回复', body: '{name} 提交了挑战回复' },
 };
 
 let provider: apn.Provider | null = null;

@@ -1,11 +1,17 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { createServer } from 'http';
 import express from 'express';
+import path from 'path';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import routes from './routes';
 import { initAPNs } from './push';
+import { setupSocket } from './socket';
+import { dbOps } from './db';
+import { startScheduler } from './scheduler';
+import { sendPush } from './push';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -54,6 +60,9 @@ app.use('/api/pair', pairLimiter);
 app.use('/api/auth', authLimiter);
 app.use('/api', apiLimiter);
 
+// Static files for snap uploads
+app.use('/uploads', express.static(path.join(__dirname, '..', 'data', 'snaps')));
+
 // Routes (includes both public and protected, with auth middleware)
 app.use('/api', routes);
 
@@ -62,11 +71,15 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Initialize APNs and start server
+// Initialize APNs, WebSocket, and Scheduler
 initAPNs();
+startScheduler(dbOps, sendPush);
+
+const httpServer = createServer(app);
+setupSocket(httpServer, dbOps);
 
 const HOST = process.env.HOST || '127.0.0.1';
 
-app.listen(PORT, HOST, () => {
+httpServer.listen(PORT, HOST, () => {
   console.log(`[Server] Couple Buzz running on ${HOST}:${PORT}`);
 });

@@ -1,6 +1,12 @@
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
+import { CHALLENGES } from './challenges';
+import { computeProgress } from './challengeVerifier';
+import { createWsTicket } from './socket';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -11,6 +17,33 @@ import {
   verifyPassword,
   generateUserId,
 } from './auth';
+
+// Timezone helpers
+function getLocalDate(timezone: string): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+}
+
+function getLocalHour(timezone: string): number {
+  return parseInt(new Date().toLocaleString('en-US', { timeZone: timezone, hour: 'numeric', hour12: false }));
+}
+
+// Mailbox helpers
+function getCurrentWeekMonday(): string {
+  const now = new Date();
+  const day = now.getUTCDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() + diff);
+  return monday.toISOString().slice(0, 10);
+}
+
+function getRevealTime(weekMonday: string): Date {
+  // Reveal: Sunday 14:00 UTC (= Monday + 6 days + 14 hours)
+  const d = new Date(weekMonday + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 6);
+  d.setUTCHours(14, 0, 0, 0);
+  return d;
+}
 
 export type SendPushFn = (
   deviceToken: string,
@@ -243,6 +276,37 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
+  // POST /api/reaction
+  router.post('/reaction', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { action_id, action_type } = req.body;
+
+    if (!action_id || !action_type || typeof action_type !== 'string') {
+      return res.status(400).json({ error: 'action_id and action_type are required' });
+    }
+
+    const actionId = typeof action_id === 'number' ? action_id : parseInt(action_id);
+    if (isNaN(actionId)) return res.status(400).json({ error: 'action_id must be a valid number' });
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const targetAction = dbOps.getAction(actionId);
+    if (!targetAction) return res.status(404).json({ error: 'Action not found' });
+    if (targetAction.user_id !== user.partner_id) return res.status(400).json({ error: 'Cannot react to this action' });
+    if (targetAction.reply_to !== null) return res.status(400).json({ error: 'Cannot react to a reaction' });
+
+    const reactionId = dbOps.addReaction(userId, action_type, user.timezone, user.name, actionId);
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, 'reaction', user.name);
+    }
+
+    res.json({ success: true, reaction_id: reactionId });
+  });
+
   // GET /api/history
   router.get('/history', (req: Request, res: Response) => {
     const userId = req.userId!;
@@ -254,7 +318,18 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     const actions = dbOps.getHistory(userId, Math.min(limit, 200));
-    res.json({ actions });
+
+    // Group reactions by parent action id
+    const allReactions = dbOps.getHistoryReactions(userId);
+    const reactions: Record<number, typeof allReactions> = {};
+    for (const r of allReactions) {
+      if (r.reply_to !== null) {
+        if (!reactions[r.reply_to]) reactions[r.reply_to] = [];
+        reactions[r.reply_to].push(r);
+      }
+    }
+
+    res.json({ actions, reactions });
   });
 
   // PUT /api/device-token
@@ -519,6 +594,627 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const days = dbOps.getCalendarData(userId, user.partner_id, month);
     res.json({ days });
+  });
+
+  // POST /api/ritual
+  router.post('/ritual', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { ritual_type } = req.body;
+
+    if (!ritual_type || (ritual_type !== 'morning' && ritual_type !== 'evening')) {
+      return res.status(400).json({ error: 'ritual_type must be morning or evening' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const localHour = getLocalHour(user.timezone);
+    const isMorningWindow = localHour >= 4 && localHour <= 12;
+    const isEveningWindow = localHour >= 18 || localHour < 4;
+
+    if (ritual_type === 'morning' && !isMorningWindow) {
+      return res.status(400).json({ error: 'Morning ritual available 4:00-12:59' });
+    }
+    if (ritual_type === 'evening' && !isEveningWindow) {
+      return res.status(400).json({ error: 'Evening ritual available 18:00-3:59' });
+    }
+
+    // For evening ritual after midnight (0-3), use yesterday's date
+    let ritualDate = getLocalDate(user.timezone);
+    if (ritual_type === 'evening' && localHour < 4) {
+      const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.timezone }));
+      d.setDate(d.getDate() - 1);
+      ritualDate = d.toISOString().slice(0, 10);
+    }
+
+    const inserted = dbOps.submitRitual(userId, ritual_type, ritualDate);
+
+    // Check partner's status (in partner's timezone)
+    const partnerDate = getLocalDate(user.partner_timezone);
+    let partnerRitualDate = partnerDate;
+    if (ritual_type === 'evening') {
+      const partnerHour = getLocalHour(user.partner_timezone);
+      if (partnerHour < 4) {
+        const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.partner_timezone }));
+        d.setDate(d.getDate() - 1);
+        partnerRitualDate = d.toISOString().slice(0, 10);
+      }
+    }
+
+    const status = dbOps.getRitualsByDates(ritualDate, partnerRitualDate, userId, user.partner_id);
+    const bothCompleted = ritual_type === 'morning'
+      ? status.myMorning && status.partnerMorning
+      : status.myEvening && status.partnerEvening;
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      if (bothCompleted) {
+        await pushFn(partner.device_token, ritual_type === 'morning' ? 'ritual_both_morning' : 'ritual_both_evening', user.name);
+      } else if (inserted) {
+        await pushFn(partner.device_token, ritual_type === 'morning' ? 'ritual_morning' : 'ritual_evening', user.name);
+      }
+    }
+
+    res.json({ success: true, ritual_type, ritual_date: ritualDate, both_completed: bothCompleted });
+  });
+
+  // GET /api/ritual/status
+  router.get('/ritual/status', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const localHour = getLocalHour(user.timezone);
+    const myDate = getLocalDate(user.timezone);
+    const partnerDate = getLocalDate(user.partner_timezone);
+
+    // For evening: compute adjusted dates (if after midnight, look at yesterday)
+    let myEveningDate = myDate;
+    if (localHour < 4) {
+      const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.timezone }));
+      d.setDate(d.getDate() - 1);
+      myEveningDate = d.toISOString().slice(0, 10);
+    }
+    const partnerHour = getLocalHour(user.partner_timezone);
+    let partnerEveningDate = partnerDate;
+    if (partnerHour < 4) {
+      const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.partner_timezone }));
+      d.setDate(d.getDate() - 1);
+      partnerEveningDate = d.toISOString().slice(0, 10);
+    }
+
+    const morningStatus = dbOps.getRitualsByDates(myDate, partnerDate, userId, user.partner_id);
+    const eveningStatus = dbOps.getRitualsByDates(myEveningDate, partnerEveningDate, userId, user.partner_id);
+
+    const morningBoth = morningStatus.myMorning && morningStatus.partnerMorning;
+    const eveningBoth = eveningStatus.myEvening && eveningStatus.partnerEvening;
+
+    let dailyRecap = null;
+    if (eveningBoth) {
+      dailyRecap = dbOps.getDailyRecap(userId, user.partner_id, myEveningDate);
+    }
+
+    res.json({
+      local_hour: localHour,
+      morning: {
+        my_completed: morningStatus.myMorning,
+        partner_completed: morningStatus.partnerMorning,
+        both_completed: morningBoth,
+      },
+      evening: {
+        my_completed: eveningStatus.myEvening,
+        partner_completed: eveningStatus.partnerEvening,
+        both_completed: eveningBoth,
+      },
+      daily_recap: dailyRecap,
+    });
+  });
+
+  // GET /api/mailbox
+  router.get('/mailbox', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const weekKey = getCurrentWeekMonday();
+    const revealAt = getRevealTime(weekKey);
+    const now = new Date();
+    const phase = now >= revealAt ? 'revealed' : 'writing';
+
+    const messages = dbOps.getMailboxMessages(weekKey, userId, user.partner_id);
+
+    res.json({
+      week_key: weekKey,
+      phase,
+      my_message: messages.mine?.content ?? null,
+      partner_message: phase === 'revealed' ? (messages.partner?.content ?? null) : null,
+      partner_wrote: phase === 'revealed' ? !!messages.partner : undefined,
+      reveal_at: revealAt.toISOString(),
+      can_edit: phase === 'writing',
+    });
+  });
+
+  // POST /api/mailbox
+  router.post('/mailbox', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { content } = req.body;
+
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'content is required' });
+    }
+    if (content.length > 500) {
+      return res.status(400).json({ error: 'content max 500 characters' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const weekKey = getCurrentWeekMonday();
+    const revealAt = getRevealTime(weekKey);
+
+    if (new Date() >= revealAt) {
+      return res.status(400).json({ error: 'Writing period has ended' });
+    }
+
+    dbOps.submitMailboxMessage(userId, weekKey, content.trim());
+    res.json({ success: true });
+  });
+
+  // GET /api/mailbox/archive
+  router.get('/mailbox/archive', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const limit = parseInt(req.query.limit as string) || 10;
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ weeks: [] });
+
+    // Only return weeks whose reveal time has passed
+    const allWeeks = dbOps.getMailboxArchive(userId, user.partner_id, Math.min(limit, 50));
+    const now = new Date();
+    const currentWeekKey = getCurrentWeekMonday();
+    const weeks = allWeeks.filter(w => {
+      if (w.week_key === currentWeekKey) {
+        return now >= getRevealTime(currentWeekKey);
+      }
+      return true; // Past weeks are always revealed
+    });
+
+    res.json({ weeks });
+  });
+
+  // GET /api/weekly-report
+  router.get('/weekly-report', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const week = req.query.week as string;
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ total: 0 });
+
+    // Default to current week Monday
+    const weekStart = week || getCurrentWeekMonday();
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 7);
+    const weekEndStr = weekEnd.toISOString().slice(0, 10);
+
+    const data = dbOps.getWeeklyReportData(userId, user.partner_id, weekStart, weekEndStr);
+    const streak = dbOps.getStreak(userId, user.partner_id);
+
+    const changePct = data.lastWeekTotal > 0
+      ? Math.round(((data.total - data.lastWeekTotal) / data.lastWeekTotal) * 100)
+      : 0;
+
+    // Temperature: interaction(40%) + question(20%) + ritual(20%) + streak(20%)
+    const interactionScore = Math.min(data.total / 50, 1) * 40;
+    const questionScore = (data.dailyQuestionDays / 7) * 20;
+    const ritualScore = ((data.ritualMorningDays + data.ritualEveningDays) / 14) * 20;
+    const streakScore = Math.min(streak / 30, 1) * 20;
+    const temperature = Math.round(interactionScore + questionScore + ritualScore + streakScore);
+
+    let temperatureLabel = '❄️ 冷淡期';
+    if (temperature >= 80) temperatureLabel = '🔥🔥🔥 热恋中';
+    else if (temperature >= 60) temperatureLabel = '🔥🔥 甜蜜期';
+    else if (temperature >= 40) temperatureLabel = '🔥 升温中';
+    else if (temperature >= 20) temperatureLabel = '☀️ 温暖期';
+
+    res.json({
+      week_key: weekStart,
+      total: data.total,
+      last_week_total: data.lastWeekTotal,
+      change_percent: changePct,
+      my_count: data.myCount,
+      partner_count: data.partnerCount,
+      streak,
+      top_actions: data.topActions,
+      daily_question_rate: `${data.dailyQuestionDays}/7`,
+      ritual_morning_rate: `${data.ritualMorningDays}/7`,
+      ritual_evening_rate: `${data.ritualEveningDays}/7`,
+      temperature,
+      temperature_label: temperatureLabel,
+    });
+  });
+
+  // POST /api/capsules
+  router.post('/capsules', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { content, unlock_date } = req.body;
+
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'content is required' });
+    }
+    if (content.length > 1000) {
+      return res.status(400).json({ error: 'content max 1000 characters' });
+    }
+    if (!unlock_date || typeof unlock_date !== 'string') {
+      return res.status(400).json({ error: 'unlock_date is required' });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    if (unlock_date <= today) {
+      return res.status(400).json({ error: 'unlock_date must be in the future' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date);
+    res.json({ id: capsule.id, unlock_date: capsule.unlock_date, created_at: capsule.created_at });
+  });
+
+  // GET /api/capsules
+  router.get('/capsules', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ capsules: [] });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const capsules = dbOps.getCapsules(userId, user.partner_id).map(c => ({
+      id: c.id,
+      author: c.user_id === userId ? 'me' : 'partner',
+      content: c.opened_at ? c.content : null,
+      unlock_date: c.unlock_date,
+      is_unlockable: c.unlock_date <= today && !c.opened_at,
+      opened_at: c.opened_at,
+      created_at: c.created_at,
+    }));
+
+    res.json({ capsules });
+  });
+
+  // POST /api/capsules/:id/open
+  router.post('/capsules/:id/open', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const capsules = user.partner_id ? dbOps.getCapsules(userId, user.partner_id) : [];
+    const capsule = capsules.find(c => c.id === id);
+    if (!capsule) return res.status(404).json({ error: 'Capsule not found' });
+
+    const today = new Date().toISOString().slice(0, 10);
+    if (capsule.unlock_date > today) {
+      return res.status(400).json({ error: 'Capsule is not yet unlockable' });
+    }
+
+    if (capsule.opened_at) {
+      return res.json({ success: true, content: capsule.content });
+    }
+
+    dbOps.openCapsule(id);
+    res.json({ success: true, content: capsule.content });
+  });
+
+  // GET /api/bucket
+  router.get('/bucket', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ items: [], total: 0, completed_count: 0 });
+
+    const items = dbOps.getBucketItems(userId, user.partner_id).map(i => ({
+      ...i,
+      created_by: i.user_id === userId ? 'me' : 'partner',
+    }));
+    const completedCount = items.filter(i => i.completed).length;
+
+    res.json({ items, total: items.length, completed_count: completedCount });
+  });
+
+  // POST /api/bucket
+  router.post('/bucket', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { title, category } = req.body;
+
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const item = dbOps.createBucketItem(userId, user.partner_id, title.trim(), category || null);
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, 'bucket_new', user.name);
+    }
+
+    res.json({ item });
+  });
+
+  // POST /api/bucket/:id/complete
+  router.post('/bucket/:id/complete', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const updated = dbOps.completeBucketItem(id, userId);
+    if (!updated) return res.status(404).json({ error: 'Item not found' });
+
+    if (user.partner_id) {
+      const partner = dbOps.getUser(user.partner_id);
+      if (partner?.device_token) {
+        await pushFn(partner.device_token, 'bucket_complete', user.name);
+      }
+    }
+
+    res.json({ success: true });
+  });
+
+  // POST /api/bucket/:id/uncomplete
+  router.post('/bucket/:id/uncomplete', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    // Verify item belongs to this couple
+    const items = dbOps.getBucketItems(userId, user.partner_id);
+    if (!items.some(i => i.id === id)) return res.status(404).json({ error: 'Item not found' });
+
+    const updated = dbOps.uncompleteBucketItem(id);
+    if (!updated) return res.status(404).json({ error: 'Item not found' });
+
+    res.json({ success: true });
+  });
+
+  // DELETE /api/bucket/:id
+  router.delete('/bucket/:id', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const id = parseInt(req.params.id as string);
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const deleted = dbOps.deleteBucketItem(id, userId, user.partner_id);
+    if (!deleted) return res.status(404).json({ error: 'Item not found' });
+
+    res.json({ success: true });
+  });
+
+  // POST /api/snaps (multipart upload)
+  const snapStorage = multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const dir = path.join(__dirname, '..', 'data', 'snaps', req.userId!);
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, _file, cb) => {
+      const user = dbOps.getUser(req.userId!);
+      const tz = user?.timezone || 'UTC';
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+      cb(null, `${today}.jpg`);
+    },
+  });
+  const snapUpload = multer({
+    storage: snapStorage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith('image/')) cb(null, true);
+      else cb(new Error('Only images allowed'));
+    },
+  });
+
+  router.post('/snaps', snapUpload.single('photo'), async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    if (!req.file) return res.status(400).json({ error: 'photo is required' });
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const snapDate = new Date().toLocaleDateString('en-CA', { timeZone: user.timezone });
+    const photoPath = `${userId}/${path.basename(req.file.path)}`;
+
+    const saved = dbOps.saveSnap(userId, snapDate, photoPath);
+    if (!saved) return res.status(400).json({ error: 'Already snapped today' });
+
+    // Check if partner also snapped
+    const partnerSnap = dbOps.getSnap(user.partner_id, snapDate);
+    const bothSnapped = !!partnerSnap;
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, bothSnapped ? 'snap_both' : 'snap_submitted', user.name);
+    }
+
+    res.json({ success: true, both_snapped: bothSnapped, snap_date: snapDate });
+  });
+
+  // GET /api/snaps/today
+  router.get('/snaps/today', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: user.timezone });
+    const mySnap = dbOps.getSnap(userId, today);
+    const partnerSnap = user.partner_id ? dbOps.getSnap(user.partner_id, today) : undefined;
+
+    res.json({
+      snap_date: today,
+      my_snapped: !!mySnap,
+      partner_snapped: !!partnerSnap,
+      my_photo: mySnap?.photo_path ? `/uploads/${mySnap.photo_path}` : null,
+      partner_photo: partnerSnap?.photo_path ? `/uploads/${partnerSnap.photo_path}` : null,
+    });
+  });
+
+  // GET /api/snaps
+  router.get('/snaps', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const month = req.query.month as string;
+
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month parameter required (YYYY-MM)' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ snaps: [] });
+
+    const snaps = dbOps.getSnaps(userId, user.partner_id, month).map(s => ({
+      date: s.snap_date,
+      my_photo: s.user_photo ? `/uploads/${s.user_photo}` : null,
+      partner_photo: s.partner_photo ? `/uploads/${s.partner_photo}` : null,
+      both_snapped: !!s.user_photo && !!s.partner_photo,
+    }));
+
+    res.json({ snaps });
+  });
+
+  // GET /api/weekly-challenge
+  router.get('/weekly-challenge', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const weekStart = getCurrentWeekMonday();
+    let challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
+
+    // Auto-assign if none
+    if (!challenge) {
+      const recent = dbOps.getRecentChallengeIndexes(userId, user.partner_id, 20);
+      const recentSet = new Set(recent);
+      const available = CHALLENGES.filter(c => !recentSet.has(c.id));
+      const pool = available.length > 0 ? available : CHALLENGES;
+      const picked = pool[Math.floor(Math.random() * pool.length)];
+      challenge = dbOps.assignWeeklyChallenge(userId, user.partner_id, picked.id, weekStart);
+    }
+
+    const def = CHALLENGES.find(c => c.id === challenge!.challenge_index);
+    if (!def) return res.status(500).json({ error: 'Challenge definition not found' });
+
+    let progress = 0;
+    if (challenge.status === 'completed') {
+      progress = def.target;
+    } else {
+      progress = computeProgress(dbOps, challenge, def);
+      // Auto-complete if target reached
+      if (progress >= def.target && challenge.status === 'active') {
+        dbOps.completeWeeklyChallenge(challenge.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
+        challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart)!;
+      }
+    }
+
+    const myResponse = dbOps.getChallengeResponse(challenge.id, userId);
+    const points = dbOps.getCouplePoints(userId, user.partner_id);
+
+    res.json({
+      challenge: def,
+      progress: Math.min(progress, def.target),
+      target: def.target,
+      status: challenge.status,
+      week_start: weekStart,
+      my_response: myResponse,
+      couple_points: points,
+    });
+  });
+
+  // POST /api/weekly-challenge/response
+  router.post('/weekly-challenge/response', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { response } = req.body;
+
+    if (!response || typeof response !== 'string' || !response.trim()) {
+      return res.status(400).json({ error: 'response is required' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const weekStart = getCurrentWeekMonday();
+    const challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
+    if (!challenge) return res.status(400).json({ error: 'No active challenge' });
+
+    const def = CHALLENGES.find(c => c.id === challenge.challenge_index);
+    if (!def || def.type !== 'custom_response') {
+      return res.status(400).json({ error: 'This challenge does not accept text responses' });
+    }
+
+    dbOps.submitChallengeResponse(challenge.id, userId, response.trim());
+
+    // Check completion (custom_response target is typically 1 meaning one person)
+    const progress = computeProgress(dbOps, challenge, def);
+    if (progress >= def.target && challenge.status === 'active') {
+      dbOps.completeWeeklyChallenge(challenge.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
+    }
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, 'challenge_response', user.name);
+    }
+
+    res.json({ success: true });
+  });
+
+  // GET /api/couple-points
+  router.get('/couple-points', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ points: 0 });
+
+    const points = dbOps.getCouplePoints(userId, user.partner_id);
+    res.json({ points });
+  });
+
+  // GET /api/coincidences/stats
+  router.get('/coincidences/stats', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ total_count: 0, total_seconds: 0 });
+
+    const stats = dbOps.getCoincidenceStats(userId, user.partner_id);
+    res.json(stats);
+  });
+
+  // GET /api/ws-ticket
+  router.get('/ws-ticket', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const ticket = createWsTicket(userId);
+    res.json({ ticket, expires_in: 30 });
   });
 
   // POST /api/logout

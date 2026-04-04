@@ -13,12 +13,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     supportsTablet: false,
     bundleIdentifier: 'com.couplebuzz.app',
+    entitlements: {
+      'com.apple.security.application-groups': ['group.com.couplebuzz.app'],
+    },
     infoPlist: {
       UIBackgroundModes: ['remote-notification'],
     },
   },
   plugins: [
     ['expo-notifications', { sounds: [] }],
+    '@bacons/apple-targets',
   ],
   extra: {
     apiUrl: process.env.API_URL || 'http://localhost:3000',

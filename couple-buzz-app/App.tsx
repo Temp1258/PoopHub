@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ActivityIndicator, View, Text, StyleSheet, LogBox } from 'react-native';
+import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
 import { NavigationContainer } from '@react-navigation/native';
@@ -12,6 +12,7 @@ import { COLORS } from './src/constants';
 import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
 import { api } from './src/services/api';
+import { connectSocket, disconnectSocket } from './src/services/socket';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -206,6 +207,26 @@ export default function App() {
   useEffect(() => {
     Notifications.setBadgeCountAsync(hasUnread ? 1 : 0);
   }, [hasUnread]);
+
+  // Socket lifecycle: connect when ready, handle foreground/background
+  useEffect(() => {
+    if (appState !== 'ready') return;
+
+    connectSocket();
+
+    const sub = RNAppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        connectSocket();
+      } else {
+        disconnectSocket();
+      }
+    });
+
+    return () => {
+      sub.remove();
+      disconnectSocket();
+    };
+  }, [appState]);
 
   const handleLatestSeen = useCallback((id: number) => {
     lastSeenIdRef.current = id;

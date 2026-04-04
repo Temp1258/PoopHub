@@ -3,6 +3,12 @@ import { Text, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import DailyQuestionCard from '../components/DailyQuestionCard';
+import WeeklyChallengeCard from '../components/WeeklyChallengeCard';
+import MailboxCard from '../components/MailboxCard';
+import DailySnapCard from '../components/DailySnapCard';
+import TimeCapsuleCard from '../components/TimeCapsuleCard';
+import BucketListCard from '../components/BucketListCard';
+import WeeklyReportCard from '../components/WeeklyReportCard';
 import StatsCard from '../components/StatsCard';
 import MoodCalendar from '../components/MoodCalendar';
 
@@ -17,6 +23,12 @@ export default function UsScreen() {
     >
       <Text style={styles.title}>我们</Text>
       <DailyQuestionCard />
+      <WeeklyChallengeCard />
+      <MailboxCard />
+      <DailySnapCard />
+      <TimeCapsuleCard />
+      <BucketListCard />
+      <WeeklyReportCard />
       <StatsCard />
       <MoodCalendar />
     </ScrollView>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { COLORS, ACTION_EMOJI } from '../constants';
+import { HistoryAction } from '../services/api';
 
 interface Props {
   userName: string;
@@ -9,10 +10,12 @@ interface Props {
   partnerTime?: string;
   isMine: boolean;
   remark?: string;
+  reactions?: HistoryAction[];
   onPress?: () => void;
+  onLongPress?: () => void;
 }
 
-export default function ActionRecord({ userName, actionType, time, partnerTime, isMine, remark, onPress }: Props) {
+export default function ActionRecord({ userName, actionType, time, partnerTime, isMine, remark, reactions, onPress, onLongPress }: Props) {
   const emoji = ACTION_EMOJI[actionType] || '?';
   const displayName = !isMine && remark ? `${userName} (${remark})` : userName;
 
@@ -21,6 +24,8 @@ export default function ActionRecord({ userName, actionType, time, partnerTime, 
       <TouchableOpacity
         style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}
         onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={400}
         activeOpacity={0.7}
       >
         <Text style={styles.emoji}>{emoji}</Text>
@@ -35,6 +40,15 @@ export default function ActionRecord({ userName, actionType, time, partnerTime, 
           )}
         </View>
       </TouchableOpacity>
+      {reactions && reactions.length > 0 && (
+        <View style={[styles.reactionsRow, isMine ? styles.reactionsRowMine : styles.reactionsRowTheirs]}>
+          {reactions.map((r) => (
+            <View key={r.id} style={styles.reactionBadge}>
+              <Text style={styles.reactionEmoji}>{ACTION_EMOJI[r.action_type] || '?'}</Text>
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -83,5 +97,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textLight,
     marginTop: 2,
+  },
+  reactionsRow: {
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 4,
+  },
+  reactionsRowMine: {
+    justifyContent: 'flex-end',
+    paddingRight: 8,
+  },
+  reactionsRowTheirs: {
+    justifyContent: 'flex-start',
+    paddingLeft: 8,
+  },
+  reactionBadge: {
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  reactionEmoji: {
+    fontSize: 14,
   },
 });

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, ACTION_CATEGORIES } from '../constants';
 import { api, DatesResponse } from '../services/api';
 import ActionButton from '../components/ActionButton';
+import TouchArea from '../components/TouchArea';
+import { subscribe } from '../services/socket';
+import RitualButton from '../components/RitualButton';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const BUTTON_SIZE = (SCREEN_WIDTH - 90) / 3;
@@ -27,6 +30,32 @@ export default function HomeScreen({ partnerName, streak }: Props) {
   const toastOpacity = useRef(new RNAnimated.Value(0)).current;
   const [toastText, setToastText] = useState('');
   const [pinnedDate, setPinnedDate] = useState<DatesResponse['pinned']>(null);
+  const [presenceBoth, setPresenceBoth] = useState(false);
+  const presenceAnim = useRef(new RNAnimated.Value(0)).current;
+
+  useEffect(() => {
+    const unsubs = [
+      subscribe('presence_both', () => {
+        setPresenceBoth(true);
+        presenceAnim.stopAnimation();
+        RNAnimated.loop(
+          RNAnimated.sequence([
+            RNAnimated.timing(presenceAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
+            RNAnimated.timing(presenceAnim, { toValue: 0.4, duration: 1200, useNativeDriver: true }),
+          ])
+        ).start();
+      }),
+      subscribe('presence_single', () => {
+        setPresenceBoth(false);
+        presenceAnim.stopAnimation();
+        presenceAnim.setValue(0);
+      }),
+    ];
+    return () => {
+      unsubs.forEach(fn => fn());
+      presenceAnim.stopAnimation();
+    };
+  }, [presenceAnim]);
 
   useFocusEffect(
     useCallback(() => {
@@ -85,9 +114,17 @@ export default function HomeScreen({ partnerName, streak }: Props) {
           </View>
         )}
         <Text style={styles.subtitle}>与 {partnerName} 已连接</Text>
+        {presenceBoth && (
+          <RNAnimated.View style={[styles.presenceBadge, { opacity: presenceAnim }]}>
+            <Text style={styles.presenceText}>你们正在同时想着对方 💓</Text>
+          </RNAnimated.View>
+        )}
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <RitualButton />
+        <TouchArea />
+
         {ACTION_CATEGORIES.map((category) => (
           <View key={category.title}>
             <Text style={styles.categoryTitle}>{category.title}</Text>
@@ -150,6 +187,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textLight,
     marginTop: 6,
+  },
+  presenceBadge: {
+    marginTop: 8,
+    backgroundColor: '#FFF0F3',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.kiss,
+  },
+  presenceText: {
+    fontSize: 13,
+    color: COLORS.kiss,
+    fontWeight: '500',
   },
   scrollContent: {
     paddingHorizontal: 20,

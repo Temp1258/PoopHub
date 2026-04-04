@@ -661,6 +661,545 @@ describe('Daily Question', () => {
   });
 });
 
+describe('POST /api/reaction', () => {
+  it('should react to partner action', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    // Bob sends an action
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ action_type: 'miss' });
+
+    // Get history to find the action id
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const actionId = historyRes.body.actions[0].id;
+
+    // Alice reacts
+    const res = await request(app)
+      .post('/api/reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_id: actionId, action_type: 'kiss' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.reaction_id).toBeDefined();
+  });
+
+  it('should include reactions in history response', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ action_type: 'miss' });
+
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const actionId = historyRes.body.actions[0].id;
+
+    await request(app)
+      .post('/api/reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_id: actionId, action_type: 'kiss' });
+
+    const res = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    // Reactions should not appear as top-level actions
+    expect(res.body.actions).toHaveLength(1);
+    // Reactions should be in the reactions map
+    expect(res.body.reactions).toBeDefined();
+    expect(res.body.reactions[actionId]).toHaveLength(1);
+    expect(res.body.reactions[actionId][0].action_type).toBe('kiss');
+  });
+
+  it('should not react to own action', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'miss' });
+
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const actionId = historyRes.body.actions[0].id;
+
+    const res = await request(app)
+      .post('/api/reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_id: actionId, action_type: 'kiss' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('should update existing reaction', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ action_type: 'miss' });
+
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const actionId = historyRes.body.actions[0].id;
+
+    // React first time
+    await request(app)
+      .post('/api/reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_id: actionId, action_type: 'kiss' });
+
+    // React again (update)
+    await request(app)
+      .post('/api/reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_id: actionId, action_type: 'love' });
+
+    const res = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    // Should still be only 1 reaction (updated)
+    expect(res.body.reactions[actionId]).toHaveLength(1);
+    expect(res.body.reactions[actionId][0].action_type).toBe('love');
+  });
+
+  it('should send push notification on reaction', async () => {
+    const { app, mockPush } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ action_type: 'miss' });
+
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const actionId = historyRes.body.actions[0].id;
+
+    await request(app)
+      .post('/api/reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_id: actionId, action_type: 'kiss' });
+
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'reaction', 'Alice');
+  });
+});
+
+describe('Ritual API', () => {
+  it('should submit morning ritual', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .post('/api/ritual')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ ritual_type: 'morning' });
+
+    // May succeed or fail depending on current hour, but should not 500
+    expect([200, 400]).toContain(res.status);
+  });
+
+  it('should get ritual status', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/ritual/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.morning).toBeDefined();
+    expect(res.body.evening).toBeDefined();
+    expect(res.body.local_hour).toBeDefined();
+  });
+
+  it('should reject invalid ritual_type', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .post('/api/ritual')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ ritual_type: 'noon' });
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('Mailbox API', () => {
+  it('should get mailbox status', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/mailbox')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.week_key).toBeDefined();
+    expect(res.body.phase).toBeDefined();
+    expect(res.body.reveal_at).toBeDefined();
+  });
+
+  it('should submit mailbox message', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const statusRes = await request(app)
+      .get('/api/mailbox')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    // Only test submission if in writing phase
+    if (statusRes.body.phase === 'writing') {
+      const res = await request(app)
+        .post('/api/mailbox')
+        .set('Authorization', `Bearer ${alice.access_token}`)
+        .send({ content: '我想对你说...' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      // Verify it's stored
+      const getRes = await request(app)
+        .get('/api/mailbox')
+        .set('Authorization', `Bearer ${alice.access_token}`);
+      expect(getRes.body.my_message).toBe('我想对你说...');
+    }
+  });
+
+  it('should update existing mailbox message', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const statusRes = await request(app)
+      .get('/api/mailbox')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    if (statusRes.body.phase === 'writing') {
+      await request(app)
+        .post('/api/mailbox')
+        .set('Authorization', `Bearer ${alice.access_token}`)
+        .send({ content: '第一版' });
+
+      await request(app)
+        .post('/api/mailbox')
+        .set('Authorization', `Bearer ${alice.access_token}`)
+        .send({ content: '修改版' });
+
+      const getRes = await request(app)
+        .get('/api/mailbox')
+        .set('Authorization', `Bearer ${alice.access_token}`);
+      expect(getRes.body.my_message).toBe('修改版');
+    }
+  });
+
+  it('should not reveal partner message before reveal time', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    const statusRes = await request(app)
+      .get('/api/mailbox')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    if (statusRes.body.phase === 'writing') {
+      await request(app)
+        .post('/api/mailbox')
+        .set('Authorization', `Bearer ${bob.access_token}`)
+        .send({ content: 'Bob的秘密' });
+
+      const getRes = await request(app)
+        .get('/api/mailbox')
+        .set('Authorization', `Bearer ${alice.access_token}`);
+      expect(getRes.body.partner_message).toBeNull();
+    }
+  });
+
+  it('should reject content over 500 chars', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .post('/api/mailbox')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ content: 'x'.repeat(501) });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('should get mailbox archive', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/mailbox/archive')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.weeks).toBeDefined();
+  });
+});
+
+describe('Weekly Report', () => {
+  it('should return weekly report data', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    await request(app).post('/api/action').set('Authorization', `Bearer ${alice.access_token}`).send({ action_type: 'kiss' });
+    await request(app).post('/api/action').set('Authorization', `Bearer ${bob.access_token}`).send({ action_type: 'miss' });
+
+    const res = await request(app)
+      .get('/api/weekly-report')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBeGreaterThanOrEqual(2);
+    expect(res.body.temperature).toBeDefined();
+    expect(res.body.top_actions).toBeDefined();
+  });
+});
+
+describe('Time Capsules', () => {
+  it('should create a capsule', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .post('/api/capsules')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ content: '来自过去的信', unlock_date: '2099-12-31' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBeDefined();
+  });
+
+  it('should list capsules with hidden content', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/capsules')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ content: '秘密', unlock_date: '2099-12-31' });
+
+    const res = await request(app)
+      .get('/api/capsules')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.body.capsules).toHaveLength(1);
+    expect(res.body.capsules[0].content).toBeNull(); // Not opened yet
+    expect(res.body.capsules[0].is_unlockable).toBe(false);
+  });
+
+  it('should reject past unlock_date', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .post('/api/capsules')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ content: 'test', unlock_date: '2020-01-01' });
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('Bucket List', () => {
+  it('should create and list bucket items', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/bucket')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '一起去日本', category: 'travel' });
+
+    const res = await request(app)
+      .get('/api/bucket')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].title).toBe('一起去日本');
+    expect(res.body.total).toBe(1);
+    expect(res.body.completed_count).toBe(0);
+  });
+
+  it('should complete and uncomplete items', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const createRes = await request(app)
+      .post('/api/bucket')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '看电影' });
+
+    const itemId = createRes.body.item.id;
+
+    await request(app)
+      .post(`/api/bucket/${itemId}/complete`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    let listRes = await request(app).get('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(listRes.body.completed_count).toBe(1);
+
+    await request(app)
+      .post(`/api/bucket/${itemId}/uncomplete`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    listRes = await request(app).get('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(listRes.body.completed_count).toBe(0);
+  });
+
+  it('should delete bucket items', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const createRes = await request(app)
+      .post('/api/bucket')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '删除测试' });
+
+    const res = await request(app)
+      .delete(`/api/bucket/${createRes.body.item.id}`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+
+    const listRes = await request(app).get('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(listRes.body.items).toHaveLength(0);
+  });
+
+  it('should send push on bucket create', async () => {
+    const { app, mockPush } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/bucket')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '新心愿' });
+
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'bucket_new', 'Alice');
+  });
+});
+
+describe('Daily Snaps', () => {
+  it('should get today snap status', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/snaps/today')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.my_snapped).toBe(false);
+    expect(res.body.snap_date).toBeDefined();
+  });
+
+  it('should get snaps by month', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/snaps?month=2026-04')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.snaps).toBeDefined();
+  });
+});
+
+describe('Weekly Challenge', () => {
+  it('should auto-assign and return a challenge', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/weekly-challenge')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.challenge).toBeDefined();
+    expect(res.body.challenge.title).toBeDefined();
+    expect(res.body.progress).toBeDefined();
+    expect(res.body.target).toBeDefined();
+    expect(res.body.status).toBe('active');
+  });
+
+  it('should return same challenge on second call', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res1 = await request(app)
+      .get('/api/weekly-challenge')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const res2 = await request(app)
+      .get('/api/weekly-challenge')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res1.body.challenge.id).toBe(res2.body.challenge.id);
+  });
+
+  it('should submit custom response', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    // Get assigned challenge
+    await request(app)
+      .get('/api/weekly-challenge')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    const res = await request(app)
+      .post('/api/weekly-challenge/response')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ response: '我的回答' });
+
+    // May succeed or fail depending on challenge type
+    expect([200, 400]).toContain(res.status);
+  });
+
+  it('should get couple points', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/couple-points')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.points).toBeDefined();
+  });
+});
+
+describe('Coincidence Stats', () => {
+  it('should return coincidence stats', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const res = await request(app)
+      .get('/api/coincidences/stats')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.total_count).toBe(0);
+    expect(res.body.total_seconds).toBe(0);
+  });
+});
+
 describe('POST /api/logout', () => {
   it('should clear device token and revoke tokens', async () => {
     const { app } = createTestApp();

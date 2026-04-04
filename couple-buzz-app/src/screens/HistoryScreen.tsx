@@ -15,6 +15,7 @@ import { COLORS, ACTION_EMOJI } from '../constants';
 import { api, HistoryAction } from '../services/api';
 import { storage } from '../utils/storage';
 import ActionRecord from '../components/ActionRecord';
+import ReactionPicker from '../components/ReactionPicker';
 
 const TIMEZONE_LABELS: Record<string, string> = {
   'Asia/Shanghai': '北京时间 (UTC+8)',
@@ -101,6 +102,8 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
   const [selectedItem, setSelectedItem] = useState<HistoryAction | null>(null);
   const [editingRemark, setEditingRemark] = useState('');
   const [savingRemark, setSavingRemark] = useState(false);
+  const [reactions, setReactions] = useState<Record<number, HistoryAction[]>>({});
+  const [reactionTarget, setReactionTarget] = useState<HistoryAction | null>(null);
   const listRef = useRef<SectionList>(null);
   const onLatestSeenRef = useRef(onLatestSeen);
   onLatestSeenRef.current = onLatestSeen;
@@ -138,6 +141,7 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       setSections(groupByDate(reversed));
+      setReactions(result.reactions || {});
       const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
       prevLatestIdRef.current = latestId;
       if (latestId > 0) onLatestSeenRef.current?.(latestId);
@@ -159,6 +163,7 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
           const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
           if (latestId !== prevLatestIdRef.current) {
             setSections(groupByDate(reversed));
+            setReactions(result.reactions || {});
             prevLatestIdRef.current = latestId;
             if (latestId > 0) onLatestSeenRef.current?.(latestId);
           }
@@ -177,6 +182,24 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
     setSelectedItem(item);
     setEditingRemark(partnerRemark);
   }, [partnerRemark]);
+
+  const handleReactionLongPress = useCallback((item: HistoryAction) => {
+    if (item.user_id === myUserId) return; // Can't react to own
+    setReactionTarget(item);
+  }, [myUserId]);
+
+  const handleReactionSelect = useCallback(async (actionType: string) => {
+    if (!reactionTarget) return;
+    setReactionTarget(null);
+    try {
+      await api.sendReaction(reactionTarget.id, actionType);
+      // Refresh to show the reaction
+      const result = await api.getHistory(100);
+      const reversed = [...result.actions].reverse();
+      setSections(groupByDate(reversed));
+      setReactions(result.reactions || {});
+    } catch {}
+  }, [reactionTarget]);
 
   const handleSaveRemark = useCallback(async () => {
     setSavingRemark(true);
@@ -225,7 +248,9 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
               partnerTime={pTime}
               isMine={isMine}
               remark={!isMine ? partnerRemark : undefined}
+              reactions={reactions[item.id]}
               onPress={() => handleItemPress(item)}
+              onLongPress={!isMine ? () => handleReactionLongPress(item) : undefined}
             />
           );
         }}
@@ -243,6 +268,13 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
         contentContainerStyle={sections.length === 0 ? styles.emptyContainer : styles.list}
         stickySectionHeadersEnabled={false}
       />
+
+      {reactionTarget && (
+        <ReactionPicker
+          onSelect={handleReactionSelect}
+          onClose={() => setReactionTarget(null)}
+        />
+      )}
 
       {selectedItem && (
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setSelectedItem(null)}>

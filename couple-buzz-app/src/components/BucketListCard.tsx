@@ -1,0 +1,206 @@
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { COLORS } from '../constants';
+import { api, BucketItemResponse } from '../services/api';
+
+const CATEGORIES = [
+  { value: null, label: '全部' },
+  { value: 'travel', label: '旅行' },
+  { value: 'food', label: '美食' },
+  { value: 'activity', label: '活动' },
+  { value: 'other', label: '其他' },
+];
+
+export default function BucketListCard() {
+  const [items, setItems] = useState<BucketItemResponse[]>([]);
+  const [total, setTotal] = useState(0);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [newCategory, setNewCategory] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const result = await api.getBucket();
+      setItems(result.items);
+      setTotal(result.total);
+      setCompletedCount(result.completed_count);
+    } catch {}
+    setLoading(false);
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const handleAdd = async () => {
+    if (!newTitle.trim()) return;
+    try {
+      await api.createBucketItem(newTitle.trim(), newCategory || undefined);
+      setNewTitle('');
+      setNewCategory(null);
+      setShowAdd(false);
+      await load();
+    } catch (e: any) {
+      Alert.alert('', e.message);
+    }
+  };
+
+  const handleToggle = async (item: BucketItemResponse) => {
+    try {
+      if (item.completed) {
+        await api.uncompleteBucketItem(item.id);
+      } else {
+        await api.completeBucketItem(item.id);
+      }
+      await load();
+    } catch (e: any) {
+      Alert.alert('', e.message || '操作失败');
+    }
+  };
+
+  const handleDelete = (item: BucketItemResponse) => {
+    Alert.alert('删除', `确定删除"${item.title}"？`, [
+      { text: '取消', style: 'cancel' },
+      { text: '删除', style: 'destructive', onPress: async () => { await api.deleteBucketItem(item.id); await load(); } },
+    ]);
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.card}>
+        <ActivityIndicator color={COLORS.kiss} />
+      </View>
+    );
+  }
+
+  const filtered = filter ? items.filter(i => i.category === filter) : items;
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.header}>心愿清单 ✨</Text>
+
+      <Text style={styles.summary}>{completedCount}/{total} 已完成</Text>
+
+      {expanded && (
+        <View>
+          <View style={styles.filterRow}>
+            {CATEGORIES.map(c => (
+              <TouchableOpacity
+                key={c.label}
+                style={[styles.filterChip, filter === c.value && styles.filterChipActive]}
+                onPress={() => setFilter(c.value)}
+              >
+                <Text style={[styles.filterText, filter === c.value && styles.filterTextActive]}>{c.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {filtered.map(item => (
+            <TouchableOpacity
+              key={item.id}
+              style={styles.itemRow}
+              onPress={() => handleToggle(item)}
+              onLongPress={() => handleDelete(item)}
+            >
+              <Text style={styles.checkbox}>{item.completed ? '✅' : '⬜'}</Text>
+              <View style={styles.itemInfo}>
+                <Text style={[styles.itemTitle, !!item.completed && styles.itemTitleDone]}>{item.title}</Text>
+                {item.category && <Text style={styles.itemCategory}>{item.category}</Text>}
+              </View>
+            </TouchableOpacity>
+          ))}
+
+          {showAdd ? (
+            <View style={styles.addForm}>
+              <TextInput
+                style={styles.input}
+                value={newTitle}
+                onChangeText={setNewTitle}
+                placeholder="心愿名称"
+                placeholderTextColor={COLORS.textLight}
+                maxLength={50}
+                autoFocus
+              />
+              <View style={styles.catRow}>
+                {CATEGORIES.slice(1).map(c => (
+                  <TouchableOpacity
+                    key={c.value}
+                    style={[styles.catChip, newCategory === c.value && styles.catChipActive]}
+                    onPress={() => setNewCategory(newCategory === c.value ? null : c.value)}
+                  >
+                    <Text style={[styles.catText, newCategory === c.value && styles.catTextActive]}>{c.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.addActions}>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAdd(false)}>
+                  <Text style={styles.cancelText}>取消</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitBtn, !newTitle.trim() && styles.submitDisabled]}
+                  onPress={handleAdd}
+                  disabled={!newTitle.trim()}
+                >
+                  <Text style={styles.submitText}>添加</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.addLink} onPress={() => setShowAdd(true)}>
+              <Text style={styles.addLinkText}>+ 添加心愿</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      <TouchableOpacity style={styles.toggleBtn} onPress={() => setExpanded(!expanded)}>
+        <Text style={styles.toggleText}>{expanded ? '收起' : '查看全部'}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { backgroundColor: COLORS.white, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: COLORS.border },
+  header: { fontSize: 13, fontWeight: '600', color: COLORS.textLight, marginBottom: 8 },
+  summary: { fontSize: 16, fontWeight: '600', color: COLORS.text, textAlign: 'center', marginBottom: 4 },
+  filterRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' },
+  filterChip: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border },
+  filterChipActive: { backgroundColor: COLORS.kiss, borderColor: COLORS.kiss },
+  filterText: { fontSize: 12, color: COLORS.textLight },
+  filterTextActive: { color: COLORS.white, fontWeight: '600' },
+  itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
+  checkbox: { fontSize: 18 },
+  itemInfo: { flex: 1 },
+  itemTitle: { fontSize: 15, color: COLORS.text },
+  itemTitleDone: { textDecorationLine: 'line-through', color: COLORS.textLight },
+  itemCategory: { fontSize: 11, color: COLORS.textLight, marginTop: 2 },
+  addForm: { marginTop: 12, gap: 8 },
+  input: { backgroundColor: COLORS.background, borderRadius: 12, paddingHorizontal: 16, height: 44, fontSize: 16, color: COLORS.text, borderWidth: 1, borderColor: COLORS.border },
+  catRow: { flexDirection: 'row', gap: 6 },
+  catChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border },
+  catChipActive: { borderColor: COLORS.kiss, backgroundColor: '#FFF0F3' },
+  catText: { fontSize: 12, color: COLORS.textLight },
+  catTextActive: { color: COLORS.kiss },
+  addActions: { flexDirection: 'row', gap: 10 },
+  cancelBtn: { flex: 1, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
+  cancelText: { fontSize: 14, color: COLORS.textLight },
+  submitBtn: { flex: 1, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.kiss },
+  submitDisabled: { opacity: 0.4 },
+  submitText: { fontSize: 14, fontWeight: '600', color: COLORS.white },
+  addLink: { height: 40, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed', borderRadius: 10, marginTop: 8 },
+  addLinkText: { fontSize: 13, color: COLORS.textLight },
+  toggleBtn: { alignItems: 'center', marginTop: 8 },
+  toggleText: { fontSize: 13, color: COLORS.textLight },
+});
