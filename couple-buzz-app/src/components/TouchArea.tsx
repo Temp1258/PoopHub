@@ -10,6 +10,7 @@ export default function TouchArea() {
   const rippleAnim = useRef(new Animated.Value(0)).current;
   const receiveAnim = useRef(new Animated.Value(0)).current;
   const hapticInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sendHapticInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     const unsubs = [
@@ -18,11 +19,12 @@ export default function TouchArea() {
       }),
       subscribe('touch_start', () => {
         setReceiving(true);
-        // Clear any existing interval before starting new one
         if (hapticInterval.current) clearInterval(hapticInterval.current);
+        // Immediate first haptic
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
         hapticInterval.current = setInterval(() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        }, 100);
+        }, 200);
         receiveAnim.stopAnimation();
         Animated.loop(
           Animated.sequence([
@@ -44,6 +46,7 @@ export default function TouchArea() {
     return () => {
       unsubs.forEach(fn => fn());
       if (hapticInterval.current) clearInterval(hapticInterval.current);
+      if (sendHapticInterval.current) clearInterval(sendHapticInterval.current);
       receiveAnim.stopAnimation();
       rippleAnim.stopAnimation();
     };
@@ -51,7 +54,13 @@ export default function TouchArea() {
 
   const handlePressIn = useCallback(() => {
     emitTouchStart();
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // Immediate strong haptic
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    // Continuous haptic while holding
+    if (sendHapticInterval.current) clearInterval(sendHapticInterval.current);
+    sendHapticInterval.current = setInterval(() => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }, 300);
     rippleAnim.stopAnimation();
     Animated.loop(
       Animated.sequence([
@@ -63,6 +72,10 @@ export default function TouchArea() {
 
   const handlePressOut = useCallback(() => {
     emitTouchEnd();
+    if (sendHapticInterval.current) {
+      clearInterval(sendHapticInterval.current);
+      sendHapticInterval.current = null;
+    }
     rippleAnim.stopAnimation();
     rippleAnim.setValue(0);
   }, [rippleAnim]);

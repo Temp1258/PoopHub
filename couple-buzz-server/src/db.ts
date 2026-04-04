@@ -210,7 +210,9 @@ export interface DbOps {
   getCouplePoints(userId: string, partnerId: string): number;
   // Challenge verification queries
   countActionsInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string, actionType?: string): number;
+  countUserActionsInWeek(userId: string, weekStart: string, weekEnd: string, actionType?: string): number;
   countDistinctActionTypesInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number;
+  countUserDistinctActionTypesInWeek(userId: string, weekStart: string, weekEnd: string): number;
   countBothActiveDaysInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number;
   countBothAnsweredQuestionsInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number;
   // Coincidences
@@ -743,8 +745,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtCountActionsByType = db.prepare(
     'SELECT COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND action_type = ? AND created_at >= ? AND created_at < ?'
   );
+  const stmtCountUserActions = db.prepare(
+    'SELECT COUNT(*) as count FROM actions WHERE user_id = ? AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
+  );
+  const stmtCountUserActionsByType = db.prepare(
+    'SELECT COUNT(*) as count FROM actions WHERE user_id = ? AND reply_to IS NULL AND action_type = ? AND created_at >= ? AND created_at < ?'
+  );
   const stmtCountDistinctTypes = db.prepare(
     'SELECT COUNT(DISTINCT action_type) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
+  );
+  const stmtCountUserDistinctTypes = db.prepare(
+    'SELECT COUNT(DISTINCT action_type) as count FROM actions WHERE user_id = ? AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
   );
   const stmtCountBothActiveDays = db.prepare(`
     SELECT COUNT(*) as count FROM (
@@ -1159,8 +1170,22 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return row.count;
     },
 
+    countUserActionsInWeek(userId: string, weekStart: string, weekEnd: string, actionType?: string): number {
+      if (actionType) {
+        const row = stmtCountUserActionsByType.get(userId, actionType, weekStart, weekEnd) as { count: number };
+        return row.count;
+      }
+      const row = stmtCountUserActions.get(userId, weekStart, weekEnd) as { count: number };
+      return row.count;
+    },
+
     countDistinctActionTypesInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number {
       const row = stmtCountDistinctTypes.get(userId, partnerId, weekStart, weekEnd) as { count: number };
+      return row.count;
+    },
+
+    countUserDistinctActionTypesInWeek(userId: string, weekStart: string, weekEnd: string): number {
+      const row = stmtCountUserDistinctTypes.get(userId, weekStart, weekEnd) as { count: number };
       return row.count;
     },
 

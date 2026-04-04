@@ -205,11 +205,19 @@ export default function SettingsScreen() {
       <Text style={[styles.sectionTitle, { marginTop: 40 }]}>纪念日管理</Text>
       {dates.map((d) => (
         <View key={d.id} style={[styles.dateRow, d.pinned ? styles.dateRowPinned : null]}>
-          <TouchableOpacity style={{ flex: 1 }} onPress={() => handlePinDate(d.id)}>
+          <View style={{ flex: 1 }}>
             <Text style={styles.dateTitle}>
               {d.pinned ? '📌 ' : ''}{d.title}{d.recurring ? ' 🔁' : ''}
             </Text>
-            <Text style={styles.dateValue}>{d.date}{!d.pinned ? '  点击置顶' : '  已置顶'}</Text>
+            <Text style={styles.dateValue}>{d.date}</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.pinBtn, d.pinned ? styles.pinBtnActive : undefined]}
+            onPress={() => handlePinDate(d.id)}
+          >
+            <Text style={[styles.pinBtnText, d.pinned ? styles.pinBtnTextActive : undefined]}>
+              {d.pinned ? '已置顶' : '置顶'}
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => handleDeleteDate(d.id, d.title)}>
             <Text style={styles.dateDelete}>删除</Text>
@@ -474,6 +482,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.textLight,
     marginTop: 2,
+  },
+  pinBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginRight: 10,
+  },
+  pinBtnActive: {
+    backgroundColor: '#FFF0F3',
+    borderColor: COLORS.kiss,
+  },
+  pinBtnText: {
+    fontSize: 12,
+    color: COLORS.textLight,
+  },
+  pinBtnTextActive: {
+    color: COLORS.kiss,
+    fontWeight: '600',
   },
   dateDelete: {
     fontSize: 14,

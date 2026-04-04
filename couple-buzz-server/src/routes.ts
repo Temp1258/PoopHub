@@ -1182,7 +1182,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (ch.status === 'completed') {
       progress = def.target;
     } else {
-      progress = computeProgress(dbOps, ch, def);
+      progress = computeProgress(dbOps, ch, def, userId);
       if (progress >= def.target && ch.status === 'active') {
         dbOps.completeWeeklyChallenge(ch.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
       }
@@ -1227,8 +1227,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     dbOps.submitChallengeResponse(challenge.id, userId, response.trim());
 
-    // Check completion (custom_response target is typically 1 meaning one person)
-    const progress = computeProgress(dbOps, challenge, def);
+    // Check completion (custom_response target is typically 1 per person)
+    const progress = computeProgress(dbOps, challenge, def, userId);
     if (progress >= def.target && challenge.status === 'active') {
       dbOps.completeWeeklyChallenge(challenge.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
     }

@@ -7,8 +7,10 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 
@@ -17,7 +19,8 @@ export default function TimeCapsuleCard() {
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [content, setContent] = useState('');
-  const [unlockDate, setUnlockDate] = useState('');
+  const [unlockDate, setUnlockDate] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -31,23 +34,32 @@ export default function TimeCapsuleCard() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+
+  const handleDateChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowDatePicker(false);
+    if (selectedDate) setUnlockDate(selectedDate);
+  };
+
+  const formatDate = (date: Date): string => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
   const handleCreate = async () => {
     if (!content.trim() || !unlockDate) return;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(unlockDate) || isNaN(new Date(unlockDate).getTime())) {
-      Alert.alert('', '请输入正确的日期格式 (YYYY-MM-DD)');
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    if (unlockDate <= today) {
-      Alert.alert('', '开启日期必须在未来');
-      return;
-    }
+    const dateStr = formatDate(unlockDate);
     setSubmitting(true);
     try {
-      await api.createCapsule(content.trim(), unlockDate);
+      await api.createCapsule(content.trim(), dateStr);
       setContent('');
-      setUnlockDate('');
+      setUnlockDate(null);
       setShowCreate(false);
+      setShowDatePicker(false);
       await load();
     } catch (e: any) {
       Alert.alert('', e.message);
@@ -135,16 +147,32 @@ export default function TimeCapsuleCard() {
             maxLength={1000}
             multiline
           />
-          <TextInput
-            style={styles.dateInput}
-            value={unlockDate}
-            onChangeText={setUnlockDate}
-            placeholder="开启日期 (YYYY-MM-DD)"
-            placeholderTextColor={COLORS.textLight}
-            maxLength={10}
-          />
+          <TouchableOpacity
+            style={styles.dateButton}
+            onPress={() => setShowDatePicker(true)}
+          >
+            <Text style={[styles.dateButtonText, !unlockDate && styles.dateButtonPlaceholder]}>
+              {unlockDate ? `开启日期: ${formatDate(unlockDate)}` : '选择开启日期'}
+            </Text>
+            <Text style={styles.dateButtonArrow}>📅</Text>
+          </TouchableOpacity>
+          {showDatePicker && (
+            <DateTimePicker
+              value={unlockDate || tomorrow}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'calendar'}
+              minimumDate={tomorrow}
+              onChange={handleDateChange}
+              locale="zh-CN"
+            />
+          )}
           <View style={styles.createActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowCreate(false)}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => {
+              setShowCreate(false);
+              setShowDatePicker(false);
+              setUnlockDate(null);
+              setContent('');
+            }}>
               <Text style={styles.cancelText}>取消</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -224,15 +252,26 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
   },
-  dateInput: {
+  dateButton: {
     backgroundColor: COLORS.background,
     borderRadius: 12,
     paddingHorizontal: 16,
     height: 44,
-    fontSize: 16,
-    color: COLORS.text,
     borderWidth: 1,
     borderColor: COLORS.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  dateButtonText: {
+    fontSize: 16,
+    color: COLORS.text,
+  },
+  dateButtonPlaceholder: {
+    color: COLORS.textLight,
+  },
+  dateButtonArrow: {
+    fontSize: 18,
   },
   createActions: { flexDirection: 'row', gap: 10 },
   cancelBtn: {

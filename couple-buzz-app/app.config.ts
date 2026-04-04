@@ -23,6 +23,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     ['expo-notifications', { sounds: [] }],
     '@bacons/apple-targets',
+    '@react-native-community/datetimepicker',
   ],
   extra: {
     apiUrl: process.env.API_URL || 'http://localhost:3000',

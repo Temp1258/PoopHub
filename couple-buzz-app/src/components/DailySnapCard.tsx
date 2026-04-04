@@ -30,8 +30,9 @@ export default function DailySnapCard() {
 
     const result = await ImagePicker.launchCameraAsync({
       cameraType: ImagePicker.CameraType.front,
-      quality: 0.7,
+      quality: 0.3,
       allowsEditing: false,
+      exif: false,
     });
 
     if (result.canceled || !result.assets?.[0]) return;
