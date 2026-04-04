@@ -521,7 +521,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     WITH daily_activity AS (
       SELECT DATE(created_at) AS day, user_id
       FROM actions
-      WHERE user_id IN (?, ?)
+      WHERE user_id IN (?, ?) AND reply_to IS NULL
       GROUP BY DATE(created_at), user_id
     ),
     both_active AS (
@@ -581,25 +581,25 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   `);
 
   const stmtStatsTotalByUser = db.prepare(
-    'SELECT user_id, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY user_id'
+    'SELECT user_id, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY user_id'
   );
   const stmtStatsTopActions = db.prepare(
-    'SELECT action_type, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY action_type ORDER BY count DESC LIMIT 10'
+    'SELECT action_type, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY action_type ORDER BY count DESC LIMIT 10'
   );
   const stmtStatsHourly = db.prepare(
-    "SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY hour ORDER BY hour"
+    "SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY hour ORDER BY hour"
   );
   const stmtStatsMonthly = db.prepare(
-    "SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) GROUP BY month ORDER BY month DESC LIMIT 12"
+    "SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY month ORDER BY month DESC LIMIT 12"
   );
   const stmtStatsFirstDate = db.prepare(
-    'SELECT MIN(created_at) as first_date FROM actions WHERE user_id IN (?, ?)'
+    'SELECT MIN(created_at) as first_date FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL'
   );
   const stmtCalendarDays = db.prepare(
-    "SELECT DATE(created_at) as date, COUNT(*) as count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as my_count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as partner_count FROM actions WHERE user_id IN (?, ?) AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at)"
+    "SELECT DATE(created_at) as date, COUNT(*) as count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as my_count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as partner_count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at)"
   );
   const stmtCalendarTopAction = db.prepare(
-    "SELECT date, action_type FROM (SELECT DATE(created_at) as date, action_type, COUNT(*) as cnt, ROW_NUMBER() OVER (PARTITION BY DATE(created_at) ORDER BY COUNT(*) DESC) as rn FROM actions WHERE user_id IN (?, ?) AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at), action_type) WHERE rn = 1"
+    "SELECT date, action_type FROM (SELECT DATE(created_at) as date, action_type, COUNT(*) as cnt, ROW_NUMBER() OVER (PARTITION BY DATE(created_at) ORDER BY COUNT(*) DESC) as rn FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at), action_type) WHERE rn = 1"
   );
 
   // Ritual statements

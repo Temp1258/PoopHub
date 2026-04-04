@@ -1054,17 +1054,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const snapDate = new Date().toLocaleDateString('en-CA', { timeZone: user.timezone });
+    const snapDate = getLocalDate(user.timezone);
     const photoPath = `${userId}/${path.basename(req.file.path)}`;
 
     const saved = dbOps.saveSnap(userId, snapDate, photoPath);
     if (!saved) return res.status(400).json({ error: 'Already snapped today' });
 
-    // Check if partner also snapped
-    const partnerSnap = dbOps.getSnap(user.partner_id, snapDate);
-    const bothSnapped = !!partnerSnap;
-
+    // Check if partner also snapped using partner's OWN timezone
     const partner = dbOps.getUser(user.partner_id);
+    const partnerSnapDate = getLocalDate(partner?.timezone || 'Asia/Shanghai');
+    const partnerSnap = dbOps.getSnap(user.partner_id, partnerSnapDate);
+    const bothSnapped = !!partnerSnap;
     if (partner?.device_token) {
       await pushFn(partner.device_token, bothSnapped ? 'snap_both' : 'snap_submitted', user.name);
     }
@@ -1078,9 +1078,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: user.timezone });
+    const today = getLocalDate(user.timezone);
     const mySnap = dbOps.getSnap(userId, today);
-    const partnerSnap = user.partner_id ? dbOps.getSnap(user.partner_id, today) : undefined;
+    // Use partner's OWN timezone for their snap date
+    const partnerTz = user.partner_id ? (dbOps.getUser(user.partner_id)?.timezone || 'Asia/Shanghai') : 'Asia/Shanghai';
+    const partnerToday = user.partner_id ? getLocalDate(partnerTz) : today;
+    const partnerSnap = user.partner_id ? dbOps.getSnap(user.partner_id, partnerToday) : undefined;
 
     res.json({
       snap_date: today,
