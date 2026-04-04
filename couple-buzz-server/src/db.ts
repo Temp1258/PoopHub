@@ -502,7 +502,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     JOIN users u ON a.user_id = u.id
     WHERE a.reply_to IS NOT NULL
       AND (a.user_id = ? OR a.user_id = (SELECT partner_id FROM users WHERE id = ?))
-    ORDER BY a.created_at ASC
+    ORDER BY a.created_at DESC
+    LIMIT 500
   `);
   const stmtInsertRefreshToken = db.prepare(
     'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'

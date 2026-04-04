@@ -870,14 +870,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'unlock_date is required' });
     }
 
-    const today = new Date().toISOString().slice(0, 10);
-    if (unlock_date <= today) {
-      return res.status(400).json({ error: 'unlock_date must be in the future' });
-    }
-
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const userToday = getLocalDate(user.timezone);
+    if (unlock_date <= userToday) {
+      return res.status(400).json({ error: 'unlock_date must be in the future' });
+    }
 
     const existing = dbOps.getCapsules(userId, user.partner_id);
     if (existing.filter(c => !c.opened_at).length >= 50) {
@@ -895,13 +895,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ capsules: [] });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const userToday = getLocalDate(user.timezone);
     const capsules = dbOps.getCapsules(userId, user.partner_id).map(c => ({
       id: c.id,
       author: c.user_id === userId ? 'me' : 'partner',
       content: c.opened_at ? c.content : null,
       unlock_date: c.unlock_date,
-      is_unlockable: c.unlock_date <= today && !c.opened_at,
+      is_unlockable: c.unlock_date <= userToday && !c.opened_at,
       opened_at: c.opened_at,
       created_at: c.created_at,
     }));
@@ -922,8 +922,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const capsule = capsules.find(c => c.id === id);
     if (!capsule) return res.status(404).json({ error: 'Capsule not found' });
 
-    const today = new Date().toISOString().slice(0, 10);
-    if (capsule.unlock_date > today) {
+    const userToday = getLocalDate(user.timezone);
+    if (capsule.unlock_date > userToday) {
       return res.status(400).json({ error: 'Capsule is not yet unlockable' });
     }
 
