@@ -76,7 +76,7 @@ initAPNs();
 startScheduler(dbOps, sendPush);
 
 const httpServer = createServer(app);
-setupSocket(httpServer, dbOps);
+setupSocket(httpServer, dbOps, sendPush);
 
 const HOST = process.env.HOST || '127.0.0.1';
 

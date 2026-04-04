@@ -3,6 +3,8 @@ import { Server, Socket } from 'socket.io';
 import crypto from 'crypto';
 import { DbOps } from './db';
 
+type PushFn = (deviceToken: string, actionType: string, senderName: string) => Promise<boolean>;
+
 interface Ticket {
   userId: string;
   expiresAt: number;
@@ -30,10 +32,12 @@ export function createWsTicket(userId: string): string {
   return ticket;
 }
 
-export function setupSocket(httpServer: HttpServer, dbOps: DbOps): Server {
+export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushFn): Server {
   const io = new Server(httpServer, {
     cors: { origin: '*' },
-    transports: ['websocket'],
+    transports: ['websocket', 'polling'],
+    pingTimeout: 30000,
+    pingInterval: 15000,
   });
 
   // Auth middleware: validate ticket
@@ -73,12 +77,38 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps): Server {
     checkBothOnline(io, key, presence, dbOps);
     socket.to(key).emit('partner_online', { online: true });
 
+    // Check if partner is in the same room and currently touching
+    const partnerSocketId = presence.sockets.get(partnerId);
+    if (partnerSocketId) {
+      const partnerSocket = io.sockets.sockets.get(partnerSocketId);
+      if (partnerSocket?.data.isTouching) {
+        socket.emit('touch_start', { from: partnerId });
+      }
+      // Tell the new user that partner is online
+      socket.emit('partner_online', { online: true });
+    }
+
     // Touch relay
     socket.data.isTouching = false;
+    // Throttle push: max once per 30s per user
+    socket.data.lastTouchPush = 0;
 
     socket.on('touch_start', () => {
       socket.data.isTouching = true;
       socket.to(key).emit('touch_start', { from: userId });
+
+      // If partner is not connected, send push notification
+      const partnerConnected = presence.sockets.has(partnerId);
+      if (!partnerConnected && pushFn) {
+        const now = Date.now();
+        if (now - (socket.data.lastTouchPush || 0) > 30000) {
+          socket.data.lastTouchPush = now;
+          const partner = dbOps.getUser(partnerId);
+          if (partner?.device_token) {
+            pushFn(partner.device_token, 'touch', user.name);
+          }
+        }
+      }
     });
 
     socket.on('touch_end', () => {

@@ -26,7 +26,6 @@ export async function connectSocket(): Promise<void> {
 
   try {
     const { ticket } = await api.getWsTicket();
-    const wsUrl = API_URL.replace(/^http/, 'ws');
 
     // Clean up old socket if exists
     if (socket) {
@@ -35,9 +34,9 @@ export async function connectSocket(): Promise<void> {
       socket = null;
     }
 
-    socket = io(wsUrl, {
+    socket = io(API_URL, {
       auth: { ticket },
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 10000,

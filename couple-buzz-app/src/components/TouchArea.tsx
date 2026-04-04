@@ -20,11 +20,11 @@ export default function TouchArea() {
       subscribe('touch_start', () => {
         setReceiving(true);
         if (hapticInterval.current) clearInterval(hapticInterval.current);
-        // Immediate first haptic
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        // Immediate strong notification haptic
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         hapticInterval.current = setInterval(() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        }, 200);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        }, 250);
         receiveAnim.stopAnimation();
         Animated.loop(
           Animated.sequence([
@@ -54,13 +54,13 @@ export default function TouchArea() {
 
   const handlePressIn = useCallback(() => {
     emitTouchStart();
-    // Immediate strong haptic
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    // Immediate strong haptic for sender
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Continuous haptic while holding
     if (sendHapticInterval.current) clearInterval(sendHapticInterval.current);
     sendHapticInterval.current = setInterval(() => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }, 300);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    }, 400);
     rippleAnim.stopAnimation();
     Animated.loop(
       Animated.sequence([

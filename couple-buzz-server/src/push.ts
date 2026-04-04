@@ -49,6 +49,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   snap_both: { title: '📸 每日快照', body: '你们都拍了今天的快照！快来看看 💕' },
   challenge_complete: { title: '🎉 挑战完成', body: '你们完成了本周挑战！' },
   challenge_response: { title: '📝 挑战回复', body: '{name} 提交了挑战回复' },
+  touch: { title: '💗 触碰', body: '{name} 在触碰你～' },
 };
 
 let provider: apn.Provider | null = null;
