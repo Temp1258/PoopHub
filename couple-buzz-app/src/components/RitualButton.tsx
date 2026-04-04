@@ -33,6 +33,7 @@ export default function RitualButton() {
       (s.evening.my_completed && !s.evening.both_completed);
 
     if (isWaiting) {
+      pulseAnim.stopAnimation();
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, { toValue: 0.6, duration: 1000, useNativeDriver: true }),
@@ -43,6 +44,8 @@ export default function RitualButton() {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
     }
+
+    return () => { pulseAnim.stopAnimation(); };
   }, [status, pulseAnim]);
 
   if (!status) return null;

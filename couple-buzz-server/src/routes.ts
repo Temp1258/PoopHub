@@ -24,7 +24,15 @@ function getLocalDate(timezone: string): string {
 }
 
 function getLocalHour(timezone: string): number {
-  return parseInt(new Date().toLocaleString('en-US', { timeZone: timezone, hour: 'numeric', hour12: false }));
+  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: timezone, hour: 'numeric', hour12: false }));
+  return h === 24 ? 0 : h; // Some ICU versions return 24 for midnight
+}
+
+function getYesterdayDate(todayStr: string): string {
+  const [y, m, d] = todayStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
 }
 
 // Mailbox helpers
@@ -631,22 +639,20 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // For evening ritual after midnight (0-3), use yesterday's date
     let ritualDate = getLocalDate(user.timezone);
     if (ritual_type === 'evening' && localHour < 4) {
-      const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.timezone }));
-      d.setDate(d.getDate() - 1);
-      ritualDate = d.toISOString().slice(0, 10);
+      ritualDate = getYesterdayDate(ritualDate);
     }
 
     const inserted = dbOps.submitRitual(userId, ritual_type, ritualDate);
 
-    // Check partner's status (in partner's timezone)
-    const partnerDate = getLocalDate(user.partner_timezone);
+    // Check partner's status using partner's OWN timezone (not user's guess)
+    const partner = dbOps.getUser(user.partner_id);
+    const partnerTz = partner?.timezone || 'Asia/Shanghai';
+    const partnerDate = getLocalDate(partnerTz);
     let partnerRitualDate = partnerDate;
     if (ritual_type === 'evening') {
-      const partnerHour = getLocalHour(user.partner_timezone);
+      const partnerHour = getLocalHour(partnerTz);
       if (partnerHour < 4) {
-        const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.partner_timezone }));
-        d.setDate(d.getDate() - 1);
-        partnerRitualDate = d.toISOString().slice(0, 10);
+        partnerRitualDate = getYesterdayDate(partnerDate);
       }
     }
 
@@ -654,8 +660,6 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const bothCompleted = ritual_type === 'morning'
       ? status.myMorning && status.partnerMorning
       : status.myEvening && status.partnerEvening;
-
-    const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
       if (bothCompleted) {
         await pushFn(partner.device_token, ritual_type === 'morning' ? 'ritual_both_morning' : 'ritual_both_evening', user.name);
@@ -676,21 +680,21 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const localHour = getLocalHour(user.timezone);
     const myDate = getLocalDate(user.timezone);
-    const partnerDate = getLocalDate(user.partner_timezone);
+
+    // Use partner's OWN timezone for matching
+    const partner = dbOps.getUser(user.partner_id);
+    const partnerTz = partner?.timezone || 'Asia/Shanghai';
+    const partnerDate = getLocalDate(partnerTz);
 
     // For evening: compute adjusted dates (if after midnight, look at yesterday)
     let myEveningDate = myDate;
     if (localHour < 4) {
-      const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.timezone }));
-      d.setDate(d.getDate() - 1);
-      myEveningDate = d.toISOString().slice(0, 10);
+      myEveningDate = getYesterdayDate(myDate);
     }
-    const partnerHour = getLocalHour(user.partner_timezone);
+    const partnerHour = getLocalHour(partnerTz);
     let partnerEveningDate = partnerDate;
     if (partnerHour < 4) {
-      const d = new Date(new Date().toLocaleString('en-US', { timeZone: user.partner_timezone }));
-      d.setDate(d.getDate() - 1);
-      partnerEveningDate = d.toISOString().slice(0, 10);
+      partnerEveningDate = getYesterdayDate(partnerDate);
     }
 
     const morningStatus = dbOps.getRitualsByDates(myDate, partnerDate, userId, user.partner_id);

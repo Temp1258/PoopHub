@@ -44,8 +44,10 @@ export default function TouchArea() {
     return () => {
       unsubs.forEach(fn => fn());
       if (hapticInterval.current) clearInterval(hapticInterval.current);
+      receiveAnim.stopAnimation();
+      rippleAnim.stopAnimation();
     };
-  }, [receiveAnim]);
+  }, [receiveAnim, rippleAnim]);
 
   const handlePressIn = useCallback(() => {
     emitTouchStart();
