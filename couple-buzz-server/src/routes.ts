@@ -19,13 +19,26 @@ import {
 } from './auth';
 
 // Timezone helpers
+function isValidTimezone(tz: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeTimezone(tz: string): string {
+  return isValidTimezone(tz) ? tz : 'Asia/Shanghai';
+}
+
 function getLocalDate(timezone: string): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+  return new Date().toLocaleDateString('en-CA', { timeZone: safeTimezone(timezone) });
 }
 
 function getLocalHour(timezone: string): number {
-  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: timezone, hour: 'numeric', hour12: false }));
-  return h === 24 ? 0 : h; // Some ICU versions return 24 for midnight
+  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: safeTimezone(timezone), hour: 'numeric', hour12: false }));
+  return h === 24 ? 0 : h;
 }
 
 function getYesterdayDate(todayStr: string): string {
@@ -106,7 +119,8 @@ export function createPublicRouter(dbOps: DbOps): Router {
     const passwordHash = hashPassword(password);
     const pairCode = userId; // ID itself is the connection code
 
-    dbOps.createUser(userId, name.trim(), passwordHash, pairCode, timezone || 'Asia/Shanghai');
+    const userTz = (timezone && isValidTimezone(timezone)) ? timezone : 'Asia/Shanghai';
+    dbOps.createUser(userId, name.trim(), passwordHash, pairCode, userTz);
 
     if (device_token) {
       dbOps.setDeviceToken(userId, device_token);
@@ -221,8 +235,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     const newName = (name && typeof name === 'string' && name.trim()) ? name.trim() : user.name;
-    const newTimezone = (timezone && typeof timezone === 'string') ? timezone : user.timezone;
-    const newPartnerTz = (partner_timezone && typeof partner_timezone === 'string') ? partner_timezone : user.partner_timezone;
+    const newTimezone = (timezone && typeof timezone === 'string' && isValidTimezone(timezone)) ? timezone : user.timezone;
+    const newPartnerTz = (partner_timezone && typeof partner_timezone === 'string' && isValidTimezone(partner_timezone)) ? partner_timezone : user.partner_timezone;
     const newRemark = (typeof partner_remark === 'string') ? partner_remark : user.partner_remark;
 
     dbOps.updateProfile(userId, newName, newTimezone, newPartnerTz, newRemark);
