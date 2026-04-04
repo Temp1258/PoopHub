@@ -61,6 +61,11 @@ export function generatePairCode(): string {
   return code;
 }
 
+function parseId(value: string): number | null {
+  const n = parseInt(value, 10);
+  return isNaN(n) ? null : n;
+}
+
 function issueTokens(dbOps: DbOps, userId: string, tokenVersion: number) {
   const accessToken = generateAccessToken(userId, tokenVersion);
   const refreshToken = generateRefreshToken();
@@ -441,7 +446,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // PUT /api/dates/:id
   router.put('/dates/:id', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
     const { title, date, recurring } = req.body;
 
     const user = dbOps.getUser(userId);
@@ -461,7 +467,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // POST /api/dates/:id/pin
   router.post('/dates/:id/pin', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -474,7 +481,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // DELETE /api/dates/:id
   router.delete('/dates/:id', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -891,7 +899,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // POST /api/capsules/:id/open
   router.post('/capsules/:id/open', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -955,7 +964,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // POST /api/bucket/:id/complete
   router.post('/bucket/:id/complete', async (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -976,7 +986,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // POST /api/bucket/:id/uncomplete
   router.post('/bucket/:id/uncomplete', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -995,7 +1006,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // DELETE /api/bucket/:id
   router.delete('/bucket/:id', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const id = parseInt(req.params.id as string);
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });

@@ -23,7 +23,7 @@ export default function MailboxCard() {
     try {
       const result = await api.getMailbox();
       setData(result);
-      if (result.my_message) setContent(result.my_message);
+      setContent(result.my_message ?? '');
     } catch {}
     setLoading(false);
   }, []);

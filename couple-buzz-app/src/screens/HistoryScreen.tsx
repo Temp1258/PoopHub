@@ -184,7 +184,8 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
   }, [partnerRemark]);
 
   const handleReactionLongPress = useCallback((item: HistoryAction) => {
-    if (item.user_id === myUserId) return; // Can't react to own
+    if (item.user_id === myUserId) return;
+    setSelectedItem(null); // Close detail modal if open
     setReactionTarget(item);
   }, [myUserId]);
 

@@ -4,6 +4,8 @@ import { api } from './api';
 
 let socket: Socket | null = null;
 let connecting = false;
+let ticketRetries = 0;
+const MAX_TICKET_RETRIES = 3;
 
 type Listener = (...args: any[]) => void;
 const listeners: Record<string, Set<Listener>> = {};
@@ -48,8 +50,14 @@ export async function connectSocket(): Promise<void> {
     socket.on('presence_both', () => emit('presence_both'));
     socket.on('presence_single', () => emit('presence_single'));
 
+    socket.on('connect', () => {
+      ticketRetries = 0;
+    });
+
     socket.on('connect_error', async (err) => {
       if (err.message === 'invalid_ticket' || err.message === 'missing_ticket') {
+        if (ticketRetries >= MAX_TICKET_RETRIES) return;
+        ticketRetries++;
         try {
           const { ticket: newTicket } = await api.getWsTicket();
           if (socket) {

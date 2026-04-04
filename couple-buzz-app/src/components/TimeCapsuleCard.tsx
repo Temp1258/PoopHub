@@ -33,6 +33,15 @@ export default function TimeCapsuleCard() {
 
   const handleCreate = async () => {
     if (!content.trim() || !unlockDate) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(unlockDate) || isNaN(new Date(unlockDate).getTime())) {
+      Alert.alert('', '请输入正确的日期格式 (YYYY-MM-DD)');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    if (unlockDate <= today) {
+      Alert.alert('', '开启日期必须在未来');
+      return;
+    }
     setSubmitting(true);
     try {
       await api.createCapsule(content.trim(), unlockDate);
