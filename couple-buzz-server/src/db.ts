@@ -158,7 +158,7 @@ export interface DbOps {
   getStreak(userId: string, partnerId: string): number;
   createImportantDate(userId: string, partnerId: string, title: string, date: string, recurring: boolean): ImportantDate;
   getImportantDates(userId: string, partnerId: string): ImportantDate[];
-  updateImportantDate(id: number, title: string, date: string, recurring: boolean): boolean;
+  updateImportantDate(id: number, title: string, date: string, recurring: boolean, userId: string, partnerId: string): boolean;
   deleteImportantDate(id: number, userId: string, partnerId: string): boolean;
   pinImportantDate(id: number, userId: string, partnerId: string): void;
   submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void;
@@ -550,7 +550,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'SELECT * FROM important_dates WHERE user_id IN (?, ?) ORDER BY date ASC'
   );
   const stmtUpdateDate = db.prepare(
-    'UPDATE important_dates SET title = ?, date = ?, recurring = ? WHERE id = ?'
+    'UPDATE important_dates SET title = ?, date = ?, recurring = ? WHERE id = ? AND user_id IN (?, ?)'
   );
   const stmtDeleteDate = db.prepare(
     'DELETE FROM important_dates WHERE id = ? AND user_id IN (?, ?)'
@@ -559,7 +559,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'UPDATE important_dates SET pinned = 0 WHERE user_id IN (?, ?)'
   );
   const stmtPinDate = db.prepare(
-    'UPDATE important_dates SET pinned = 1 WHERE id = ?'
+    'UPDATE important_dates SET pinned = 1 WHERE id = ? AND user_id IN (?, ?)'
   );
 
   const stmtSubmitAnswer = db.prepare(
@@ -884,8 +884,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetDates.all(userId, partnerId) as ImportantDate[];
     },
 
-    updateImportantDate(id: number, title: string, date: string, recurring: boolean): boolean {
-      const result = stmtUpdateDate.run(title, date, recurring ? 1 : 0, id);
+    updateImportantDate(id: number, title: string, date: string, recurring: boolean, userId: string, partnerId: string): boolean {
+      const result = stmtUpdateDate.run(title, date, recurring ? 1 : 0, id, userId, partnerId);
       return result.changes > 0;
     },
 
@@ -897,7 +897,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     pinImportantDate(id: number, userId: string, partnerId: string): void {
       db.transaction(() => {
         stmtUnpinAll.run(userId, partnerId);
-        stmtPinDate.run(id);
+        stmtPinDate.run(id, userId, partnerId);
       })();
     },
 

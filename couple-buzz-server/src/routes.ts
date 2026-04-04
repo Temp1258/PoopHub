@@ -442,10 +442,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!title || typeof title !== 'string' || !date || typeof date !== 'string') {
       return res.status(400).json({ error: 'title and date are required' });
     }
+    if (title.length > 50) return res.status(400).json({ error: 'title max 50 characters' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const existing = dbOps.getImportantDates(userId, user.partner_id);
+    if (existing.length >= 20) return res.status(400).json({ error: 'Maximum 20 dates' });
 
     const created = dbOps.createImportantDate(userId, user.partner_id, title.trim(), date, !!recurring);
     res.json({ date: created });
@@ -466,7 +470,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'title and date are required' });
     }
 
-    const updated = dbOps.updateImportantDate(id, title.trim(), date, !!recurring);
+    const updated = dbOps.updateImportantDate(id, title.trim(), date, !!recurring, userId, user.partner_id);
     if (!updated) return res.status(404).json({ error: 'Date not found' });
 
     res.json({ success: true });
@@ -875,6 +879,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
+    const existing = dbOps.getCapsules(userId, user.partner_id);
+    if (existing.filter(c => !c.opened_at).length >= 50) {
+      return res.status(400).json({ error: 'Maximum 50 pending capsules' });
+    }
+
     const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date);
     res.json({ id: capsule.id, unlock_date: capsule.unlock_date, created_at: capsule.created_at });
   });
@@ -950,10 +959,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!title || typeof title !== 'string' || !title.trim()) {
       return res.status(400).json({ error: 'title is required' });
     }
+    if (title.length > 100) return res.status(400).json({ error: 'title max 100 characters' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    const existingItems = dbOps.getBucketItems(userId, user.partner_id);
+    if (existingItems.length >= 100) return res.status(400).json({ error: 'Maximum 100 items' });
 
     const item = dbOps.createBucketItem(userId, user.partner_id, title.trim(), category || null);
 
@@ -973,6 +986,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    // Verify item belongs to this couple
+    const items = dbOps.getBucketItems(userId, user.partner_id);
+    if (!items.some(i => i.id === id)) return res.status(404).json({ error: 'Item not found' });
 
     const updated = dbOps.completeBucketItem(id, userId);
     if (!updated) return res.status(404).json({ error: 'Item not found' });
@@ -1127,39 +1145,45 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const weekStart = getCurrentWeekMonday();
     let challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
 
-    // Auto-assign if none
+    // Auto-assign if none (handle race condition with UNIQUE constraint)
     if (!challenge) {
-      const recent = dbOps.getRecentChallengeIndexes(userId, user.partner_id, 20);
-      const recentSet = new Set(recent);
-      const available = CHALLENGES.filter(c => !recentSet.has(c.id));
-      const pool = available.length > 0 ? available : CHALLENGES;
-      const picked = pool[Math.floor(Math.random() * pool.length)];
-      challenge = dbOps.assignWeeklyChallenge(userId, user.partner_id, picked.id, weekStart);
-    }
-
-    const def = CHALLENGES.find(c => c.id === challenge!.challenge_index);
-    if (!def) return res.status(500).json({ error: 'Challenge definition not found' });
-
-    let progress = 0;
-    if (challenge.status === 'completed') {
-      progress = def.target;
-    } else {
-      progress = computeProgress(dbOps, challenge, def);
-      // Auto-complete if target reached
-      if (progress >= def.target && challenge.status === 'active') {
-        dbOps.completeWeeklyChallenge(challenge.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
-        challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart)!;
+      try {
+        const recent = dbOps.getRecentChallengeIndexes(userId, user.partner_id, 20);
+        const recentSet = new Set(recent);
+        const available = CHALLENGES.filter(c => !recentSet.has(c.id));
+        const pool = available.length > 0 ? available : CHALLENGES;
+        const picked = pool[Math.floor(Math.random() * pool.length)];
+        challenge = dbOps.assignWeeklyChallenge(userId, user.partner_id, picked.id, weekStart);
+      } catch {
+        // Race condition: partner already assigned, re-fetch
+        challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
       }
     }
 
-    const myResponse = dbOps.getChallengeResponse(challenge.id, userId);
+    if (!challenge) return res.status(500).json({ error: 'Failed to assign challenge' });
+    const ch = challenge; // narrow type for rest of handler
+
+    const def = CHALLENGES.find(c => c.id === ch.challenge_index);
+    if (!def) return res.status(500).json({ error: 'Challenge definition not found' });
+
+    let progress = 0;
+    if (ch.status === 'completed') {
+      progress = def.target;
+    } else {
+      progress = computeProgress(dbOps, ch, def);
+      if (progress >= def.target && ch.status === 'active') {
+        dbOps.completeWeeklyChallenge(ch.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
+      }
+    }
+
+    const myResponse = dbOps.getChallengeResponse(ch.id, userId);
     const points = dbOps.getCouplePoints(userId, user.partner_id);
 
     res.json({
       challenge: def,
       progress: Math.min(progress, def.target),
       target: def.target,
-      status: challenge.status,
+      status: ch.status,
       week_start: weekStart,
       my_response: myResponse,
       couple_points: points,
@@ -1174,6 +1198,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!response || typeof response !== 'string' || !response.trim()) {
       return res.status(400).json({ error: 'response is required' });
     }
+    if (response.length > 1000) return res.status(400).json({ error: 'response max 1000 characters' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
