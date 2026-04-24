@@ -7,6 +7,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   version: '1.0.0',
   orientation: 'portrait',
   userInterfaceStyle: 'light',
+  icon: './assets/icon.png',
   updates: {
     url: "https://u.expo.dev/a6ec0a8e-b73d-4be3-b927-cf8b435f1ab7",
   },
