@@ -2,12 +2,16 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { api } from './api';
 
-// Configure how notifications appear when app is in foreground
+// Show banner + list + sound + badge even when the app is in the foreground.
+// Expo SDK 54 replaced `shouldShowAlert` with `shouldShowBanner` / `shouldShowList`;
+// we keep `shouldShowAlert` for backward compatibility with older native builds.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: false,
+    shouldSetBadge: true,
   }),
 });
 

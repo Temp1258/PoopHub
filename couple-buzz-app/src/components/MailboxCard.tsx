@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Animated,
+  Easing,
+  Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
@@ -16,8 +19,18 @@ export default function MailboxCard() {
   const [loading, setLoading] = useState(true);
   const [content, setContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [sealing, setSealing] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [archive, setArchive] = useState<{ week_key: string; my_content: string | null; partner_content: string | null }[]>([]);
+
+  // Seal animation drivers
+  const letterOpacity = useRef(new Animated.Value(1)).current;
+  const letterTranslateY = useRef(new Animated.Value(0)).current;
+  const letterScale = useRef(new Animated.Value(1)).current;
+  const envelopeOpacity = useRef(new Animated.Value(0)).current;
+  const envelopeScale = useRef(new Animated.Value(0.4)).current;
+  const stampRotate = useRef(new Animated.Value(0)).current;
+  const stampOpacity = useRef(new Animated.Value(0)).current;
 
   const load = useCallback(async () => {
     try {
@@ -34,14 +47,52 @@ export default function MailboxCard() {
     }, [load])
   );
 
+  const playSealAnimation = () =>
+    new Promise<void>((resolve) => {
+      Animated.sequence([
+        // Letter folds in
+        Animated.parallel([
+          Animated.timing(letterOpacity, { toValue: 0, duration: 350, useNativeDriver: true }),
+          Animated.timing(letterTranslateY, { toValue: -32, duration: 350, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          Animated.timing(letterScale, { toValue: 0.6, duration: 350, useNativeDriver: true }),
+        ]),
+        // Envelope pops in
+        Animated.parallel([
+          Animated.timing(envelopeOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+          Animated.spring(envelopeScale, { toValue: 1, friction: 6, tension: 90, useNativeDriver: true }),
+        ]),
+        // Stamp drops on
+        Animated.parallel([
+          Animated.timing(stampOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+          Animated.timing(stampRotate, { toValue: 1, duration: 220, easing: Easing.out(Easing.back(1.5)), useNativeDriver: true }),
+        ]),
+        Animated.delay(450),
+      ]).start(() => resolve());
+    });
+
   const handleSubmit = async () => {
-    if (!content.trim()) return;
+    if (!content.trim() || submitting || sealing) return;
     setSubmitting(true);
     try {
       await api.submitMailbox(content.trim());
-      await load();
-    } catch {}
+    } catch (e: any) {
+      setSubmitting(false);
+      Alert.alert('投递失败', e?.message || '请稍后再试');
+      return;
+    }
     setSubmitting(false);
+    setSealing(true);
+    await playSealAnimation();
+    await load();
+    // Reset for next week
+    letterOpacity.setValue(1);
+    letterTranslateY.setValue(0);
+    letterScale.setValue(1);
+    envelopeOpacity.setValue(0);
+    envelopeScale.setValue(0.4);
+    stampOpacity.setValue(0);
+    stampRotate.setValue(0);
+    setSealing(false);
   };
 
   const handleLoadArchive = async () => {
@@ -66,10 +117,15 @@ export default function MailboxCard() {
 
   const { phase, my_message, partner_message, partner_wrote, reveal_at } = data;
 
-  // Compute countdown to reveal
   const revealDate = new Date(reveal_at);
   const now = new Date();
-  const hoursLeft = Math.max(0, Math.ceil((revealDate.getTime() - now.getTime()) / 3600000));
+  const msLeft = Math.max(0, revealDate.getTime() - now.getTime());
+  const hoursLeft = Math.ceil(msLeft / 3600000);
+
+  const stampRotateInterpolate = stampRotate.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['-45deg', '-12deg'],
+  });
 
   return (
     <View style={styles.card}>
@@ -88,37 +144,67 @@ export default function MailboxCard() {
             </Text>
           </View>
         </View>
+      ) : my_message ? (
+        // Sealed state: read-only, no edit controls
+        <View style={styles.sealedContainer}>
+          <View style={styles.sealedEnvelope}>
+            <Text style={styles.sealedEnvelopeIcon}>💌</Text>
+          </View>
+          <Text style={styles.sealedTitle}>本周的信已封存</Text>
+          <Text style={styles.sealedSubtitle}>
+            {hoursLeft > 0 ? `${hoursLeft} 小时后揭晓` : '即将揭晓'}
+          </Text>
+          <View style={styles.sealedPreview}>
+            <Text style={styles.sealedPreviewText} numberOfLines={3}>
+              {my_message}
+            </Text>
+          </View>
+        </View>
       ) : (
+        // Writing state
         <View>
-          {my_message ? (
-            <View>
-              <View style={styles.sealedBox}>
-                <Text style={styles.sealedEmoji}>✉️</Text>
-                <Text style={styles.sealedText}>信已写好</Text>
-              </View>
-              <Text style={styles.countdown}>
-                {hoursLeft > 0 ? `${hoursLeft} 小时后揭晓` : '即将揭晓'}
-              </Text>
-              <TextInput
-                style={styles.input}
-                value={content}
-                onChangeText={setContent}
-                placeholder="修改你的信..."
-                placeholderTextColor={COLORS.textLight}
-                maxLength={500}
-                multiline
-              />
-              <TouchableOpacity
-                style={[styles.submitButton, submitting && styles.submitDisabled]}
-                onPress={handleSubmit}
-                disabled={submitting}
+          <Text style={styles.prompt}>写一句想说但没说出口的话吧～</Text>
+
+          {sealing ? (
+            <View style={styles.animStage}>
+              <Animated.View
+                style={[
+                  styles.animLetter,
+                  {
+                    opacity: letterOpacity,
+                    transform: [{ translateY: letterTranslateY }, { scale: letterScale }],
+                  },
+                ]}
               >
-                <Text style={styles.submitText}>{submitting ? '保存中...' : '更新'}</Text>
-              </TouchableOpacity>
+                <Text style={styles.animLetterText} numberOfLines={4}>
+                  {content}
+                </Text>
+              </Animated.View>
+              <Animated.View
+                style={[
+                  styles.animEnvelope,
+                  {
+                    opacity: envelopeOpacity,
+                    transform: [{ scale: envelopeScale }],
+                  },
+                ]}
+              >
+                <Text style={styles.animEnvelopeIcon}>✉️</Text>
+                <Animated.Text
+                  style={[
+                    styles.animStamp,
+                    {
+                      opacity: stampOpacity,
+                      transform: [{ rotate: stampRotateInterpolate }],
+                    },
+                  ]}
+                >
+                  SEALED
+                </Animated.Text>
+              </Animated.View>
             </View>
           ) : (
-            <View>
-              <Text style={styles.prompt}>写一句想说但没说出口的话吧～</Text>
+            <>
               <TextInput
                 style={styles.input}
                 value={content}
@@ -127,6 +213,7 @@ export default function MailboxCard() {
                 placeholderTextColor={COLORS.textLight}
                 maxLength={500}
                 multiline
+                editable={!submitting}
               />
               <View style={styles.charCount}>
                 <Text style={styles.charCountText}>{content.length}/500</Text>
@@ -135,13 +222,15 @@ export default function MailboxCard() {
                 style={[styles.submitButton, (!content.trim() || submitting) && styles.submitDisabled]}
                 onPress={handleSubmit}
                 disabled={!content.trim() || submitting}
+                activeOpacity={0.8}
               >
-                <Text style={styles.submitText}>{submitting ? '提交中...' : '封好信 ✉️'}</Text>
+                <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
               </TouchableOpacity>
+              <Text style={styles.hint}>提交后不能修改哦</Text>
               <Text style={styles.countdown}>
                 {hoursLeft > 0 ? `周日揭晓 · 还有 ${hoursLeft} 小时` : '即将揭晓'}
               </Text>
-            </View>
+            </>
           )}
         </View>
       )}
@@ -224,24 +313,110 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.white,
   },
-  countdown: {
-    fontSize: 13,
+  hint: {
+    fontSize: 12,
     color: COLORS.textLight,
     textAlign: 'center',
     marginTop: 8,
   },
-  sealedBox: {
+  countdown: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  // Sealed (post-submit, pre-reveal) read-only state
+  sealedContainer: {
     alignItems: 'center',
     paddingVertical: 12,
-    gap: 4,
   },
-  sealedEmoji: {
-    fontSize: 32,
+  sealedEnvelope: {
+    width: 80,
+    height: 80,
+    borderRadius: 16,
+    backgroundColor: COLORS.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  sealedText: {
-    fontSize: 14,
+  sealedEnvelopeIcon: {
+    fontSize: 40,
+  },
+  sealedTitle: {
+    fontSize: 15,
     fontWeight: '600',
     color: COLORS.text,
+    marginTop: 12,
+  },
+  sealedSubtitle: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginTop: 4,
+  },
+  sealedPreview: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 14,
+    alignSelf: 'stretch',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  sealedPreviewText: {
+    fontSize: 14,
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  // Seal animation stage
+  animStage: {
+    height: 180,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  animLetter: {
+    position: 'absolute',
+    width: '85%',
+    backgroundColor: COLORS.background,
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  animLetterText: {
+    fontSize: 14,
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  animEnvelope: {
+    position: 'absolute',
+    width: 96,
+    height: 96,
+    borderRadius: 18,
+    backgroundColor: COLORS.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  animEnvelopeIcon: {
+    fontSize: 48,
+  },
+  animStamp: {
+    position: 'absolute',
+    right: -14,
+    top: -10,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: COLORS.kiss,
+    borderWidth: 2,
+    borderColor: COLORS.kiss,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: COLORS.white,
   },
   revealContainer: {
     gap: 12,
