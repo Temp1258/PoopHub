@@ -7,12 +7,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   version: '1.0.0',
   orientation: 'portrait',
   userInterfaceStyle: 'light',
+  updates: {
+    url: "https://u.expo.dev/a6ec0a8e-b73d-4be3-b927-cf8b435f1ab7",
+  },
+  runtimeVersion: {
+    policy: "appVersion" as const,
+  },
   splash: {
     backgroundColor: '#FFF5F5',
   },
   ios: {
     supportsTablet: false,
     bundleIdentifier: 'com.couplebuzz.app',
+    appleTeamId: 'HLX9N5V2R5',
     entitlements: {
       'com.apple.security.application-groups': ['group.com.couplebuzz.app'],
     },
@@ -28,7 +35,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     apiUrl: process.env.API_URL || 'http://localhost:3000',
     eas: {
-      projectId: '',
+      projectId: 'a6ec0a8e-b73d-4be3-b927-cf8b435f1ab7',
     },
   },
 });
