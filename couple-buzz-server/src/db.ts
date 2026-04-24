@@ -142,6 +142,7 @@ export interface DbOps {
   updateProfile(userId: string, name: string, timezone: string, partnerTimezone: string, partnerRemark: string): void;
   setDeviceToken(userId: string, token: string): void;
   clearDeviceToken(userId: string): void;
+  clearDeviceTokenByValue(token: string): void;
   addAction(userId: string, actionType: string, senderTimezone: string, senderName: string): void;
   getAction(actionId: number): Action | undefined;
   addReaction(userId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number;
@@ -477,6 +478,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtUpdateProfile = db.prepare('UPDATE users SET name = ?, timezone = ?, partner_timezone = ?, partner_remark = ? WHERE id = ?');
   const updateDeviceToken = db.prepare('UPDATE users SET device_token = ? WHERE id = ?');
   const stmtClearDeviceToken = db.prepare('UPDATE users SET device_token = NULL WHERE id = ?');
+  // Revokes a token from any user currently holding it (except the one being updated).
+  // An APNs device token uniquely identifies a device — the last account to log in on
+  // a device is the only one that should receive its pushes.
+  const stmtRevokeTokenFromOthers = db.prepare(
+    'UPDATE users SET device_token = NULL WHERE device_token = ? AND id != ?'
+  );
+  const stmtClearTokenByValue = db.prepare(
+    'UPDATE users SET device_token = NULL WHERE device_token = ?'
+  );
   const insertAction = db.prepare(
     'INSERT INTO actions (user_id, action_type, sender_timezone, sender_name) VALUES (?, ?, ?, ?)'
   );
@@ -826,11 +836,20 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     setDeviceToken(userId: string, token: string): void {
-      updateDeviceToken.run(token, userId);
+      if (!token) return;
+      db.transaction(() => {
+        stmtRevokeTokenFromOthers.run(token, userId);
+        updateDeviceToken.run(token, userId);
+      })();
     },
 
     clearDeviceToken(userId: string): void {
       stmtClearDeviceToken.run(userId);
+    },
+
+    clearDeviceTokenByValue(token: string): void {
+      if (!token) return;
+      stmtClearTokenByValue.run(token);
     },
 
     addAction(userId: string, actionType: string, senderTimezone: string, senderName: string): void {

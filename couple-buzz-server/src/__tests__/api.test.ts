@@ -882,7 +882,7 @@ describe('Mailbox API', () => {
     }
   });
 
-  it('should update existing mailbox message', async () => {
+  it('should seal mailbox message on first submit and reject re-writes', async () => {
     const { app } = createTestApp();
     const { alice } = await registerPairedUsers(app);
 
@@ -891,20 +891,23 @@ describe('Mailbox API', () => {
       .set('Authorization', `Bearer ${alice.access_token}`);
 
     if (statusRes.body.phase === 'writing') {
-      await request(app)
+      const first = await request(app)
         .post('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`)
         .send({ content: '第一版' });
+      expect(first.status).toBe(200);
 
-      await request(app)
+      const second = await request(app)
         .post('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`)
         .send({ content: '修改版' });
+      expect(second.status).toBe(400);
 
       const getRes = await request(app)
         .get('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`);
-      expect(getRes.body.my_message).toBe('修改版');
+      expect(getRes.body.my_message).toBe('第一版');
+      expect(getRes.body.can_edit).toBe(false);
     }
   });
 

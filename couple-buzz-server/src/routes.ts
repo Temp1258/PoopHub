@@ -18,6 +18,18 @@ import {
   generateUserId,
 } from './auth';
 
+// Whitelist of action types a client is allowed to send via POST /action and
+// POST /reaction. Anything else is rejected to keep the actions table clean
+// and prevent a malicious client from polluting it with arbitrary strings.
+const VALID_ACTIONS: ReadonlySet<string> = new Set([
+  'miss', 'finger_heart', 'love', 'kiss', 'poop', 'pat',
+  'shy', 'rose', 'hug', 'pick_nose',
+  'eat', 'angry_silent', 'angry_talk', 'hungry', 'sleepy',
+  'where_r_u', 'what_doing', 'sleep', 'play', 'clean',
+  'cry', 'wuwu', 'sad', 'clown', 'haha', 'hehe', 'work',
+  'slap', 'ping',
+]);
+
 // Timezone helpers
 function isValidTimezone(tz: string): boolean {
   try {
@@ -280,8 +292,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const userId = req.userId!;
     const { action_type, timezone } = req.body;
 
-    if (!action_type || typeof action_type !== 'string') {
-      return res.status(400).json({ error: 'action_type is required' });
+    if (!action_type || typeof action_type !== 'string' || !VALID_ACTIONS.has(action_type)) {
+      return res.status(400).json({ error: 'Invalid action_type' });
     }
 
     const user = dbOps.getUser(userId);
@@ -310,6 +322,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     if (!action_id || !action_type || typeof action_type !== 'string') {
       return res.status(400).json({ error: 'action_id and action_type are required' });
+    }
+    if (!VALID_ACTIONS.has(action_type)) {
+      return res.status(400).json({ error: 'Invalid action_type' });
     }
 
     const actionId = typeof action_id === 'number' ? action_id : parseInt(action_id);

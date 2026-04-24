@@ -16,6 +16,10 @@ import { sendPush } from './push';
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// Behind a reverse proxy (nginx / Caddy) — trust the first hop so
+// express-rate-limit buckets requests by real client IP instead of 127.0.0.1.
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(cors({
   origin: ['https://couple-buzz.com', 'https://api.couple-buzz.com:8443'],
@@ -71,8 +75,9 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Initialize APNs, WebSocket, and Scheduler
-initAPNs();
+// Initialize APNs, WebSocket, and Scheduler.
+// dbOps is passed into APNs so stale device tokens get evicted on Unregistered/BadDeviceToken.
+initAPNs(dbOps);
 startScheduler(dbOps, sendPush);
 
 const httpServer = createServer(app);

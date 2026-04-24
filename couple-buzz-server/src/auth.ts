@@ -19,7 +19,12 @@ interface JwtPayload {
   exp: number;
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-jwt-secret-change-me';
+if (!process.env.JWT_SECRET) {
+  throw new Error(
+    'JWT_SECRET environment variable is required. Set a strong random value in .env before starting the server.'
+  );
+}
+const JWT_SECRET: string = process.env.JWT_SECRET;
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY_DAYS = 90;
 

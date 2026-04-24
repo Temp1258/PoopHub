@@ -1,5 +1,17 @@
 import apn from '@parse/node-apn';
 import path from 'path';
+import type { DbOps } from './db';
+
+// Reasons that indicate the device token is no longer valid and should be
+// evicted from the database so we stop trying to push to it.
+// https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns
+const INVALID_TOKEN_REASONS = new Set([
+  'Unregistered',
+  'BadDeviceToken',
+  'DeviceTokenNotForTopic',
+]);
+
+let cleanupDbOps: DbOps | null = null;
 
 const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   miss: { title: '💕 想你', body: '{name} 在想你～' },
@@ -57,7 +69,9 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
 
 let provider: apn.Provider | null = null;
 
-export function initAPNs(): void {
+export function initAPNs(dbOps?: DbOps): void {
+  if (dbOps) cleanupDbOps = dbOps;
+
   const keyId = process.env.APN_KEY_ID;
   const teamId = process.env.APN_TEAM_ID;
   const keyPath = process.env.APN_KEY_PATH || './certs/AuthKey.p8';
@@ -114,6 +128,15 @@ export async function sendPush(
 
     if (result.failed.length > 0) {
       console.error('[APNs] Push failed:', JSON.stringify(result.failed));
+      for (const f of result.failed) {
+        const reason = f.response?.reason;
+        // APNs returns HTTP 410 with reason "Unregistered" once the token is dead.
+        if ((reason && INVALID_TOKEN_REASONS.has(reason)) || f.status === 410) {
+          cleanupDbOps?.clearDeviceTokenByValue(deviceToken);
+          console.log(`[APNs] Evicted stale device token (reason: ${reason ?? f.status})`);
+          break;
+        }
+      }
       return false;
     }
 
