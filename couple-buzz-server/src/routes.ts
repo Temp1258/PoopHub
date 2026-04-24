@@ -763,12 +763,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       partner_message: phase === 'revealed' ? (messages.partner?.content ?? null) : null,
       partner_wrote: phase === 'revealed' ? !!messages.partner : undefined,
       reveal_at: revealAt.toISOString(),
-      can_edit: phase === 'writing',
+      can_edit: phase === 'writing' && !messages.mine,
     });
   });
 
-  // POST /api/mailbox
-  router.post('/mailbox', (req: Request, res: Response) => {
+  // POST /api/mailbox — seal-on-submit: first write wins and becomes read-only.
+  router.post('/mailbox', async (req: Request, res: Response) => {
     const userId = req.userId!;
     const { content } = req.body;
 
@@ -790,7 +790,16 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Writing period has ended' });
     }
 
-    dbOps.submitMailboxMessage(userId, weekKey, content.trim());
+    const saved = dbOps.submitMailboxMessage(userId, weekKey, content.trim());
+    if (!saved) {
+      return res.status(400).json({ error: '本周的信已封存，不能再修改' });
+    }
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, 'mailbox_written', user.name);
+    }
+
     res.json({ success: true });
   });
 

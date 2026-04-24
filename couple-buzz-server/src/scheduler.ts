@@ -1,71 +1,78 @@
 import { DbOps } from './db';
 import { SendPushFn } from './routes';
 
-let lastMailboxOpenHour = -1;
-let lastMailboxRevealHour = -1;
-let lastCapsuleCheckHour = -1;
+// Per-event dedup keyed by the UTC day the event fires on.
+// Kept in-memory: a process restart within the trigger minute may retrigger
+// an event, but that's preferable to missing it after a deploy.
+const lastTriggered: Record<string, string> = {};
 
 export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
   setInterval(async () => {
     const now = new Date();
+    const utcDay = now.getUTCDay(); // 0=Sun ... 5=Fri 6=Sat
     const utcHour = now.getUTCHours();
-    const utcDay = now.getUTCDay(); // 0=Sun
+    const utcMin = now.getUTCMinutes();
+    const dayKey = now.toISOString().slice(0, 10);
 
-    // Mailbox open: Friday at 00:00 UTC
-    if (utcDay === 5 && utcHour === 0 && lastMailboxOpenHour !== utcHour) {
-      lastMailboxOpenHour = utcHour;
-      await broadcastPush(dbOps, pushFn, 'mailbox_open');
+    const fireOnce = async (name: string, run: () => Promise<void>) => {
+      const key = `${name}:${dayKey}`;
+      if (lastTriggered[name] === key) return;
+      lastTriggered[name] = key;
+      try {
+        await run();
+      } catch (err) {
+        console.warn(`[Scheduler] ${name} failed:`, err);
+      }
+    };
+
+    // Friday 00:00 UTC — mailbox opens
+    if (utcDay === 5 && utcHour === 0 && utcMin === 0) {
+      await fireOnce('mailbox_open', () => broadcastPush(dbOps, pushFn, 'mailbox_open'));
     }
 
-    // Mailbox reveal + weekly report: Sunday at 14:00 UTC
-    if (utcDay === 0 && utcHour === 14 && lastMailboxRevealHour !== utcHour) {
-      lastMailboxRevealHour = utcHour;
-      await broadcastPush(dbOps, pushFn, 'mailbox_reveal');
-      await broadcastPush(dbOps, pushFn, 'weekly_report');
+    // Saturday 14:00 UTC — 24h before reveal
+    if (utcDay === 6 && utcHour === 14 && utcMin === 0) {
+      await fireOnce('mailbox_countdown_24h', () => broadcastPush(dbOps, pushFn, 'mailbox_countdown_24h'));
     }
 
-    // Capsule unlock check: daily at 00:00 and 08:00 UTC
-    if ((utcHour === 0 || utcHour === 8) && lastCapsuleCheckHour !== utcHour) {
-      lastCapsuleCheckHour = utcHour;
-      await checkCapsuleUnlocks(dbOps, pushFn);
+    // Sunday 13:45 UTC — 15 minutes before reveal
+    if (utcDay === 0 && utcHour === 13 && utcMin === 45) {
+      await fireOnce('mailbox_countdown_15min', () => broadcastPush(dbOps, pushFn, 'mailbox_countdown_15min'));
     }
 
-    // Reset guards
-    if (utcHour !== 0) lastMailboxOpenHour = -1;
-    if (utcHour !== 14) lastMailboxRevealHour = -1;
-    if (utcHour !== 0 && utcHour !== 8) lastCapsuleCheckHour = -1;
-  }, 60 * 60 * 1000);
+    // Sunday 14:00 UTC — reveal + weekly report
+    if (utcDay === 0 && utcHour === 14 && utcMin === 0) {
+      await fireOnce('mailbox_reveal', () => broadcastPush(dbOps, pushFn, 'mailbox_reveal'));
+      await fireOnce('weekly_report', () => broadcastPush(dbOps, pushFn, 'weekly_report'));
+    }
+
+    // Daily 00:00 and 08:00 UTC — unlock any due capsules
+    if ((utcHour === 0 || utcHour === 8) && utcMin === 0) {
+      await fireOnce(`capsule_${utcHour}`, () => checkCapsuleUnlocks(dbOps, pushFn));
+    }
+  }, 60 * 1000);
 }
 
 async function broadcastPush(dbOps: DbOps, pushFn: SendPushFn, type: string): Promise<void> {
-  try {
-    const tokens = dbOps.getAllPairedUserTokens();
-    for (const { device_token } of tokens) {
-      await pushFn(device_token, type, '');
-    }
-  } catch (err) {
-    console.warn('[Scheduler] Push broadcast error:', err);
+  const tokens = dbOps.getAllPairedUserTokens();
+  for (const { device_token } of tokens) {
+    await pushFn(device_token, type, '');
   }
 }
 
 async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<void> {
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const capsules = dbOps.getUnlockableCapsules(today);
-    const notified = new Set<string>();
+  const today = new Date().toISOString().slice(0, 10);
+  const capsules = dbOps.getUnlockableCapsules(today);
+  const notified = new Set<string>();
 
-    for (const capsule of capsules) {
-      // Notify both users in the couple (once per user)
-      for (const uid of [capsule.user_id, capsule.partner_id]) {
-        if (notified.has(uid)) continue;
-        notified.add(uid);
-        const user = dbOps.getUser(uid);
-        if (user?.device_token) {
-          await pushFn(user.device_token, 'capsule_unlock', '');
-        }
+  for (const capsule of capsules) {
+    for (const uid of [capsule.user_id, capsule.partner_id]) {
+      if (notified.has(uid)) continue;
+      notified.add(uid);
+      const user = dbOps.getUser(uid);
+      if (user?.device_token) {
+        await pushFn(user.device_token, 'capsule_unlock', '');
       }
     }
-  } catch (err) {
-    console.warn('[Scheduler] Capsule check error:', err);
   }
 }

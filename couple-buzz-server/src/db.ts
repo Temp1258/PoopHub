@@ -174,7 +174,7 @@ export interface DbOps {
   getRitualsByDates(myDate: string, partnerDate: string, userId: string, partnerId: string): { myMorning: boolean; myEvening: boolean; partnerMorning: boolean; partnerEvening: boolean };
   getDailyRecap(userId: string, partnerId: string, date: string): { total_interactions: number; top_action: string | null };
   // Mailbox
-  submitMailboxMessage(userId: string, weekKey: string, content: string): void;
+  submitMailboxMessage(userId: string, weekKey: string, content: string): boolean;
   getMailboxMessages(weekKey: string, userId: string, partnerId: string): { mine?: MailboxMessage; partner?: MailboxMessage };
   getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null }[];
   getAllPairedUserTokens(): { device_token: string }[];
@@ -314,6 +314,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       user_id TEXT NOT NULL,
       week_key TEXT NOT NULL,
       content TEXT NOT NULL,
+      locked INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id),
@@ -456,6 +457,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const dateCols = db.pragma('table_info(important_dates)') as { name: string }[];
   if (dateCols.length > 0 && !dateCols.some((c) => c.name === 'pinned')) {
     db.exec('ALTER TABLE important_dates ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migration: add locked column to mailbox; lock all pre-existing rows so they become read-only
+  const mailboxCols = db.pragma('table_info(mailbox)') as { name: string }[];
+  if (mailboxCols.length > 0 && !mailboxCols.some((c) => c.name === 'locked')) {
+    db.exec('ALTER TABLE mailbox ADD COLUMN locked INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE mailbox SET locked = 1');
   }
 
   const insertUser = db.prepare(
@@ -623,8 +631,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
 
   // Mailbox statements
+  // Seal-on-submit: row is inserted with locked=1 and never updated; re-submits are ignored.
   const stmtSubmitMailbox = db.prepare(
-    'INSERT INTO mailbox (user_id, week_key, content) VALUES (?, ?, ?) ON CONFLICT(user_id, week_key) DO UPDATE SET content = excluded.content, updated_at = CURRENT_TIMESTAMP'
+    'INSERT OR IGNORE INTO mailbox (user_id, week_key, content, locked) VALUES (?, ?, ?, 1)'
   );
   const stmtGetMailboxMessages = db.prepare(
     'SELECT * FROM mailbox WHERE week_key = ? AND user_id IN (?, ?)'
@@ -1009,8 +1018,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     // Mailbox
-    submitMailboxMessage(userId: string, weekKey: string, content: string): void {
-      stmtSubmitMailbox.run(userId, weekKey, content);
+    submitMailboxMessage(userId: string, weekKey: string, content: string): boolean {
+      const result = stmtSubmitMailbox.run(userId, weekKey, content);
+      return result.changes > 0;
     },
 
     getMailboxMessages(weekKey: string, userId: string, partnerId: string): { mine?: MailboxMessage; partner?: MailboxMessage } {
