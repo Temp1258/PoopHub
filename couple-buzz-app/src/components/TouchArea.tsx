@@ -4,7 +4,12 @@ import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { emitTouchStart, emitTouchEnd, subscribe } from '../services/socket';
 
-export default function TouchArea() {
+interface Props {
+  onSendStart?: () => void;
+  onSendEnd?: () => void;
+}
+
+export default function TouchArea({ onSendStart, onSendEnd }: Props = {}) {
   const [partnerOnline, setPartnerOnline] = useState(false);
   const [receiving, setReceiving] = useState(false);
   const rippleAnim = useRef(new Animated.Value(0)).current;
@@ -54,6 +59,7 @@ export default function TouchArea() {
 
   const handlePressIn = useCallback(() => {
     emitTouchStart();
+    onSendStart?.();
     // Immediate strong haptic for sender
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Continuous haptic while holding
@@ -68,17 +74,18 @@ export default function TouchArea() {
         Animated.timing(rippleAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
       ])
     ).start();
-  }, [rippleAnim]);
+  }, [rippleAnim, onSendStart]);
 
   const handlePressOut = useCallback(() => {
     emitTouchEnd();
+    onSendEnd?.();
     if (sendHapticInterval.current) {
       clearInterval(sendHapticInterval.current);
       sendHapticInterval.current = null;
     }
     rippleAnim.stopAnimation();
     rippleAnim.setValue(0);
-  }, [rippleAnim]);
+  }, [rippleAnim, onSendEnd]);
 
   const sendScale = rippleAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.6] });
   const sendOpacity = rippleAnim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0] });
@@ -110,7 +117,7 @@ export default function TouchArea() {
   );
 }
 
-const CIRCLE_SIZE = 80;
+const CIRCLE_SIZE = 200;
 
 const styles = StyleSheet.create({
   wrapper: {
@@ -148,9 +155,9 @@ const styles = StyleSheet.create({
     borderColor: '#FF6B8A',
   },
   onlineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
     backgroundColor: '#4CD964',
   },
 });

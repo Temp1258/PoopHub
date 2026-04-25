@@ -1,23 +1,11 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Animated as RNAnimated,
-  Dimensions,
-  ScrollView,
-} from 'react-native';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { View, Text, StyleSheet, Animated as RNAnimated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { COLORS, ACTION_CATEGORIES } from '../constants';
+import { COLORS } from '../constants';
 import { api, DatesResponse } from '../services/api';
-import ActionButton from '../components/ActionButton';
 import TouchArea from '../components/TouchArea';
 import { subscribe } from '../services/socket';
-import RitualButton from '../components/RitualButton';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const BUTTON_SIZE = (SCREEN_WIDTH - 90) / 3;
 
 interface Props {
   partnerName: string;
@@ -26,12 +14,19 @@ interface Props {
 
 export default function HomeScreen({ partnerName, streak }: Props) {
   const insets = useSafeAreaInsets();
-  const [disabledButtons, setDisabledButtons] = useState<Record<string, boolean>>({});
-  const toastOpacity = useRef(new RNAnimated.Value(0)).current;
-  const [toastText, setToastText] = useState('');
   const [pinnedDate, setPinnedDate] = useState<DatesResponse['pinned']>(null);
   const [presenceBoth, setPresenceBoth] = useState(false);
   const presenceAnim = useRef(new RNAnimated.Value(0)).current;
+
+  // Touch dual-press state
+  const [iAmPressing, setIAmPressing] = useState(false);
+  const [partnerPressing, setPartnerPressing] = useState(false);
+  const bothPressing = iAmPressing && partnerPressing;
+  const heartScale = useRef(new RNAnimated.Value(1)).current;
+  const heartOpacity = useMemo(
+    () => heartScale.interpolate({ inputRange: [0.92, 1.18], outputRange: [0.75, 1.0] }),
+    [heartScale]
+  );
 
   useEffect(() => {
     const unsubs = [
@@ -50,12 +45,32 @@ export default function HomeScreen({ partnerName, streak }: Props) {
         presenceAnim.stopAnimation();
         presenceAnim.setValue(0);
       }),
+      subscribe('touch_start', () => setPartnerPressing(true)),
+      subscribe('touch_end', () => setPartnerPressing(false)),
     ];
     return () => {
       unsubs.forEach(fn => fn());
       presenceAnim.stopAnimation();
     };
   }, [presenceAnim]);
+
+  // Heartbeat animation while both are pressing
+  useEffect(() => {
+    if (bothPressing) {
+      heartScale.stopAnimation();
+      heartScale.setValue(1);
+      RNAnimated.loop(
+        RNAnimated.sequence([
+          RNAnimated.timing(heartScale, { toValue: 1.18, duration: 380, useNativeDriver: true }),
+          RNAnimated.timing(heartScale, { toValue: 0.92, duration: 380, useNativeDriver: true }),
+        ])
+      ).start();
+    } else {
+      heartScale.stopAnimation();
+      heartScale.setValue(1);
+    }
+    return () => { heartScale.stopAnimation(); };
+  }, [bothPressing, heartScale]);
 
   useFocusEffect(
     useCallback(() => {
@@ -68,33 +83,10 @@ export default function HomeScreen({ partnerName, streak }: Props) {
     }, [])
   );
 
-  const showToast = useCallback((text: string) => {
-    setToastText(text);
-    RNAnimated.sequence([
-      RNAnimated.timing(toastOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
-      RNAnimated.delay(1500),
-      RNAnimated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
-    ]).start();
-  }, [toastOpacity]);
-
-  const handleAction = useCallback(async (actionType: string) => {
-    setDisabledButtons((prev) => ({ ...prev, [actionType]: true }));
-    setTimeout(() => {
-      setDisabledButtons((prev) => ({ ...prev, [actionType]: false }));
-    }, 50);
-
-    try {
-      await api.sendAction(actionType);
-      showToast(`已告诉 ${partnerName} 啦～`);
-    } catch (error) {
-      showToast('发送失败，请重试');
-    }
-  }, [partnerName, showToast]);
-
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <Text style={styles.title}>香宝聚集地 💕</Text>
+        <Text style={styles.title}>心心相印</Text>
         {(streak > 0 || pinnedDate) && (
           <View style={styles.badgeRow}>
             {streak > 0 && (
@@ -121,31 +113,23 @@ export default function HomeScreen({ partnerName, streak }: Props) {
         )}
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        <RitualButton />
-        <TouchArea />
-
-        {ACTION_CATEGORIES.map((category) => (
-          <View key={category.title}>
-            <Text style={styles.categoryTitle}>{category.title}</Text>
-            <View style={[styles.grid, category.actions.length < 3 && styles.gridCentered]}>
-              {category.actions.map((action) => (
-                <View key={action.type} style={[styles.buttonWrapper, { width: BUTTON_SIZE }]}>
-                  <ActionButton
-                    action={action}
-                    onPress={handleAction}
-                    disabled={!!disabledButtons[action.type]}
-                  />
-                </View>
-              ))}
-            </View>
-          </View>
-        ))}
-      </ScrollView>
-
-      <RNAnimated.View style={[styles.toast, { opacity: toastOpacity }]}>
-        <Text style={styles.toastText}>{toastText}</Text>
-      </RNAnimated.View>
+      <View style={styles.touchWrap}>
+        {bothPressing && (
+          <RNAnimated.View
+            pointerEvents="none"
+            style={[
+              styles.heartLayer,
+              { transform: [{ scale: heartScale }], opacity: heartOpacity },
+            ]}
+          >
+            <Text style={styles.heartEmoji}>❤️</Text>
+          </RNAnimated.View>
+        )}
+        <TouchArea
+          onSendStart={() => setIAmPressing(true)}
+          onSendEnd={() => setIAmPressing(false)}
+        />
+      </View>
     </View>
   );
 }
@@ -202,41 +186,17 @@ const styles = StyleSheet.create({
     color: COLORS.kiss,
     fontWeight: '500',
   },
-  scrollContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
-  categoryTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.textLight,
-    marginTop: 16,
-    marginBottom: 10,
-    marginLeft: 4,
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 15,
-  },
-  gridCentered: {
+  touchWrap: {
+    flex: 1,
     justifyContent: 'center',
+    alignItems: 'center',
   },
-  buttonWrapper: {
-    aspectRatio: 1,
+  heartLayer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  toast: {
-    position: 'absolute',
-    bottom: 100,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(92, 64, 51, 0.85)',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 24,
-  },
-  toastText: {
-    color: COLORS.white,
-    fontSize: 15,
-    fontWeight: '500',
+  heartEmoji: {
+    fontSize: 280,
   },
 });

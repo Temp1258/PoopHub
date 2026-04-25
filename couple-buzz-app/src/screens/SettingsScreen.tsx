@@ -15,6 +15,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, ImportantDate } from '../services/api';
 import { storage } from '../utils/storage';
+import WeeklyReportCard from '../components/WeeklyReportCard';
+import StatsCard from '../components/StatsCard';
 
 const TIMEZONES = [
   { value: 'Asia/Shanghai', label: '北京时间', offset: 'UTC+8' },
@@ -46,6 +48,7 @@ export default function SettingsScreen() {
   const [saving, setSaving] = useState(false);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
   const [userId, setUserId] = useState('');
+  const [partnerId, setPartnerId] = useState('');
   const [dates, setDates] = useState<ImportantDate[]>([]);
   const [newDateTitle, setNewDateTitle] = useState('');
   const [newDateValue, setNewDateValue] = useState('');
@@ -70,9 +73,15 @@ export default function SettingsScreen() {
           setOriginalName(status.name);
           setOriginalTimezone(status.timezone);
           setOriginalPartnerTz(status.partner_timezone);
+          if (status.partner_id) {
+            setPartnerId(status.partner_id);
+            await storage.setPartnerId(status.partner_id);
+          }
         } catch {
           const localName = await storage.getUserName();
           if (localName) setName(localName);
+          const cachedPid = await storage.getPartnerId();
+          if (cachedPid) setPartnerId(cachedPid);
         }
         const id = await storage.getUserId();
         if (id) setUserId(id);
@@ -161,14 +170,29 @@ export default function SettingsScreen() {
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
     >
-      <Text style={styles.screenTitle}>设置</Text>
+      <Text style={styles.screenTitle}>数据</Text>
 
       {userId ? (
-        <View style={styles.idRow}>
-          <Text style={styles.idLabel}>我的 ID</Text>
-          <Text style={styles.idValue}>{userId}</Text>
+        <View style={styles.coupleIdRow}>
+          <View style={styles.idCard}>
+            <Text style={styles.idLabel}>我的 ID</Text>
+            <Text style={styles.idValue}>{userId}</Text>
+          </View>
+          <View style={styles.idLink}>
+            <Text style={styles.idLinkHeart}>💞</Text>
+            <Text style={styles.idLinkArrow}>⇄</Text>
+          </View>
+          <View style={styles.idCard}>
+            <Text style={styles.idLabel}>ta 的 ID</Text>
+            <Text style={[styles.idValue, !partnerId && styles.idValueEmpty]}>
+              {partnerId || '— —'}
+            </Text>
+          </View>
         </View>
       ) : null}
+
+      <WeeklyReportCard />
+      <StatsCard />
 
       <Text style={styles.sectionTitle}>昵称</Text>
       <TextInput
@@ -341,20 +365,49 @@ const styles = StyleSheet.create({
     marginBottom: 32,
     textAlign: 'center',
   },
-  idRow: {
+  coupleIdRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 16,
+    gap: 8,
+  },
+  idCard: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   idLabel: {
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.textLight,
   },
   idValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
     color: COLORS.kiss,
-    letterSpacing: 3,
-    marginTop: 2,
+    letterSpacing: 2,
+    marginTop: 4,
+  },
+  idValueEmpty: {
+    color: COLORS.textLight,
+    letterSpacing: 4,
+  },
+  idLink: {
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  idLinkHeart: {
+    fontSize: 22,
+  },
+  idLinkArrow: {
+    fontSize: 16,
+    color: COLORS.kiss,
+    fontWeight: '700',
+    marginTop: -2,
   },
   sectionTitle: {
     fontSize: 14,

@@ -60,7 +60,7 @@ function getYesterdayDate(todayStr: string): string {
   return date.toISOString().slice(0, 10);
 }
 
-// Mailbox helpers
+// Used by weekly report and weekly challenge. Mailbox now uses session keys, not week.
 function getCurrentWeekMonday(): string {
   const now = new Date();
   const day = now.getUTCDay();
@@ -70,12 +70,26 @@ function getCurrentWeekMonday(): string {
   return monday.toISOString().slice(0, 10);
 }
 
-function getRevealTime(weekMonday: string): Date {
-  // Reveal: Sunday 14:00 UTC (= Monday + 6 days + 14 hours)
-  const d = new Date(weekMonday + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + 6);
-  d.setUTCHours(14, 0, 0, 0);
-  return d;
+// Mailbox helpers — twice-daily session cycle.
+// AM session: 0:00-11:59 UTC (= 8am-7:59pm BJT) → reveals at 12:00 UTC (= 8pm BJT)
+// PM session: 12:00-23:59 UTC (= 8pm BJT to 7:59am BJT next day) → reveals next 0:00 UTC (= 8am BJT)
+function getCurrentSessionKey(): string {
+  const now = new Date();
+  const utcDate = now.toISOString().slice(0, 10);
+  const utcHour = now.getUTCHours();
+  return utcHour < 12 ? `${utcDate}-AM` : `${utcDate}-PM`;
+}
+
+function getRevealTime(sessionKey: string): Date {
+  const date = sessionKey.slice(0, 10);
+  const phase = sessionKey.slice(11);
+  if (phase === 'AM') {
+    return new Date(`${date}T12:00:00Z`);
+  }
+  // PM: reveal next day 0:00 UTC
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next;
 }
 
 export type SendPushFn = (
@@ -224,6 +238,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       const streak = dbOps.getStreak(userId, user.partner_id);
       return res.json({
         paired: true,
+        partner_id: user.partner_id,
         partner_name: partner?.name ?? null,
         name: user.name,
         timezone: user.timezone,
@@ -568,6 +583,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       date: today,
       my_answer: answers.mine?.answer ?? null,
       partner_answer: bothAnswered ? answers.partner!.answer : null,
+      partner_answered: !!answers.partner,
       both_answered: bothAnswered,
     });
   });
@@ -764,15 +780,15 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const weekKey = getCurrentWeekMonday();
-    const revealAt = getRevealTime(weekKey);
+    const sessionKey = getCurrentSessionKey();
+    const revealAt = getRevealTime(sessionKey);
     const now = new Date();
     const phase = now >= revealAt ? 'revealed' : 'writing';
 
-    const messages = dbOps.getMailboxMessages(weekKey, userId, user.partner_id);
+    const messages = dbOps.getMailboxMessages(sessionKey, userId, user.partner_id);
 
     res.json({
-      week_key: weekKey,
+      week_key: sessionKey,
       phase,
       my_message: messages.mine?.content ?? null,
       partner_message: phase === 'revealed' ? (messages.partner?.content ?? null) : null,
@@ -798,16 +814,16 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const weekKey = getCurrentWeekMonday();
-    const revealAt = getRevealTime(weekKey);
+    const sessionKey = getCurrentSessionKey();
+    const revealAt = getRevealTime(sessionKey);
 
     if (new Date() >= revealAt) {
       return res.status(400).json({ error: 'Writing period has ended' });
     }
 
-    const saved = dbOps.submitMailboxMessage(userId, weekKey, content.trim());
+    const saved = dbOps.submitMailboxMessage(userId, sessionKey, content.trim());
     if (!saved) {
-      return res.status(400).json({ error: '本周的信已封存，不能再修改' });
+      return res.status(400).json({ error: '本场的信已封存，不能再修改' });
     }
 
     const partner = dbOps.getUser(user.partner_id);
@@ -827,15 +843,15 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ weeks: [] });
 
-    // Only return weeks whose reveal time has passed
+    // Only return sessions whose reveal time has passed
     const allWeeks = dbOps.getMailboxArchive(userId, user.partner_id, Math.min(limit, 50));
     const now = new Date();
-    const currentWeekKey = getCurrentWeekMonday();
+    const currentSessionKey = getCurrentSessionKey();
     const weeks = allWeeks.filter(w => {
-      if (w.week_key === currentWeekKey) {
-        return now >= getRevealTime(currentWeekKey);
+      if (w.week_key === currentSessionKey) {
+        return now >= getRevealTime(currentSessionKey);
       }
-      return true; // Past weeks are always revealed
+      return true; // Past sessions are always revealed
     });
 
     res.json({ weeks });

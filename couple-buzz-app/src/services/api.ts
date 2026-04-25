@@ -1,6 +1,17 @@
 import { API_URL, DEMO_MODE } from '../constants';
 import { storage } from '../utils/storage';
 
+// Thrown only when the server has definitively rejected the session
+// (401 even after a refresh attempt). Network failures, DNS errors,
+// 5xx responses, and wrong API URLs throw plain Error — callers must
+// not treat those as "user is logged out".
+export class AuthError extends Error {
+  constructor(message = 'Authentication failed') {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
 let isRefreshing = false;
 
 async function refreshAccessToken(): Promise<boolean> {
@@ -53,6 +64,11 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
       headers['Authorization'] = `Bearer ${newToken}`;
       res = await fetch(`${API_URL}${path}`, { ...options, headers });
     }
+
+    // Still 401 after refresh attempt — definitive auth failure.
+    if (res.status === 401) {
+      throw new AuthError();
+    }
   }
 
   let data: any;
@@ -89,6 +105,7 @@ export interface PairResponse {
 
 export interface StatusResponse {
   paired: boolean;
+  partner_id?: string;
   partner_name?: string;
   name: string;
   timezone: string;
@@ -156,6 +173,7 @@ export interface DailyQuestionResponse {
   date: string;
   my_answer: string | null;
   partner_answer: string | null;
+  partner_answered: boolean;
   both_answered: boolean;
 }
 
@@ -372,7 +390,7 @@ const demoApi = {
   },
 
   async getDailyQuestion(): Promise<DailyQuestionResponse> {
-    return { question: '你最喜欢对方的哪个特点？', question_index: 0, date: new Date().toISOString().slice(0, 10), my_answer: null, partner_answer: null, both_answered: false };
+    return { question: '你最喜欢对方的哪个特点？', question_index: 0, date: new Date().toISOString().slice(0, 10), my_answer: null, partner_answer: null, partner_answered: false, both_answered: false };
   },
 
   async submitDailyAnswer(_answer: string): Promise<DailyAnswerResponse> {

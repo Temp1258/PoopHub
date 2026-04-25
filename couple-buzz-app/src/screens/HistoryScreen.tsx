@@ -9,13 +9,28 @@ import {
   RefreshControl,
   ActivityIndicator,
   Alert,
+  Pressable,
+  Dimensions,
+  Animated,
+  PanResponder,
+  ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { COLORS, ACTION_EMOJI } from '../constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
+import { COLORS, ACTION_EMOJI, ACTION_CATEGORIES, ActionConfig } from '../constants';
 import { api, HistoryAction } from '../services/api';
 import { storage } from '../utils/storage';
 import ActionRecord from '../components/ActionRecord';
 import ReactionPicker from '../components/ReactionPicker';
+
+const SCREEN_HEIGHT = Dimensions.get('window').height;
+const TOOLBAR_HEIGHT = 56;
+const PANEL_HEIGHT = SCREEN_HEIGHT * 0.5 - TOOLBAR_HEIGHT;
+const COLUMNS = 5;
+const PANEL_PADDING_X = 12;
+const COL_GAP = 8;
+const ROW_GAP = 8;
 
 const TIMEZONE_LABELS: Record<string, string> = {
   'Asia/Shanghai': '北京时间 (UTC+8)',
@@ -37,6 +52,42 @@ const TIMEZONE_LABELS: Record<string, string> = {
 interface Section {
   title: string;
   data: HistoryAction[];
+}
+
+interface Props {
+  partnerName: string;
+  onLatestSeen?: (id: number) => void;
+}
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function CompactActionButton({ action, onPress }: { action: ActionConfig; onPress: (t: string) => void }) {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const handle = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Animated.sequence([
+      Animated.timing(scaleAnim, { toValue: 0.85, duration: 100, useNativeDriver: true }),
+      Animated.timing(scaleAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+    ]).start();
+    onPress(action.type);
+  }, [action.type, onPress, scaleAnim]);
+
+  return (
+    <Animated.View style={[styles.compactWrapper, { transform: [{ scale: scaleAnim }] }]}>
+      <TouchableOpacity
+        style={[styles.compactButton, { backgroundColor: action.color }]}
+        onPress={handle}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.compactEmoji}>{action.emoji}</Text>
+        <Text style={styles.compactLabel} numberOfLines={1}>{action.label}</Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
 }
 
 function formatTimeInZone(dateStr: string, timezone: string): string {
@@ -91,7 +142,8 @@ function groupByDate(actions: HistoryAction[]): Section[] {
   return Object.entries(groups).map(([title, data]) => ({ title, data }));
 }
 
-export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: number) => void }) {
+export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
+  const insets = useSafeAreaInsets();
   const [sections, setSections] = useState<Section[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -114,6 +166,84 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
   const [myTimezone, setMyTimezone] = useState('');
   const [myPartnerTz, setMyPartnerTz] = useState('');
 
+  // Bottom emoji panel
+  const [panelOpen, setPanelOpen] = useState(false);
+  const panY = useRef(new Animated.Value(PANEL_HEIGHT)).current;
+  const scrollYRef = useRef(0);
+  const panelOpenRef = useRef(false);
+  panelOpenRef.current = panelOpen;
+
+  const closePanel = useCallback(() => {
+    Animated.spring(panY, { toValue: PANEL_HEIGHT, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
+      setPanelOpen(false);
+    });
+  }, [panY]);
+
+  const openPanel = useCallback(() => {
+    setPanelOpen(true);
+    Animated.spring(panY, { toValue: 0, friction: 9, tension: 80, useNativeDriver: true }).start();
+  }, [panY]);
+
+  const togglePanel = useCallback(() => {
+    if (panelOpen) closePanel();
+    else openPanel();
+  }, [panelOpen, openPanel, closePanel]);
+
+  // Toolbar pill: swipe up to peek/open the panel; tap is handled by inner TouchableOpacity.
+  const toolbarPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, g) =>
+        !panelOpenRef.current && g.dy < -5 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderGrant: () => {
+        setPanelOpen(true);
+      },
+      onPanResponderMove: (_, g) => {
+        if (g.dy < 0) {
+          const progress = Math.min(-g.dy, PANEL_HEIGHT);
+          panY.setValue(PANEL_HEIGHT - progress);
+        } else {
+          panY.setValue(PANEL_HEIGHT);
+        }
+      },
+      onPanResponderRelease: (_, g) => {
+        if (g.dy < -50 || g.vy < -0.5) {
+          Animated.spring(panY, { toValue: 0, friction: 9, tension: 80, useNativeDriver: true }).start();
+        } else {
+          Animated.spring(panY, { toValue: PANEL_HEIGHT, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
+            setPanelOpen(false);
+          });
+        }
+      },
+    })
+  ).current;
+
+  // Capture-phase responder: when ScrollView is at top and user drags down,
+  // intercept the gesture from the ScrollView and use it to close the panel.
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponderCapture: (_, g) => {
+        return scrollYRef.current <= 0 && g.dy > 8 && g.dy > Math.abs(g.dx);
+      },
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_, g) => {
+        if (g.dy > 0) panY.setValue(g.dy);
+      },
+      onPanResponderRelease: (_, g) => {
+        if (g.dy > 80 || g.vy > 0.5) {
+          Animated.spring(panY, { toValue: PANEL_HEIGHT, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
+            setPanelOpen(false);
+          });
+        } else {
+          Animated.spring(panY, { toValue: 0, friction: 9, tension: 80, useNativeDriver: true }).start();
+        }
+      },
+    })
+  ).current;
+
   const scrollToBottom = useCallback(() => {
     if (sections.length === 0) return;
     setTimeout(() => {
@@ -132,7 +262,6 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
       if (savedPartnerTz) setPartnerTz(savedPartnerTz);
       setPartnerRemark(savedRemark || '');
 
-      // Load current profile for remark saving
       const savedName = await storage.getUserName();
       setMyName(savedName || '');
       setMyTimezone(savedTz || getDeviceTimezone());
@@ -178,6 +307,19 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
     loadHistory();
   }, [loadHistory]);
 
+  const handleSendAction = useCallback(async (actionType: string) => {
+    try {
+      await api.sendAction(actionType);
+      const result = await api.getHistory(100);
+      const reversed = [...result.actions].reverse();
+      setSections(groupByDate(reversed));
+      setReactions(result.reactions || {});
+      const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
+      prevLatestIdRef.current = latestId;
+      if (latestId > 0) onLatestSeenRef.current?.(latestId);
+    } catch {}
+  }, []);
+
   const handleItemPress = useCallback((item: HistoryAction) => {
     setSelectedItem(item);
     setEditingRemark(partnerRemark);
@@ -185,7 +327,7 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
 
   const handleReactionLongPress = useCallback((item: HistoryAction) => {
     if (item.user_id === myUserId) return;
-    setSelectedItem(null); // Close detail modal if open
+    setSelectedItem(null);
     setReactionTarget(item);
   }, [myUserId]);
 
@@ -194,7 +336,6 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
     setReactionTarget(null);
     try {
       await api.sendReaction(reactionTarget.id, actionType);
-      // Refresh to show the reaction
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       setSections(groupByDate(reversed));
@@ -232,6 +373,11 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
 
   return (
     <View style={styles.container}>
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+        <Text style={styles.headerTitle}>香宝聚集地 💕</Text>
+        <Text style={styles.headerSubtitle}>与 {partnerName} 已连接</Text>
+      </View>
+
       <SectionList
         ref={listRef}
         sections={sections}
@@ -266,9 +412,20 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
             <Text style={styles.emptyText}>还没有记录，快去按按钮吧～</Text>
           </View>
         }
-        contentContainerStyle={sections.length === 0 ? styles.emptyContainer : styles.list}
+        contentContainerStyle={
+          sections.length === 0
+            ? styles.emptyContainer
+            : [styles.list, { paddingBottom: TOOLBAR_HEIGHT + 16 }]
+        }
         stickySectionHeadersEnabled={false}
       />
+
+      {panelOpen && (
+        <Pressable
+          style={[styles.tapToClose, { bottom: TOOLBAR_HEIGHT + PANEL_HEIGHT }]}
+          onPress={closePanel}
+        />
+      )}
 
       {reactionTarget && (
         <ReactionPicker
@@ -322,6 +479,59 @@ export default function HistoryScreen({ onLatestSeen }: { onLatestSeen?: (id: nu
           </TouchableOpacity>
         </TouchableOpacity>
       )}
+
+      <Animated.View
+        pointerEvents={panelOpen ? 'auto' : 'none'}
+        style={[styles.panel, { transform: [{ translateY: panY }] }]}
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.dragHandleArea}>
+          <View style={styles.dragHandle} />
+        </View>
+        <ScrollView
+          onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
+          scrollEventThrottle={16}
+          contentContainerStyle={styles.panelContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {ACTION_CATEGORIES.map((category) => (
+            <View key={category.title} style={styles.categoryBlock}>
+              <Text style={styles.categoryTitle}>{category.title}</Text>
+              {chunkArray(category.actions, COLUMNS).map((row, ri) => (
+                <View key={ri} style={styles.gridRow}>
+                  {row.map((action) => (
+                    <View key={action.type} style={styles.gridCell}>
+                      <CompactActionButton
+                        action={action}
+                        onPress={handleSendAction}
+                      />
+                    </View>
+                  ))}
+                  {row.length < COLUMNS &&
+                    Array.from({ length: COLUMNS - row.length }).map((_, i) => (
+                      <View key={`pad-${i}`} style={styles.gridCell} />
+                    ))}
+                </View>
+              ))}
+            </View>
+          ))}
+        </ScrollView>
+      </Animated.View>
+
+      <View style={styles.toolbarRow} pointerEvents="box-none">
+        <View {...toolbarPanResponder.panHandlers}>
+          <TouchableOpacity
+            style={styles.toolbar}
+            onPress={togglePanel}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.toolbarIcon}>{panelOpen ? '▾' : '💌'}</Text>
+            <Text style={styles.toolbarHint}>
+              {panelOpen ? '收起' : '给 ta 发个表情'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 }
@@ -331,8 +541,24 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginTop: 4,
+  },
   list: {
-    paddingTop: 16,
+    paddingTop: 8,
     paddingBottom: 24,
   },
   center: {
@@ -355,6 +581,112 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     color: COLORS.textLight,
+  },
+  tapToClose: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'transparent',
+    zIndex: 50,
+  },
+  panel: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: TOOLBAR_HEIGHT,
+    height: PANEL_HEIGHT,
+    backgroundColor: COLORS.white,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    zIndex: 60,
+  },
+  dragHandleArea: {
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
+  },
+  panelContent: {
+    paddingHorizontal: PANEL_PADDING_X,
+    paddingBottom: 12,
+  },
+  categoryBlock: {
+    marginBottom: 4,
+  },
+  categoryTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textLight,
+    marginBottom: 8,
+    marginLeft: 2,
+  },
+  gridRow: {
+    flexDirection: 'row',
+    gap: COL_GAP,
+    marginBottom: ROW_GAP,
+  },
+  gridCell: {
+    flex: 1,
+    aspectRatio: 1,
+  },
+  compactWrapper: {
+    width: '100%',
+    height: '100%',
+  },
+  compactButton: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  compactEmoji: {
+    fontSize: 22,
+    marginBottom: 2,
+  },
+  compactLabel: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: COLORS.text,
+    paddingHorizontal: 2,
+  },
+  toolbarRow: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    zIndex: 70,
+  },
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  toolbarIcon: {
+    fontSize: 18,
+  },
+  toolbarHint: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   modalOverlay: {
     ...StyleSheet.absoluteFillObject,

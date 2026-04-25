@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEYS = {
   USER_ID: 'couple_buzz_user_id',
+  PARTNER_ID: 'couple_buzz_partner_id',
   PARTNER_NAME: 'couple_buzz_partner_name',
   USER_NAME: 'couple_buzz_user_name',
   ACCESS_TOKEN: 'couple_buzz_access_token',
@@ -9,6 +10,9 @@ const KEYS = {
   TIMEZONE: 'couple_buzz_timezone',
   PARTNER_TIMEZONE: 'couple_buzz_partner_timezone',
   PARTNER_REMARK: 'couple_buzz_partner_remark',
+  DAILY_SEEN_DATE: 'couple_buzz_daily_seen_date',
+  DAILY_SEEN_PA: 'couple_buzz_daily_seen_pa',
+  DAILY_SEEN_PS: 'couple_buzz_daily_seen_ps',
 };
 
 export const storage = {
@@ -74,6 +78,31 @@ export const storage = {
 
   async setPartnerRemark(remark: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.PARTNER_REMARK, remark);
+  },
+
+  async getPartnerId(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.PARTNER_ID);
+  },
+
+  async setPartnerId(id: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.PARTNER_ID, id);
+  },
+
+  async getDailySeen(): Promise<{ date: string | null; pa: boolean; ps: boolean }> {
+    const [date, pa, ps] = await Promise.all([
+      AsyncStorage.getItem(KEYS.DAILY_SEEN_DATE),
+      AsyncStorage.getItem(KEYS.DAILY_SEEN_PA),
+      AsyncStorage.getItem(KEYS.DAILY_SEEN_PS),
+    ]);
+    return { date, pa: pa === '1', ps: ps === '1' };
+  },
+
+  async setDailySeen(date: string, partnerAnswered: boolean, partnerSnapped: boolean): Promise<void> {
+    await Promise.all([
+      AsyncStorage.setItem(KEYS.DAILY_SEEN_DATE, date),
+      AsyncStorage.setItem(KEYS.DAILY_SEEN_PA, partnerAnswered ? '1' : '0'),
+      AsyncStorage.setItem(KEYS.DAILY_SEEN_PS, partnerSnapped ? '1' : '0'),
+    ]);
   },
 
   async clearAll(): Promise<void> {

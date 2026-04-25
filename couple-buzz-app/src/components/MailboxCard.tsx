@@ -135,12 +135,12 @@ export default function MailboxCard() {
         <View style={styles.revealContainer}>
           <View style={styles.messageBox}>
             <Text style={styles.messageLabel}>我写的</Text>
-            <Text style={styles.messageText}>{my_message || '这周没有写'}</Text>
+            <Text style={styles.messageText}>{my_message || '这场没有写'}</Text>
           </View>
           <View style={styles.messageBox}>
             <Text style={styles.messageLabel}>ta 写的</Text>
             <Text style={styles.messageText}>
-              {partner_wrote === false ? 'ta 这周没有写' : (partner_message || 'ta 这周没有写')}
+              {partner_wrote === false ? 'ta 这场没有写' : (partner_message || 'ta 这场没有写')}
             </Text>
           </View>
         </View>
@@ -150,7 +150,7 @@ export default function MailboxCard() {
           <View style={styles.sealedEnvelope}>
             <Text style={styles.sealedEnvelopeIcon}>💌</Text>
           </View>
-          <Text style={styles.sealedTitle}>本周的信已封存</Text>
+          <Text style={styles.sealedTitle}>这一场的信已封存</Text>
           <Text style={styles.sealedSubtitle}>
             {hoursLeft > 0 ? `${hoursLeft} 小时后揭晓` : '即将揭晓'}
           </Text>
@@ -228,7 +228,7 @@ export default function MailboxCard() {
               </TouchableOpacity>
               <Text style={styles.hint}>提交后不能修改哦</Text>
               <Text style={styles.countdown}>
-                {hoursLeft > 0 ? `周日揭晓 · 还有 ${hoursLeft} 小时` : '即将揭晓'}
+                {hoursLeft > 0 ? `还有 ${hoursLeft} 小时揭晓` : '即将揭晓'}
               </Text>
             </>
           )}

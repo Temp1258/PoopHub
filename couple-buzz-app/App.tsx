@@ -11,19 +11,20 @@ import * as Notifications from 'expo-notifications';
 import { COLORS } from './src/constants';
 import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
-import { api } from './src/services/api';
+import { api, AuthError } from './src/services/api';
 import { connectSocket, disconnectSocket } from './src/services/socket';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import UsScreen from './src/screens/UsScreen';
+import MailboxScreen from './src/screens/MailboxScreen';
 
 const Tab = createMaterialTopTabNavigator();
 
 type AppState = 'loading' | 'setup' | 'waiting' | 'ready';
 
-function MainTabs({ partnerName, streak, hasUnread, onLatestSeen }: { partnerName: string; streak: number; hasUnread: boolean; onLatestSeen: (id: number) => void }) {
+function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen }: { partnerName: string; streak: number; hasUnread: boolean; hasUnreadDaily: boolean; onLatestSeen: (id: number) => void }) {
   const insets = useSafeAreaInsets();
 
   return (
@@ -61,8 +62,8 @@ function MainTabs({ partnerName, streak, hasUnread, onLatestSeen }: { partnerNam
       <Tab.Screen
         name="Home"
         options={{
-          tabBarLabel: '首页',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🏠</Text>,
+          tabBarLabel: '拍拍',
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🤚</Text>,
         }}
       >
         {() => <HomeScreen partnerName={partnerName} streak={streak} />}
@@ -89,22 +90,45 @@ function MainTabs({ partnerName, streak, hasUnread, onLatestSeen }: { partnerNam
           ),
         }}
       >
-        {() => <HistoryScreen onLatestSeen={onLatestSeen} />}
+        {() => <HistoryScreen partnerName={partnerName} onLatestSeen={onLatestSeen} />}
       </Tab.Screen>
       <Tab.Screen
         name="Us"
         component={UsScreen}
         options={{
-          tabBarLabel: '我们',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>💑</Text>,
+          tabBarLabel: '每日',
+          tabBarIcon: ({ color }) => (
+            <View>
+              <Text style={{ fontSize: 20, color }}>📅</Text>
+              {hasUnreadDaily && (
+                <View style={{
+                  position: 'absolute',
+                  top: -2,
+                  right: -6,
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: COLORS.kiss,
+                }} />
+              )}
+            </View>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Mailbox"
+        component={MailboxScreen}
+        options={{
+          tabBarLabel: '信箱',
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📮</Text>,
         }}
       />
       <Tab.Screen
         name="Settings"
         component={SettingsScreen}
         options={{
-          tabBarLabel: '设置',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>⚙️</Text>,
+          tabBarLabel: '数据',
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📊</Text>,
         }}
       />
     </Tab.Navigator>
@@ -118,6 +142,7 @@ export default function App() {
   const pollRef = useRef<ReturnType<typeof setInterval>>();
   const lastSeenIdRef = useRef(0);
   const [hasUnread, setHasUnread] = useState(false);
+  const [hasUnreadDaily, setHasUnreadDaily] = useState(false);
   const activeTabRef = useRef('Home');
   const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
@@ -142,9 +167,24 @@ export default function App() {
         } else {
           setAppState('waiting');
         }
-      } catch {
-        await storage.clearAll();
-        setAppState('setup');
+      } catch (error) {
+        if (error instanceof AuthError) {
+          // Server explicitly rejected the session — wipe and re-login.
+          await storage.clearAll();
+          setAppState('setup');
+        } else {
+          // Network / DNS / wrong URL / 5xx — fall back to cached state so
+          // a transient hiccup doesn't kick the user out of their session.
+          const cachedPartnerName = await storage.getPartnerName();
+          if (cachedPartnerName) {
+            setPartnerName(cachedPartnerName);
+            setStreak(0);
+            setAppState('ready');
+            registerAndUpdateToken();
+          } else {
+            setAppState('waiting');
+          }
+        }
       }
     })();
   }, []);
@@ -164,7 +204,12 @@ export default function App() {
           setAppState('ready');
           registerAndUpdateToken();
         }
-      } catch {}
+      } catch (err) {
+        if (err instanceof AuthError) {
+          await storage.clearAll();
+          setAppState('setup');
+        }
+      }
     };
 
     check();
@@ -204,9 +249,76 @@ export default function App() {
     return () => clearInterval(interval);
   }, [appState]);
 
+  // Clear iOS app icon badge whenever the app is in the foreground.
+  // The in-app red dots on tabs handle "you have new content" — we don't
+  // want a stale "1" lingering on the home screen icon after the user opens
+  // the app even once. APNs sets badge=1 on each push; this counters that
+  // when the app is actively in front of the user.
   useEffect(() => {
-    Notifications.setBadgeCountAsync(hasUnread ? 1 : 0);
-  }, [hasUnread]);
+    Notifications.setBadgeCountAsync(0);
+    const sub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') Notifications.setBadgeCountAsync(0);
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Detect new partner activity on 每日 tab (daily question or daily snap).
+  // Compares server state vs last-seen state stored locally; sets the red
+  // dot if partner has done something new since user last visited the tab.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+
+    const checkDaily = async () => {
+      try {
+        const [dq, sn] = await Promise.all([
+          api.getDailyQuestion(),
+          api.getSnapToday(),
+        ]);
+        const seen = await storage.getDailySeen();
+        const isSameDay = seen.date === dq.date;
+        const newPA = dq.partner_answered && (!isSameDay || !seen.pa);
+        const newPS = sn.partner_snapped && (!isSameDay || !seen.ps);
+        if (newPA || newPS) {
+          if (activeTabRef.current !== 'Us') {
+            setHasUnreadDaily(true);
+          } else {
+            // Already on the tab — mark as seen
+            await storage.setDailySeen(dq.date, dq.partner_answered, sn.partner_snapped);
+          }
+        }
+      } catch {}
+    };
+
+    checkDaily();
+    const sub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') checkDaily();
+    });
+    return () => sub.remove();
+  }, [appState]);
+
+  // Listen for foreground push notifications and flag relevant ones.
+  useEffect(() => {
+    const sub = Notifications.addNotificationReceivedListener((notification) => {
+      const data = notification.request.content.data as { actionType?: string };
+      if (!data?.actionType) return;
+      const dailyTypes = ['daily_answer', 'daily_both', 'snap_submitted', 'snap_both'];
+      if (dailyTypes.includes(data.actionType) && activeTabRef.current !== 'Us') {
+        setHasUnreadDaily(true);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const handleDailyTabFocus = useCallback(async () => {
+    setHasUnreadDaily(false);
+    try {
+      const [dq, sn] = await Promise.all([
+        api.getDailyQuestion(),
+        api.getSnapToday(),
+      ]);
+      await storage.setDailySeen(dq.date, dq.partner_answered, sn.partner_snapped);
+    } catch {}
+  }, []);
 
   // Socket lifecycle: connect when ready, handle foreground/background
   useEffect(() => {
@@ -289,9 +401,12 @@ export default function App() {
           if (route.name === 'History') {
             setHasUnread(false);
           }
+          if (route.name === 'Us') {
+            handleDailyTabFocus();
+          }
         }}
       >
-        <MainTabs partnerName={partnerName} streak={streak} hasUnread={hasUnread} onLatestSeen={handleLatestSeen} />
+        <MainTabs partnerName={partnerName} streak={streak} hasUnread={hasUnread} hasUnreadDaily={hasUnreadDaily} onLatestSeen={handleLatestSeen} />
       </NavigationContainer>
     </SafeAreaProvider>
   );

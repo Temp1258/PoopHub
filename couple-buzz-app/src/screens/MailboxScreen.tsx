@@ -2,11 +2,11 @@ import React from 'react';
 import { Text, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
-import RitualButton from '../components/RitualButton';
-import DailyQuestionCard from '../components/DailyQuestionCard';
-import DailySnapCard from '../components/DailySnapCard';
+import MailboxCard from '../components/MailboxCard';
+import TimeCapsuleCard from '../components/TimeCapsuleCard';
+import BucketListCard from '../components/BucketListCard';
 
-export default function DailyScreen() {
+export default function MailboxScreen() {
   const insets = useSafeAreaInsets();
 
   return (
@@ -15,10 +15,10 @@ export default function DailyScreen() {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.title}>每日</Text>
-      <RitualButton />
-      <DailyQuestionCard />
-      <DailySnapCard />
+      <Text style={styles.title}>信箱</Text>
+      <MailboxCard />
+      <TimeCapsuleCard />
+      <BucketListCard />
     </ScrollView>
   );
 }
