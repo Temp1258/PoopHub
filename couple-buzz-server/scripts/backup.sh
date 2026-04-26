@@ -1,15 +1,25 @@
 #!/bin/bash
 # Daily encrypted SQLite backup for Couple Buzz.
-# Cron: 0 3 * * * POOPHUB_BACKUP_RECIPIENT=your@key /opt/poophub/couple-buzz-server/scripts/backup.sh
 #
-# The backup is encrypted with a GPG public key whose private half lives OFF
-# the server. If an attacker reads /opt/poophub/backups/*.gpg they still need
-# the offline private key to decrypt. See docs/BACKUP.md for setup.
+# Cron example:
+#   0 3 * * * POOPHUB_BACKUP_RECIPIENT=your@key /path/to/scripts/backup.sh
+#
+# Paths are derived from this script's location, so the same file works
+# whether the repo lives at /opt/PoopHub, /opt/poophub, ~/projects/poophub,
+# or anywhere else.
+#
+# Override the backup destination via env var:
+#   POOPHUB_BACKUP_DIR=/var/backups/poophub  # default
+#
+# Encryption: GPG public key. Private key lives OFF the server. See docs/BACKUP.md.
 
 set -euo pipefail
 
-BACKUP_DIR="/opt/poophub/backups"
-DB_PATH="/opt/poophub/couple-buzz-server/data/app.db"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+BACKUP_DIR="${POOPHUB_BACKUP_DIR:-/var/backups/poophub}"
+DB_PATH="$SERVER_DIR/data/app.db"
 DATE=$(date +%Y%m%d_%H%M%S)
 GPG_RECIPIENT="${POOPHUB_BACKUP_RECIPIENT:-}"
 

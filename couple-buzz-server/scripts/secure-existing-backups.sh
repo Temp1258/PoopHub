@@ -3,9 +3,12 @@
 # Run this once after switching to encrypted backups so old plaintext copies
 # stop sitting on disk.
 #
-# Usage:
-#   POOPHUB_BACKUP_RECIPIENT=your@key /opt/poophub/couple-buzz-server/scripts/secure-existing-backups.sh
-#   POOPHUB_WIPE_PLAINTEXT=1         /opt/poophub/couple-buzz-server/scripts/secure-existing-backups.sh
+# Usage (default backup dir = /var/backups/poophub):
+#   POOPHUB_BACKUP_RECIPIENT=your@key /path/to/scripts/secure-existing-backups.sh
+#   POOPHUB_WIPE_PLAINTEXT=1         /path/to/scripts/secure-existing-backups.sh
+#
+# Override the backup dir if you keep it elsewhere:
+#   POOPHUB_BACKUP_DIR=/opt/poophub/backups POOPHUB_WIPE_PLAINTEXT=1 ...
 #
 # Modes:
 #   default — encrypt each app_*.db to app_*.db.gpg, then shred the original
@@ -13,7 +16,7 @@
 
 set -euo pipefail
 
-BACKUP_DIR="/opt/poophub/backups"
+BACKUP_DIR="${POOPHUB_BACKUP_DIR:-/var/backups/poophub}"
 WIPE_ONLY="${POOPHUB_WIPE_PLAINTEXT:-}"
 GPG_RECIPIENT="${POOPHUB_BACKUP_RECIPIENT:-}"
 

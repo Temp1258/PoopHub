@@ -53,19 +53,19 @@ gpg --edit-key ABCDEF1234567890
 
 ### 3. 处理已有的明文备份
 
-如果 `/opt/poophub/backups/` 里**已经有明文 `app_*.db`** 文件（之前老版本脚本生成的），二选一：
+如果 `/var/backups/poophub/` 里**已经有明文 `app_*.db`** 文件（之前老版本脚本生成的），二选一：
 
 **方案 A（推荐）：把它们加密保留**
 ```bash
 POOPHUB_BACKUP_RECIPIENT=your@email.com \
-  /opt/poophub/couple-buzz-server/scripts/secure-existing-backups.sh
+  /opt/PoopHub/couple-buzz-server/scripts/secure-existing-backups.sh
 ```
 脚本会逐个加密成 `.db.gpg`，然后 `shred -u` 抹掉原文件。
 
 **方案 B：直接全删**（你不需要这些历史数据）
 ```bash
 POOPHUB_WIPE_PLAINTEXT=1 \
-  /opt/poophub/couple-buzz-server/scripts/secure-existing-backups.sh
+  /opt/PoopHub/couple-buzz-server/scripts/secure-existing-backups.sh
 ```
 
 ### 4. 配置 cron 跑加密版备份
@@ -77,7 +77,7 @@ crontab -e
 
 添加（替换成你的 GPG key id/email）：
 ```
-0 3 * * * POOPHUB_BACKUP_RECIPIENT=your@email.com /opt/poophub/couple-buzz-server/scripts/backup.sh >> /var/log/poophub-backup.log 2>&1
+0 3 * * * POOPHUB_BACKUP_RECIPIENT=your@email.com /opt/PoopHub/couple-buzz-server/scripts/backup.sh >> /var/log/poophub-backup.log 2>&1
 ```
 
 > **注意**：cron 不会自动加载你 shell 的环境变量，所以 `POOPHUB_BACKUP_RECIPIENT` 必须直接写在 crontab 行里。
@@ -86,8 +86,8 @@ crontab -e
 
 ```bash
 POOPHUB_BACKUP_RECIPIENT=your@email.com \
-  /opt/poophub/couple-buzz-server/scripts/backup.sh
-ls -la /opt/poophub/backups/
+  /opt/PoopHub/couple-buzz-server/scripts/backup.sh
+ls -la /var/backups/poophub/
 # 应该看到 app_YYYYMMDD_HHMMSS.db.gpg，权限 -rw-------
 ```
 
@@ -97,7 +97,7 @@ ls -la /opt/poophub/backups/
 
 ```bash
 # 1. 把加密备份从 VPS 拉回本地
-scp root@your-vps:/opt/poophub/backups/app_20260427_030001.db.gpg ./
+scp root@your-vps:/var/backups/poophub/app_20260427_030001.db.gpg ./
 
 # 2. 用本地私钥解密（会提示输入 passphrase）
 gpg --output app.db --decrypt app_20260427_030001.db.gpg
@@ -112,8 +112,8 @@ sqlite3 app.db 'SELECT COUNT(*) FROM users;'
 pm2 stop poophub
 
 # 替换数据库
-mv /opt/poophub/couple-buzz-server/data/app.db /opt/poophub/couple-buzz-server/data/app.db.bak
-scp ./app.db root@your-vps:/opt/poophub/couple-buzz-server/data/app.db
+mv /opt/PoopHub/couple-buzz-server/data/app.db /opt/PoopHub/couple-buzz-server/data/app.db.bak
+scp ./app.db root@your-vps:/opt/PoopHub/couple-buzz-server/data/app.db
 
 # 启回来
 pm2 start poophub
