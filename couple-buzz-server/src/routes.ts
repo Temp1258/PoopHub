@@ -135,7 +135,8 @@ export type SendPushFn = (
   deviceToken: string,
   actionType: string,
   senderName: string,
-  extra?: Record<string, string>
+  extra?: Record<string, string>,
+  badge?: number
 ) => Promise<boolean>;
 
 // Generate a random 4-digit pair code
@@ -370,7 +371,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
-      await pushFn(partner.device_token, action_type, user.name);
+      const unread = dbOps.getUnreadActionCount(partner.id, userId);
+      await pushFn(partner.device_token, action_type, user.name, undefined, unread);
     }
 
     res.json({ success: true });
@@ -404,7 +406,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
-      await pushFn(partner.device_token, 'reaction', user.name);
+      const unread = dbOps.getUnreadActionCount(partner.id, userId);
+      await pushFn(partner.device_token, 'reaction', user.name, undefined, unread);
     }
 
     res.json({ success: true, reaction_id: reactionId });
@@ -433,6 +436,26 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     res.json({ actions, reactions });
+  });
+
+  // POST /api/mark-read — client tells the server it has seen up to this
+  // action id. Server only accepts ids that monotonically advance, so a stale
+  // request can't undo a fresh "all read" mark.
+  router.post('/mark-read', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { last_id } = req.body;
+
+    const id = typeof last_id === 'number' ? last_id : parseInt(last_id, 10);
+    if (!Number.isFinite(id) || id < 0) {
+      return res.status(400).json({ error: 'last_id must be a non-negative integer' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    dbOps.setLastReadActionId(userId, id);
+    const unread = user.partner_id ? dbOps.getUnreadActionCount(userId, user.partner_id) : 0;
+    res.json({ success: true, unread });
   });
 
   // PUT /api/device-token

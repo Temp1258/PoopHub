@@ -249,11 +249,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [appState]);
 
-  // Clear iOS app icon badge whenever the app is in the foreground.
-  // The in-app red dots on tabs handle "you have new content" — we don't
-  // want a stale "1" lingering on the home screen icon after the user opens
-  // the app even once. APNs sets badge=1 on each push; this counters that
-  // when the app is actively in front of the user.
+  // Foreground = clear the visual icon badge so a stale "5" doesn't linger.
+  // We deliberately do NOT advance the server's last_read pointer here —
+  // that only happens when the user actually views HistoryScreen (see
+  // handleLatestSeen). The next push will recompute badge from real unread.
   useEffect(() => {
     Notifications.setBadgeCountAsync(0);
     const sub = RNAppState.addEventListener('change', (next) => {
@@ -341,8 +340,13 @@ export default function App() {
   }, [appState]);
 
   const handleLatestSeen = useCallback((id: number) => {
-    lastSeenIdRef.current = id;
+    if (id > lastSeenIdRef.current) lastSeenIdRef.current = id;
     setHasUnread(false);
+    // Push the new high-water mark to the server so badge counts reset.
+    Notifications.setBadgeCountAsync(0);
+    if (id > 0) {
+      api.markRead(id).catch(() => {});
+    }
   }, []);
 
   const handleRegistered = useCallback(async (result: { partner_name: string | null }) => {

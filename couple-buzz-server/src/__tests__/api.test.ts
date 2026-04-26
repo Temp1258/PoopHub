@@ -285,6 +285,72 @@ describe('POST /api/pair', () => {
   });
 });
 
+describe('Badge / mark-read', () => {
+  it('badge increments per unread action and resets after mark-read', async () => {
+    const { app, mockPush } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    // Bob is the latest registrant so he owns the test device token; Alice
+    // sends actions and Bob is the receiver whose badge we measure.
+    for (let i = 0; i < 3; i++) {
+      await request(app)
+        .post('/api/action')
+        .set('Authorization', `Bearer ${alice.access_token}`)
+        .send({ action_type: 'kiss' });
+    }
+    const badges = (mockPush as jest.Mock).mock.calls.map(c => c[4]);
+    expect(badges).toEqual([1, 2, 3]);
+
+    // Bob reads up to the latest action.
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${bob.access_token}`);
+    const latestId = historyRes.body.actions[0].id;
+    const markRes = await request(app)
+      .post('/api/mark-read')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ last_id: latestId });
+    expect(markRes.status).toBe(200);
+    expect(markRes.body.unread).toBe(0);
+
+    // A new action should now ship with badge=1 again.
+    (mockPush as jest.Mock).mockClear();
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'miss' });
+    expect((mockPush as jest.Mock).mock.calls[0][4]).toBe(1);
+  });
+
+  it('mark-read only advances forward', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'kiss' });
+
+    const historyRes = await request(app)
+      .get('/api/history')
+      .set('Authorization', `Bearer ${bob.access_token}`);
+    const latestId = historyRes.body.actions[0].id;
+
+    await request(app)
+      .post('/api/mark-read')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ last_id: latestId });
+
+    // Out-of-order stale request must NOT roll the pointer back.
+    const staleRes = await request(app)
+      .post('/api/mark-read')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ last_id: 0 });
+    expect(staleRes.status).toBe(200);
+    expect(staleRes.body.unread).toBe(0);
+  });
+});
+
 describe('POST /api/action', () => {
   it('should send an action and trigger push', async () => {
     const { app, mockPush } = createTestApp();
@@ -297,7 +363,7 @@ describe('POST /api/action', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'kiss', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'kiss', 'Alice', undefined, expect.any(Number));
   });
 
   it('should return 400 for invalid action_type', async () => {
@@ -809,7 +875,7 @@ describe('POST /api/reaction', () => {
       .set('Authorization', `Bearer ${alice.access_token}`)
       .send({ action_id: actionId, action_type: 'kiss' });
 
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'reaction', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'reaction', 'Alice', undefined, expect.any(Number));
   });
 });
 

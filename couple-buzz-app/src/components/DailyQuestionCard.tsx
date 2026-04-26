@@ -23,7 +23,9 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     try {
       const result = await api.getDailyQuestion();
       setData(result);
-      if (result.my_answer) setAnswer(result.my_answer);
+      // Always sync — when the question rolls past midnight, my_answer
+      // is null and the input must clear, not keep yesterday's draft.
+      setAnswer(result.my_answer || '');
     } catch {}
     setLoading(false);
   }, []);

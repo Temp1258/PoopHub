@@ -57,7 +57,6 @@ export default function SettingsScreen() {
   const [partnerId, setPartnerId] = useState('');
   const [dates, setDates] = useState<ImportantDate[]>([]);
   const [newDateTitle, setNewDateTitle] = useState('');
-  const [newDateValue, setNewDateValue] = useState('');
   const [newDateRecurring, setNewDateRecurring] = useState(false);
   const [showAddDate, setShowAddDate] = useState(false);
 
@@ -124,29 +123,41 @@ export default function SettingsScreen() {
     }, [loadStatus, loadDates])
   );
 
-  const hasChanges = name.trim() !== originalName || timezone !== originalTimezone || partnerTimezone !== originalPartnerTz;
+  const hasNameChange = name.trim() !== originalName && name.trim().length > 0;
 
-  const handleSave = async () => {
+  const persistProfile = async (next: { name?: string; timezone?: string; partnerTimezone?: string; partnerRemark?: string }): Promise<void> => {
+    const result = await api.updateProfile(
+      next.name ?? (name.trim() || originalName),
+      next.timezone ?? timezone,
+      next.partnerTimezone ?? partnerTimezone,
+      next.partnerRemark ?? partnerRemark,
+    );
+    await Promise.all([
+      storage.setUserName(result.name),
+      storage.setTimezone(result.timezone),
+      storage.setPartnerTimezone(result.partner_timezone),
+      storage.setPartnerRemark(result.partner_remark),
+    ]);
+    setName(result.name);
+    setTimezone(result.timezone);
+    setPartnerTimezone(result.partner_timezone);
+    setPartnerRemark(result.partner_remark);
+    setOriginalName(result.name);
+    setOriginalTimezone(result.timezone);
+    setOriginalPartnerTz(result.partner_timezone);
+    setOriginalPartnerRemark(result.partner_remark);
+  };
+
+  const handleSaveName = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
       Alert.alert('', '昵称不能为空');
       return;
     }
-
     setSaving(true);
     try {
-      const result = await api.updateProfile(trimmed, timezone, partnerTimezone, partnerRemark);
-      await storage.setUserName(result.name);
-      await storage.setTimezone(result.timezone);
-      await storage.setPartnerTimezone(result.partner_timezone);
-      await storage.setPartnerRemark(result.partner_remark);
-      setOriginalName(result.name);
-      setOriginalTimezone(result.timezone);
-      setOriginalPartnerTz(result.partner_timezone);
-      setName(result.name);
-      setTimezone(result.timezone);
-      setPartnerTimezone(result.partner_timezone);
-      Alert.alert('', '保存成功');
+      await persistProfile({ name: trimmed });
+      Alert.alert('', '昵称已保存');
     } catch (error: any) {
       Alert.alert('保存失败', error.message);
     } finally {
@@ -154,13 +165,25 @@ export default function SettingsScreen() {
     }
   };
 
+  const handlePickTimezone = async (tz: string) => {
+    const target = modalTarget;
+    setModalTarget(null);
+    if (!target) return;
+    try {
+      if (target === 'my') {
+        await persistProfile({ timezone: tz });
+      } else {
+        await persistProfile({ partnerTimezone: tz });
+      }
+    } catch (error: any) {
+      Alert.alert('保存失败', error.message);
+    }
+  };
+
   const handleSaveRemark = async () => {
     setSavingRemark(true);
     try {
-      const result = await api.updateProfile(name.trim() || originalName, timezone, partnerTimezone, partnerRemark.trim());
-      await storage.setPartnerRemark(result.partner_remark);
-      setPartnerRemark(result.partner_remark);
-      setOriginalPartnerRemark(result.partner_remark);
+      await persistProfile({ partnerRemark: partnerRemark.trim() });
       Alert.alert('', '备注已保存');
     } catch (error: any) {
       Alert.alert('保存失败', error.message);
@@ -169,18 +192,27 @@ export default function SettingsScreen() {
     }
   };
 
-  const [calYear, setCalYear] = useState(new Date().getFullYear());
-  const [calMonth, setCalMonth] = useState(new Date().getMonth() + 1);
+  // Year/month/day state for the new date picker. Default to today; the user
+  // changes any field via a modal scrolling list (better than a calendar grid
+  // for picking dates decades ago — e.g. anniversaries, parents' birthdays).
+  const todayInit = new Date();
+  const [pickYear, setPickYear] = useState(todayInit.getFullYear());
+  const [pickMonth, setPickMonth] = useState(todayInit.getMonth() + 1);
+  const [pickDay, setPickDay] = useState(todayInit.getDate());
+  const [datePart, setDatePart] = useState<'year' | 'month' | 'day' | null>(null);
+
+  const daysInMonth = (y: number, m: number) => new Date(y, m, 0).getDate();
+  const clampDay = (y: number, m: number, d: number) => Math.min(d, daysInMonth(y, m));
+
+  const composedDate = `${pickYear}-${String(pickMonth).padStart(2, '0')}-${String(clampDay(pickYear, pickMonth, pickDay)).padStart(2, '0')}`;
 
   const handleAddDate = async () => {
     const title = newDateTitle.trim();
     if (!title) { Alert.alert('', '请输入标题'); return; }
-    if (!newDateValue) { Alert.alert('', '请选择日期'); return; }
 
     try {
-      await api.createDate(title, newDateValue, newDateRecurring);
+      await api.createDate(title, composedDate, newDateRecurring);
       setNewDateTitle('');
-      setNewDateValue('');
       setNewDateRecurring(false);
       setShowAddDate(false);
       loadDates();
@@ -257,28 +289,56 @@ export default function SettingsScreen() {
         placeholder="输入昵称"
         placeholderTextColor={COLORS.textLight}
       />
-
-      <Text style={styles.sectionTitle}>我的时区</Text>
-      <TouchableOpacity style={styles.timezoneButton} onPress={() => setModalTarget('my')}>
-        <Text style={styles.timezoneText}>{formatTzDisplay(timezone)}</Text>
-        <Text style={styles.timezoneArrow}>›</Text>
-      </TouchableOpacity>
-
-      <Text style={styles.sectionTitle}>对方时区</Text>
-      <TouchableOpacity style={styles.timezoneButton} onPress={() => setModalTarget('partner')}>
-        <Text style={styles.timezoneText}>{formatTzDisplay(partnerTimezone)}</Text>
-        <Text style={styles.timezoneArrow}>›</Text>
-      </TouchableOpacity>
-
       <TouchableOpacity
-        style={[styles.saveButton, (!hasChanges || saving) && styles.saveButtonDisabled]}
-        onPress={handleSave}
-        disabled={!hasChanges || saving}
+        style={[styles.saveButton, (!hasNameChange || saving) && styles.saveButtonDisabled]}
+        onPress={handleSaveName}
+        disabled={!hasNameChange || saving}
       >
         <Text style={styles.saveButtonText}>
-          {saving ? '保存中...' : '保存'}
+          {saving ? '保存中...' : '保存昵称'}
         </Text>
       </TouchableOpacity>
+
+      {partnerId ? (
+        <>
+          <Text style={[styles.sectionTitle, { marginTop: 40 }]}>对 ta 的备注</Text>
+          <TextInput
+            style={styles.input}
+            value={partnerRemark}
+            onChangeText={setPartnerRemark}
+            placeholder="给 ta 起个昵称（仅自己可见）"
+            placeholderTextColor={COLORS.textLight}
+            maxLength={20}
+          />
+          <TouchableOpacity
+            style={[
+              styles.remarkSaveBtn,
+              (partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark) && styles.saveButtonDisabled,
+            ]}
+            onPress={handleSaveRemark}
+            disabled={partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark}
+          >
+            <Text style={styles.remarkSaveText}>
+              {savingRemark ? '保存中...' : '保存备注'}
+            </Text>
+          </TouchableOpacity>
+        </>
+      ) : null}
+
+      <Text style={[styles.sectionTitle, { marginTop: 40 }]}>时区</Text>
+      <View style={styles.tzPairRow}>
+        <TouchableOpacity style={styles.tzCard} onPress={() => setModalTarget('my')}>
+          <Text style={styles.tzCardLabel}>我的时区</Text>
+          <Text style={styles.tzCardValue} numberOfLines={1}>{formatTzDisplay(timezone)}</Text>
+        </TouchableOpacity>
+        <View style={styles.tzPairLink}>
+          <Text style={styles.tzPairLinkIcon}>🕐</Text>
+        </View>
+        <TouchableOpacity style={styles.tzCard} onPress={() => setModalTarget('partner')}>
+          <Text style={styles.tzCardLabel}>ta 的时区</Text>
+          <Text style={styles.tzCardValue} numberOfLines={1}>{formatTzDisplay(partnerTimezone)}</Text>
+        </TouchableOpacity>
+      </View>
 
       <Text style={[styles.sectionTitle, { marginTop: 40 }]}>纪念日管理</Text>
       {dates.map((d) => (
@@ -313,36 +373,21 @@ export default function SettingsScreen() {
             placeholderTextColor={COLORS.textLight}
             maxLength={20}
           />
-          <View style={styles.calNav}>
-            <TouchableOpacity onPress={() => { if (calMonth === 1) { setCalYear(calYear - 1); setCalMonth(12); } else setCalMonth(calMonth - 1); }}>
-              <Text style={styles.calNavText}>‹</Text>
+          <View style={styles.dpRow}>
+            <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('year')}>
+              <Text style={styles.dpLabel}>年</Text>
+              <Text style={styles.dpValue}>{pickYear}</Text>
             </TouchableOpacity>
-            <Text style={styles.calNavLabel}>{calYear}年{calMonth}月</Text>
-            <TouchableOpacity onPress={() => { if (calMonth === 12) { setCalYear(calYear + 1); setCalMonth(1); } else setCalMonth(calMonth + 1); }}>
-              <Text style={styles.calNavText}>›</Text>
+            <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('month')}>
+              <Text style={styles.dpLabel}>月</Text>
+              <Text style={styles.dpValue}>{pickMonth}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('day')}>
+              <Text style={styles.dpLabel}>日</Text>
+              <Text style={styles.dpValue}>{clampDay(pickYear, pickMonth, pickDay)}</Text>
             </TouchableOpacity>
           </View>
-          <View style={styles.calWeekRow}>
-            {['日','一','二','三','四','五','六'].map(d => (
-              <Text key={d} style={styles.calWeekDay}>{d}</Text>
-            ))}
-          </View>
-          <View style={styles.calGrid}>
-            {Array.from({ length: new Date(calYear, calMonth - 1, 1).getDay() }, (_, i) => (
-              <View key={`e${i}`} style={styles.calCell} />
-            ))}
-            {Array.from({ length: new Date(calYear, calMonth, 0).getDate() }, (_, i) => {
-              const day = i + 1;
-              const dateStr = `${calYear}-${String(calMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const isSelected = newDateValue === dateStr;
-              return (
-                <TouchableOpacity key={day} style={[styles.calCell, isSelected && styles.calCellSelected]} onPress={() => setNewDateValue(dateStr)}>
-                  <Text style={[styles.calCellText, isSelected && styles.calCellTextSelected]}>{day}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          {newDateValue ? <Text style={styles.calSelected}>已选: {newDateValue}</Text> : null}
+          <Text style={styles.calSelected}>已选: {composedDate}</Text>
           <TouchableOpacity
             style={styles.recurringToggle}
             onPress={() => setNewDateRecurring(!newDateRecurring)}
@@ -366,32 +411,6 @@ export default function SettingsScreen() {
         </TouchableOpacity>
       )}
 
-      {partnerId ? (
-        <>
-          <Text style={[styles.sectionTitle, { marginTop: 40 }]}>对 ta 的备注</Text>
-          <TextInput
-            style={styles.input}
-            value={partnerRemark}
-            onChangeText={setPartnerRemark}
-            placeholder="给 ta 起个昵称（仅自己可见）"
-            placeholderTextColor={COLORS.textLight}
-            maxLength={20}
-          />
-          <TouchableOpacity
-            style={[
-              styles.remarkSaveBtn,
-              (partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark) && styles.saveButtonDisabled,
-            ]}
-            onPress={handleSaveRemark}
-            disabled={partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark}
-          >
-            <Text style={styles.remarkSaveText}>
-              {savingRemark ? '保存中...' : '保存备注'}
-            </Text>
-          </TouchableOpacity>
-        </>
-      ) : null}
-
       <Modal visible={modalTarget !== null} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: insets.bottom + 20 }]}>
@@ -409,11 +428,7 @@ export default function SettingsScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.tzItem, item.value === activeValue && styles.tzItemActive]}
-                  onPress={() => {
-                    if (modalTarget === 'my') setTimezone(item.value);
-                    else setPartnerTimezone(item.value);
-                    setModalTarget(null);
-                  }}
+                  onPress={() => handlePickTimezone(item.value)}
                 >
                   <Text style={[styles.tzLabel, item.value === activeValue && styles.tzLabelActive]}>
                     {item.label}
@@ -422,6 +437,74 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               )}
             />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={datePart !== null} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { paddingBottom: insets.bottom + 20 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {datePart === 'year' ? '选择年份' : datePart === 'month' ? '选择月份' : '选择日'}
+              </Text>
+              <TouchableOpacity onPress={() => setDatePart(null)}>
+                <Text style={styles.modalClose}>完成</Text>
+              </TouchableOpacity>
+            </View>
+            {datePart && (
+              <FlatList
+                data={(() => {
+                  if (datePart === 'year') {
+                    const cur = new Date().getFullYear();
+                    // 1900 → cur+10 covers grandparent birthdays through far-future capsules
+                    return Array.from({ length: cur + 10 - 1900 + 1 }, (_, i) => 1900 + i).reverse();
+                  }
+                  if (datePart === 'month') {
+                    return Array.from({ length: 12 }, (_, i) => i + 1);
+                  }
+                  return Array.from({ length: daysInMonth(pickYear, pickMonth) }, (_, i) => i + 1);
+                })()}
+                keyExtractor={(item) => String(item)}
+                initialScrollIndex={(() => {
+                  if (datePart === 'year') {
+                    const cur = new Date().getFullYear();
+                    return Math.max(0, (cur + 10) - pickYear);
+                  }
+                  if (datePart === 'month') return Math.max(0, pickMonth - 1);
+                  return Math.max(0, clampDay(pickYear, pickMonth, pickDay) - 1);
+                })()}
+                getItemLayout={(_, index) => ({ length: 52, offset: 52 * index, index })}
+                renderItem={({ item }) => {
+                  const active = datePart === 'year'
+                    ? item === pickYear
+                    : datePart === 'month'
+                      ? item === pickMonth
+                      : item === clampDay(pickYear, pickMonth, pickDay);
+                  return (
+                    <TouchableOpacity
+                      style={[styles.tzItem, active && styles.tzItemActive]}
+                      onPress={() => {
+                        if (datePart === 'year') {
+                          setPickYear(item);
+                          setPickDay(d => clampDay(item, pickMonth, d));
+                        } else if (datePart === 'month') {
+                          setPickMonth(item);
+                          setPickDay(d => clampDay(pickYear, item, d));
+                        } else {
+                          setPickDay(item);
+                        }
+                        setDatePart(null);
+                      }}
+                    >
+                      <Text style={[styles.tzLabel, active && styles.tzLabelActive]}>
+                        {item}{datePart === 'year' ? '年' : datePart === 'month' ? '月' : '日'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            )}
           </View>
         </View>
       </Modal>
@@ -500,24 +583,60 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-  timezoneButton: {
-    height: 52,
-    backgroundColor: COLORS.white,
-    borderRadius: 16,
-    paddingHorizontal: 20,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+  tzPairRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 8,
   },
-  timezoneText: {
-    fontSize: 16,
-    color: COLORS.text,
+  tzCard: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
   },
-  timezoneArrow: {
-    fontSize: 22,
+  tzCardLabel: {
+    fontSize: 12,
     color: COLORS.textLight,
+  },
+  tzCardValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginTop: 6,
+  },
+  tzPairLink: {
+    paddingHorizontal: 4,
+  },
+  tzPairLinkIcon: {
+    fontSize: 18,
+  },
+  dpRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  dpField: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+  },
+  dpLabel: {
+    fontSize: 11,
+    color: COLORS.textLight,
+  },
+  dpValue: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginTop: 4,
   },
   saveButton: {
     height: 52,
@@ -680,59 +799,6 @@ const styles = StyleSheet.create({
   dateRowPinned: {
     borderColor: COLORS.kiss,
     backgroundColor: '#FFF5F8',
-  },
-  calNav: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 16,
-    marginTop: 12,
-    marginBottom: 8,
-  },
-  calNavText: {
-    fontSize: 24,
-    color: COLORS.textLight,
-    fontWeight: '300',
-    paddingHorizontal: 8,
-  },
-  calNavLabel: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  calWeekRow: {
-    flexDirection: 'row',
-    marginBottom: 4,
-  },
-  calWeekDay: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.textLight,
-    paddingVertical: 4,
-  },
-  calGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  calCell: {
-    width: '14.28%',
-    aspectRatio: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  calCellSelected: {
-    backgroundColor: COLORS.kiss,
-    borderRadius: 20,
-  },
-  calCellText: {
-    fontSize: 14,
-    color: COLORS.text,
-  },
-  calCellTextSelected: {
-    color: COLORS.white,
-    fontWeight: '600',
   },
   calSelected: {
     fontSize: 13,

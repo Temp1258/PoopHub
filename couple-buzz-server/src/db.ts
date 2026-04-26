@@ -15,6 +15,7 @@ export interface User {
   timezone: string;
   partner_timezone: string;
   partner_remark: string;
+  last_read_action_id: number;
   created_at: string;
 }
 
@@ -125,6 +126,11 @@ export interface DbOps {
   setDeviceToken(userId: string, token: string): void;
   clearDeviceToken(userId: string): void;
   clearDeviceTokenByValue(token: string): void;
+  // Badge / unread tracking — count of partner's actions newer than what this
+  // user has marked as read. Used to drive the iOS app icon badge number.
+  setLastReadActionId(userId: string, actionId: number): void;
+  getUnreadActionCount(userId: string, partnerId: string): number;
+  getLatestPartnerActionId(userId: string, partnerId: string): number;
   addAction(userId: string, actionType: string, senderTimezone: string, senderName: string): void;
   getAction(actionId: number): Action | undefined;
   addReaction(userId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number;
@@ -209,6 +215,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
       partner_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
       partner_remark TEXT NOT NULL DEFAULT '',
+      last_read_action_id INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (partner_id) REFERENCES users(id)
     );
@@ -345,6 +352,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (!userCols.some((c) => c.name === 'partner_remark')) {
     db.exec("ALTER TABLE users ADD COLUMN partner_remark TEXT NOT NULL DEFAULT ''");
   }
+  if (!userCols.some((c) => c.name === 'last_read_action_id')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_read_action_id INTEGER NOT NULL DEFAULT 0');
+  }
 
   const actionCols = db.pragma('table_info(actions)') as { name: string }[];
   if (!actionCols.some((c) => c.name === 'sender_timezone')) {
@@ -418,6 +428,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtClearTokenByValue = db.prepare(
     'UPDATE users SET device_token = NULL WHERE device_token = ?'
   );
+  // Only advance last_read_action_id forward — never let a client roll it back
+  // (e.g. an out-of-order request) and accidentally re-mark old messages unread.
+  const stmtSetLastReadActionId = db.prepare(
+    'UPDATE users SET last_read_action_id = ? WHERE id = ? AND last_read_action_id < ?'
+  );
+  const stmtCountUnreadActions = db.prepare(
+    'SELECT COUNT(*) AS n FROM actions WHERE user_id = ? AND id > ?'
+  );
+  const stmtLatestPartnerActionId = db.prepare(
+    'SELECT IFNULL(MAX(id), 0) AS id FROM actions WHERE user_id = ?'
+  );
   const insertAction = db.prepare(
     'INSERT INTO actions (user_id, action_type, sender_timezone, sender_name) VALUES (?, ?, ?, ?)'
   );
@@ -428,7 +449,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     JOIN users u ON a.user_id = u.id
     WHERE (a.user_id = ? OR a.user_id = (SELECT partner_id FROM users WHERE id = ?))
       AND a.reply_to IS NULL
-    ORDER BY a.created_at DESC
+    ORDER BY a.created_at DESC, a.id DESC
     LIMIT ?
   `);
   const stmtGetAction = db.prepare(`
@@ -702,6 +723,22 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     clearDeviceTokenByValue(token: string): void {
       if (!token) return;
       stmtClearTokenByValue.run(token);
+    },
+
+    setLastReadActionId(userId: string, actionId: number): void {
+      stmtSetLastReadActionId.run(actionId, userId, actionId);
+    },
+
+    getUnreadActionCount(userId: string, partnerId: string): number {
+      const user = getUserById.get(userId) as User | undefined;
+      if (!user) return 0;
+      const row = stmtCountUnreadActions.get(partnerId, user.last_read_action_id) as { n: number };
+      return row?.n ?? 0;
+    },
+
+    getLatestPartnerActionId(_userId: string, partnerId: string): number {
+      const row = stmtLatestPartnerActionId.get(partnerId) as { id: number };
+      return row?.id ?? 0;
     },
 
     addAction(userId: string, actionType: string, senderTimezone: string, senderName: string): void {

@@ -106,7 +106,8 @@ export async function sendPush(
   deviceToken: string,
   actionType: string,
   senderName: string,
-  extra?: Record<string, string>
+  extra?: Record<string, string>,
+  badge?: number
 ): Promise<boolean> {
   if (!provider) {
     console.error('[APNs] Provider not initialized');
@@ -132,7 +133,11 @@ export async function sendPush(
     body,
   };
   notification.sound = 'default';
-  notification.badge = 1;
+  // Badge reflects total unread items for that user. When undefined we omit
+  // the field so APNs leaves the existing icon badge untouched.
+  if (typeof badge === 'number') {
+    notification.badge = Math.max(0, badge);
+  }
   notification.topic = process.env.APN_BUNDLE_ID || 'com.couplebuzz.app';
   notification.payload = { actionType, senderName, ...(extra || {}) };
 

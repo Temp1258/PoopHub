@@ -321,6 +321,13 @@ export const api = {
     return request(`/api/history?limit=${limit}`);
   },
 
+  markRead(lastId: number): Promise<{ success: boolean; unread: number }> {
+    return request('/api/mark-read', {
+      method: 'POST',
+      body: JSON.stringify({ last_id: lastId }),
+    });
+  },
+
   sendReaction(actionId: number, actionType: string): Promise<ReactionResponse> {
     return request('/api/reaction', {
       method: 'POST',
