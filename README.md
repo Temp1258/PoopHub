@@ -4,7 +4,7 @@
 
 仓库是一个 monorepo，包含两个独立项目：
 
-- [`couple-buzz-app/`](./couple-buzz-app) — Expo / React Native 移动端（iOS 主，含 iOS Widget）
+- [`couple-buzz-app/`](./couple-buzz-app) — Expo / React Native 移动端（iOS 主）
 - [`couple-buzz-server/`](./couple-buzz-server) — Node.js + Express + SQLite 后端
 
 ---
@@ -35,12 +35,15 @@
 - **多纪念日管理**：增删改、置顶倒数（首页显示）、支持每年重复
 
 ### 系统
-- **iOS WidgetKit 小组件**：桌面看伴侣最新动态 + 纪念日倒数（通过 App Group + UserDefaults 与 App 共享数据）
 - **OTA 热更新**：纯 JS 改动通过 EAS Updates 秒推到手机，无需重 build
 - **JWT 双 token**：access 15 分钟 / refresh 90 天；refresh token 自动轮换；支持按版本号即时吊销所有 session
 - **限流**：注册 / 配对 / 认证 / 普通 API 各自独立的速率限制
 - **健康检查端点**：`GET /health`
 - **下拉刷新**：每日 / 信箱 / 数据三 tab 都支持下拉刷新
+- **加密备份**：SQLite 每日 GPG 公钥加密备份，私钥离线保管（见 [`couple-buzz-server/docs/BACKUP.md`](./couple-buzz-server/docs/BACKUP.md)）
+
+### 待补
+- **iOS WidgetKit 小组件**：桌面卡片代码框架已搭好（`couple-buzz-app/targets/widget/`），但 RN 端写入 App Group UserDefaults 的桥接尚未接通，预计 v1.1 完成
 
 ---
 

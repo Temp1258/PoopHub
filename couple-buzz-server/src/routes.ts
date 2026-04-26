@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
 import { createWsTicket } from './socket';
@@ -16,6 +17,13 @@ import {
   generateUserId,
   signImagePath,
 } from './auth';
+
+// Length limits, also enforced at the API edge so a misbehaving client can't
+// bypass the UI's maxLength. `name` shows up in every push body — letting it
+// grow unbounded would blow APNs' 4KB payload cap and silently kill pushes.
+const NAME_MAX = 20;
+const REMARK_MAX = 30;
+const DATE_TITLE_MAX = 50;
 
 // Whitelist of action types a client is allowed to send via POST /action and
 // POST /reaction. Anything else is rejected to keep the actions table clean
@@ -39,6 +47,16 @@ function isValidTimezone(tz: string): boolean {
   } catch {
     return false;
   }
+}
+
+// Strict YYYY-MM-DD with calendar validation. Rejects "2024-02-31" even
+// though that string matches the regex, by round-tripping through Date.
+function isValidDateString(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
 
 function safeTimezone(tz: string): string {
@@ -139,12 +157,12 @@ export type SendPushFn = (
   badge?: number
 ) => Promise<boolean>;
 
-// Generate a random 4-digit pair code
+// Generate a random 4-digit pair code (CSPRNG, not Math.random)
 export function generatePairCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
+    code += chars[randomInt(chars.length)];
   }
   return code;
 }
@@ -173,6 +191,9 @@ export function createPublicRouter(dbOps: DbOps): Router {
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ error: 'name is required' });
+    }
+    if (name.trim().length === 0 || name.trim().length > NAME_MAX) {
+      return res.status(400).json({ error: `name must be 1-${NAME_MAX} characters` });
     }
     if (!password || typeof password !== 'string' || password.length < 4) {
       return res.status(400).json({ error: 'password is required (min 4 chars)' });
@@ -300,6 +321,15 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (name !== undefined) {
+      if (typeof name !== 'string') return res.status(400).json({ error: 'name must be a string' });
+      if (name.trim().length > NAME_MAX) return res.status(400).json({ error: `name max ${NAME_MAX} characters` });
+    }
+    if (partner_remark !== undefined) {
+      if (typeof partner_remark !== 'string') return res.status(400).json({ error: 'partner_remark must be a string' });
+      if (partner_remark.length > REMARK_MAX) return res.status(400).json({ error: `partner_remark max ${REMARK_MAX} characters` });
     }
 
     const newName = (name && typeof name === 'string' && name.trim()) ? name.trim() : user.name;
@@ -453,7 +483,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    dbOps.setLastReadActionId(userId, id);
+    // Clamp to the highest action id the partner has actually sent. Without
+    // this a misbehaving client could ship Number.MAX_SAFE_INTEGER and pin
+    // the read pointer above any future action — silently muting badges.
+    const latest = user.partner_id ? dbOps.getLatestPartnerActionId(userId, user.partner_id) : 0;
+    const clamped = Math.min(id, latest);
+    dbOps.setLastReadActionId(userId, clamped);
     const unread = user.partner_id ? dbOps.getUnreadActionCount(userId, user.partner_id) : 0;
     res.json({ success: true, unread });
   });
@@ -555,7 +590,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!title || typeof title !== 'string' || !date || typeof date !== 'string') {
       return res.status(400).json({ error: 'title and date are required' });
     }
-    if (title.length > 50) return res.status(400).json({ error: 'title max 50 characters' });
+    if (title.length > DATE_TITLE_MAX) return res.status(400).json({ error: `title max ${DATE_TITLE_MAX} characters` });
+    if (!isValidDateString(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -585,9 +621,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    if (!title || !date) {
+    if (!title || typeof title !== 'string' || !date || typeof date !== 'string') {
       return res.status(400).json({ error: 'title and date are required' });
     }
+    if (title.length > DATE_TITLE_MAX) return res.status(400).json({ error: `title max ${DATE_TITLE_MAX} characters` });
+    if (!isValidDateString(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
 
     const updated = dbOps.updateImportantDate(id, title.trim(), date, !!recurring, userId, user.partner_id);
     if (!updated) return res.status(404).json({ error: 'Date not found' });
@@ -1052,6 +1090,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const capsule = capsules.find(c => c.id === id);
     if (!capsule) return res.status(404).json({ error: 'Capsule not found' });
 
+    // 'self' capsules are private to the author. Returning 404 (not 403)
+    // keeps the existence of the capsule itself secret from the partner —
+    // they can't tell whether `id` is wrong or just owned by the author.
+    if (capsule.visibility === 'self' && capsule.user_id !== userId) {
+      return res.status(404).json({ error: 'Capsule not found' });
+    }
+
     const userToday = getLocalDate(user.timezone);
     if (capsule.unlock_date > userToday) {
       return res.status(400).json({ error: 'Capsule is not yet unlockable' });
@@ -1173,15 +1218,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   });
 
   // POST /api/snaps (multipart upload)
+  // Atomic: write to a tmp file, validate, then rename into place. Prevents
+  // a re-upload from clobbering today's existing photo before the DB check
+  // rejects it.
+  const TMP_DIR = path.join(__dirname, '..', 'data', 'snaps_tmp');
   const snapStorage = multer.diskStorage({
-    destination: (req, _file, cb) => {
-      const dir = path.join(__dirname, '..', 'data', 'snaps', req.userId!);
-      fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
+    destination: (_req, _file, cb) => {
+      fs.mkdirSync(TMP_DIR, { recursive: true });
+      cb(null, TMP_DIR);
     },
     filename: (req, _file, cb) => {
-      const user = dbOps.getUser(req.userId!);
-      cb(null, `${getLocalDate(user?.timezone || 'Asia/Shanghai')}.jpg`);
+      cb(null, `${req.userId}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.jpg`);
     },
   });
   const snapUpload = multer({
@@ -1196,16 +1243,31 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   router.post('/snaps', snapUpload.single('photo'), async (req: Request, res: Response) => {
     const userId = req.userId!;
     if (!req.file) return res.status(400).json({ error: 'photo is required' });
+    const tmpPath = req.file.path;
+    const cleanup = () => { try { fs.unlinkSync(tmpPath); } catch {} };
 
     const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+    if (!user) { cleanup(); return res.status(404).json({ error: 'User not found' }); }
+    if (!user.partner_id) { cleanup(); return res.status(400).json({ error: 'Not paired' }); }
 
     const snapDate = getLocalDate(user.timezone);
-    const photoPath = `${userId}/${path.basename(req.file.path)}`;
+    if (dbOps.getSnap(userId, snapDate)) {
+      cleanup();
+      return res.status(400).json({ error: 'Already snapped today' });
+    }
 
-    const saved = dbOps.saveSnap(userId, snapDate, photoPath);
-    if (!saved) return res.status(400).json({ error: 'Already snapped today' });
+    const finalDir = path.join(__dirname, '..', 'data', 'snaps', userId);
+    fs.mkdirSync(finalDir, { recursive: true });
+    const finalPath = path.join(finalDir, `${snapDate}.jpg`);
+    try {
+      fs.renameSync(tmpPath, finalPath);
+    } catch (err) {
+      cleanup();
+      return res.status(500).json({ error: 'Failed to save photo' });
+    }
+
+    const photoPath = `${userId}/${snapDate}.jpg`;
+    dbOps.saveSnap(userId, snapDate, photoPath);
 
     // Check if partner also snapped using partner's OWN timezone
     const partner = dbOps.getUser(user.partner_id);

@@ -120,12 +120,14 @@ export async function sendPush(
     return false;
   }
 
-  // Global replace: cover the (rare) case of repeated placeholders in a body.
+  // Function-form replace so user-controlled values (senderName, bucket
+  // titles) can't smuggle `$&` / `$1` / `$$` replacement sequences and warp
+  // the rendered push body. Function returns are inserted verbatim.
   const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  let body = message.body.replace(/\{name\}/g, senderName);
+  let body = message.body.replace(/\{name\}/g, () => senderName);
   if (extra) {
     for (const [key, value] of Object.entries(extra)) {
-      body = body.replace(new RegExp(`\\{${escapeRe(key)}\\}`, 'g'), value);
+      body = body.replace(new RegExp(`\\{${escapeRe(key)}\\}`, 'g'), () => value);
     }
   }
 

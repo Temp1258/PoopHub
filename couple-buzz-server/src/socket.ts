@@ -32,7 +32,13 @@ export function createWsTicket(userId: string): string {
 
 export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushFn): Server {
   const io = new Server(httpServer, {
-    cors: { origin: '*' },
+    // Defense-in-depth: ticket auth is the primary guard, but pinning origin
+    // means a malicious browser tab can't even open the socket. RN App has
+    // no Origin header so it's unaffected.
+    cors: {
+      origin: ['https://couple-buzz.com', 'https://api.couple-buzz.com:8443'],
+      credentials: false,
+    },
     transports: ['websocket', 'polling'],
     pingTimeout: 30000,
     pingInterval: 15000,

@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 
 // Extend Express Request to include userId
@@ -56,15 +56,20 @@ export function hashPassword(password: string): string {
 
 export function verifyPassword(password: string, stored: string): boolean {
   const [salt, hash] = stored.split(':');
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return hash === derived;
+  if (!salt || !hash) return false;
+  const derived = crypto.scryptSync(password, salt, 64);
+  const expected = Buffer.from(hash, 'hex');
+  // Timing-safe to defeat byte-by-byte hash recovery via response-time analysis.
+  if (expected.length !== derived.length) return false;
+  return crypto.timingSafeEqual(derived, expected);
 }
 
 export function generateUserId(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let id = '';
+  // CSPRNG instead of Math.random — IDs double as pair codes.
   for (let i = 0; i < 6; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+    id += chars[randomInt(chars.length)];
   }
   return id;
 }
