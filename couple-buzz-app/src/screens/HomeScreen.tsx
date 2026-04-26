@@ -96,9 +96,11 @@ export default function HomeScreen({ partnerName, streak }: Props) {
             {pinnedDate && (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>
-                  {pinnedDate.days_away === 0
+                  {pinnedDate.days_diff === 0
                     ? `🎉 今天是${pinnedDate.title}！`
-                    : `📅 ${pinnedDate.title} 还有${pinnedDate.days_away}天`}
+                    : pinnedDate.days_diff > 0
+                      ? `📅 ${pinnedDate.title} 还有${pinnedDate.days_away}天`
+                      : `💕 ${pinnedDate.title} 已经${pinnedDate.days_away}天啦！`}
                 </Text>
               </View>
             )}

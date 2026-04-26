@@ -573,6 +573,47 @@ describe('Important Dates CRUD', () => {
     expect(listRes.body.pinned.title).toBe('纪念日');
   });
 
+  it('pinned non-recurring past date returns negative days_diff (anniversary count-up)', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const create = await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '在一起的日子', date: '2020-01-01', recurring: false });
+    const dateId = create.body.date.id;
+    await request(app)
+      .post(`/api/dates/${dateId}/pin`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    const list = await request(app)
+      .get('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(list.body.pinned.days_diff).toBeLessThan(0);
+    expect(list.body.pinned.days_away).toBeGreaterThan(0);
+    expect(list.body.pinned.days_away).toBe(Math.abs(list.body.pinned.days_diff));
+  });
+
+  it('pinned future date returns positive days_diff', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const create = await request(app)
+      .post('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '婚礼', date: '2099-06-06', recurring: false });
+    await request(app)
+      .post(`/api/dates/${create.body.date.id}/pin`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    const list = await request(app)
+      .get('/api/dates')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(list.body.pinned.days_diff).toBeGreaterThan(0);
+  });
+
   it('should allow partner to see dates created by the other', async () => {
     const { app } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);

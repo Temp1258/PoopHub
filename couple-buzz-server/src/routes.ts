@@ -560,14 +560,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const dates = dbOps.getImportantDates(userId, user.partner_id);
 
-    // Compute pinned date countdown (only pinned date shows on homepage)
+    // Compute pinned date countdown (only pinned date shows on homepage).
+    // For non-recurring dates, the date may be in the past (e.g. "在一起的
+    // 日子") and we want to show "已经 N 天啦". `days_diff` carries sign
+    // (- = past, 0 = today, + = upcoming); `days_away` is its absolute value
+    // for backward compatibility.
     const today = new Date().toISOString().slice(0, 10);
-    let pinned: { title: string; date: string; days_away: number } | null = null;
+    let pinned: { title: string; date: string; days_away: number; days_diff: number } | null = null;
 
     const pinnedDate = dates.find(d => d.pinned);
     if (pinnedDate) {
       let targetDate = pinnedDate.date;
       if (pinnedDate.recurring) {
+        // Recurring dates always project to the next occurrence (today or future)
         const thisYear = new Date().getFullYear();
         const mmdd = pinnedDate.date.slice(5);
         targetDate = `${thisYear}-${mmdd}`;
@@ -575,8 +580,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
           targetDate = `${thisYear + 1}-${mmdd}`;
         }
       }
-      const daysAway = Math.max(0, Math.ceil((new Date(targetDate).getTime() - new Date(today).getTime()) / 86400000));
-      pinned = { title: pinnedDate.title, date: targetDate, days_away: daysAway };
+      const daysDiff = Math.round((new Date(targetDate).getTime() - new Date(today).getTime()) / 86400000);
+      pinned = {
+        title: pinnedDate.title,
+        date: targetDate,
+        days_away: Math.abs(daysDiff),
+        days_diff: daysDiff,
+      };
     }
 
     res.json({ dates, pinned });

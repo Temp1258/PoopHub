@@ -164,7 +164,7 @@ export interface ImportantDate {
 
 export interface DatesResponse {
   dates: ImportantDate[];
-  pinned: { title: string; date: string; days_away: number } | null;
+  pinned: { title: string; date: string; days_away: number; days_diff: number } | null;
 }
 
 export interface DailyQuestionResponse {
