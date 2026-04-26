@@ -1120,7 +1120,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     // Verify item belongs to this couple
     const items = dbOps.getBucketItems(userId, user.partner_id);
-    if (!items.some(i => i.id === id)) return res.status(404).json({ error: 'Item not found' });
+    const item = items.find(i => i.id === id);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
 
     const updated = dbOps.completeBucketItem(id, userId);
     if (!updated) return res.status(404).json({ error: 'Item not found' });
@@ -1128,7 +1129,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (user.partner_id) {
       const partner = dbOps.getUser(user.partner_id);
       if (partner?.device_token) {
-        await pushFn(partner.device_token, 'bucket_complete', user.name);
+        await pushFn(partner.device_token, 'bucket_complete', user.name, { title: item.title });
       }
     }
 

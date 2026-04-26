@@ -1176,6 +1176,29 @@ describe('Bucket List', () => {
 
     expect(mockPush).toHaveBeenCalledWith('test-device-token', 'bucket_new', 'Alice');
   });
+
+  it('should include item title in bucket_complete push', async () => {
+    const { app, mockPush } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    const create = await request(app)
+      .post('/api/bucket')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '一起去日本' });
+
+    (mockPush as jest.Mock).mockClear();
+
+    await request(app)
+      .post(`/api/bucket/${create.body.item.id}/complete`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    expect(mockPush).toHaveBeenCalledWith(
+      'test-device-token',
+      'bucket_complete',
+      'Alice',
+      { title: '一起去日本' },
+    );
+  });
 });
 
 describe('Daily Snaps', () => {

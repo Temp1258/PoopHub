@@ -177,10 +177,12 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const panelOpenRef = useRef(false);
   panelOpenRef.current = panelOpen;
 
+  // Flip the React state immediately so the toolbar pill text ("收起" ↔
+  // "给 ta 发个表情") swaps the moment the user taps. The spring still plays
+  // out, but UI labels reflect intent, not animation completion.
   const closePanel = useCallback(() => {
-    Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
-      setPanelOpen(false);
-    });
+    setPanelOpen(false);
+    Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start();
   }, [panY]);
 
   const openPanel = useCallback(() => {
@@ -214,9 +216,8 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         if (g.dy < -50 || g.vy < -0.5) {
           Animated.spring(panY, { toValue: 0, friction: 9, tension: 80, useNativeDriver: true }).start();
         } else {
-          Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
-            setPanelOpen(false);
-          });
+          setPanelOpen(false);
+          Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start();
         }
       },
     })
@@ -238,9 +239,8 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       },
       onPanResponderRelease: (_, g) => {
         if (g.dy > 80 || g.vy > 0.5) {
-          Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
-            setPanelOpen(false);
-          });
+          setPanelOpen(false);
+          Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start();
         } else {
           Animated.spring(panY, { toValue: 0, friction: 9, tension: 80, useNativeDriver: true }).start();
         }

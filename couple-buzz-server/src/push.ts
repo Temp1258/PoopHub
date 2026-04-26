@@ -65,7 +65,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   capsule_unlock: { title: '💌 时间胶囊', body: '你有一封来自过去的信～' },
   capsule_buried: { title: '💌 时间胶囊', body: '{name} 埋下了一个时间胶囊，{countdown} 后开启' },
   bucket_new: { title: '📝 新心愿', body: '{name} 添加了一个新心愿' },
-  bucket_complete: { title: '✅ 心愿达成', body: '{name} 完成了一个心愿！' },
+  bucket_complete: { title: '✅ 心愿达成', body: '{name} 完成了「{title}」！' },
   date_new: { title: '📅 新纪念日', body: '{name} 添加了一个新纪念日' },
   snap_submitted: { title: '📸 每日快照', body: '{name} 拍了今天的快照，在等你的照片' },
   snap_both: { title: '📸 每日快照', body: '你们都拍了今天的快照！快来看看 💕' },
@@ -120,10 +120,12 @@ export async function sendPush(
     return false;
   }
 
-  let body = message.body.replace('{name}', senderName);
+  // Global replace: cover the (rare) case of repeated placeholders in a body.
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let body = message.body.replace(/\{name\}/g, senderName);
   if (extra) {
     for (const [key, value] of Object.entries(extra)) {
-      body = body.replace(`{${key}}`, value);
+      body = body.replace(new RegExp(`\\{${escapeRe(key)}\\}`, 'g'), value);
     }
   }
 
