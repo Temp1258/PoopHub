@@ -1,10 +1,10 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, ACTION_EMOJI } from '../constants';
 import { api, RitualStatusResponse } from '../services/api';
 
-export default function RitualButton() {
+const RitualButton = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [status, setStatus] = useState<RitualStatusResponse | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -15,6 +15,8 @@ export default function RitualButton() {
       setStatus(result);
     } catch {}
   }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(
     useCallback(() => {
@@ -150,7 +152,9 @@ export default function RitualButton() {
 
   // Between 13-17: no ritual button shown
   return null;
-}
+});
+
+export default RitualButton;
 
 const styles = StyleSheet.create({
   container: {

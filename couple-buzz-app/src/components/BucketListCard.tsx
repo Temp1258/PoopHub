@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,7 @@ const CATEGORIES = [
   { value: 'other', label: '其他' },
 ];
 
-export default function BucketListCard() {
+const BucketListCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [items, setItems] = useState<BucketItemResponse[]>([]);
   const [total, setTotal] = useState(0);
   const [completedCount, setCompletedCount] = useState(0);
@@ -40,6 +40,8 @@ export default function BucketListCard() {
     } catch {}
     setLoading(false);
   }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -169,7 +171,9 @@ export default function BucketListCard() {
       </TouchableOpacity>
     </View>
   );
-}
+});
+
+export default BucketListCard;
 
 const styles = StyleSheet.create({
   card: { backgroundColor: COLORS.white, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: COLORS.border },

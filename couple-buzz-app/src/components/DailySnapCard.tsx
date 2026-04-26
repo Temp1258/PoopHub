@@ -1,15 +1,17 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { COLORS, API_URL } from '../constants';
 import { api, SnapTodayResponse } from '../services/api';
 import { storage } from '../utils/storage';
+import { useBeijingMidnightCountdown } from '../utils/countdown';
 
-export default function DailySnapCard() {
+const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<SnapTodayResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const cd = useBeijingMidnightCountdown();
 
   const load = useCallback(async () => {
     try {
@@ -18,6 +20,8 @@ export default function DailySnapCard() {
     } catch {}
     setLoading(false);
   }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -119,9 +123,15 @@ export default function DailySnapCard() {
       {data.my_snapped && data.partner_snapped && (
         <Text style={styles.both}>今天的快照已完成！</Text>
       )}
+
+      <Text style={styles.refreshHint}>
+        {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
+      </Text>
     </View>
   );
-}
+});
+
+export default DailySnapCard;
 
 const styles = StyleSheet.create({
   card: { backgroundColor: COLORS.white, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: COLORS.border },
@@ -137,4 +147,5 @@ const styles = StyleSheet.create({
   snapText: { fontSize: 16, fontWeight: '600', color: COLORS.white },
   waiting: { fontSize: 13, color: COLORS.textLight, textAlign: 'center' },
   both: { fontSize: 13, color: COLORS.kiss, textAlign: 'center', fontWeight: '500' },
+  refreshHint: { fontSize: 12, color: COLORS.textLight, textAlign: 'center', marginTop: 12 },
 });

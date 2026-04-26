@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ScrollView,
   Modal,
   FlatList,
+  RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,6 +18,8 @@ import { api, ImportantDate } from '../services/api';
 import { storage } from '../utils/storage';
 import WeeklyReportCard from '../components/WeeklyReportCard';
 import StatsCard from '../components/StatsCard';
+
+type Reloadable = { reload: () => Promise<void> };
 
 const TIMEZONES = [
   { value: 'Asia/Shanghai', label: '北京时间', offset: 'UTC+8' },
@@ -62,32 +65,52 @@ export default function SettingsScreen() {
     } catch {}
   }, []);
 
+  const loadStatus = useCallback(async () => {
+    try {
+      const status = await api.getStatus();
+      setName(status.name);
+      setTimezone(status.timezone);
+      setPartnerTimezone(status.partner_timezone);
+      setOriginalName(status.name);
+      setOriginalTimezone(status.timezone);
+      setOriginalPartnerTz(status.partner_timezone);
+      if (status.partner_id) {
+        setPartnerId(status.partner_id);
+        await storage.setPartnerId(status.partner_id);
+      }
+    } catch {
+      const localName = await storage.getUserName();
+      if (localName) setName(localName);
+      const cachedPid = await storage.getPartnerId();
+      if (cachedPid) setPartnerId(cachedPid);
+    }
+    const id = await storage.getUserId();
+    if (id) setUserId(id);
+  }, []);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const weeklyRef = useRef<Reloadable>(null);
+  const statsRef = useRef<Reloadable>(null);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        loadStatus(),
+        loadDates(),
+        weeklyRef.current?.reload(),
+        statsRef.current?.reload(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadStatus, loadDates]);
+
   useFocusEffect(
     useCallback(() => {
-      (async () => {
-        try {
-          const status = await api.getStatus();
-          setName(status.name);
-          setTimezone(status.timezone);
-          setPartnerTimezone(status.partner_timezone);
-          setOriginalName(status.name);
-          setOriginalTimezone(status.timezone);
-          setOriginalPartnerTz(status.partner_timezone);
-          if (status.partner_id) {
-            setPartnerId(status.partner_id);
-            await storage.setPartnerId(status.partner_id);
-          }
-        } catch {
-          const localName = await storage.getUserName();
-          if (localName) setName(localName);
-          const cachedPid = await storage.getPartnerId();
-          if (cachedPid) setPartnerId(cachedPid);
-        }
-        const id = await storage.getUserId();
-        if (id) setUserId(id);
-      })();
+      loadStatus();
       loadDates();
-    }, [loadDates])
+    }, [loadStatus, loadDates])
   );
 
   const hasChanges = name.trim() !== originalName || timezone !== originalTimezone || partnerTimezone !== originalPartnerTz;
@@ -169,6 +192,9 @@ export default function SettingsScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.kiss} />
+      }
     >
       <Text style={styles.screenTitle}>数据</Text>
 
@@ -191,8 +217,8 @@ export default function SettingsScreen() {
         </View>
       ) : null}
 
-      <WeeklyReportCard />
-      <StatsCard />
+      <WeeklyReportCard ref={weeklyRef} />
+      <StatsCard ref={statsRef} />
 
       <Text style={styles.sectionTitle}>昵称</Text>
       <TextInput

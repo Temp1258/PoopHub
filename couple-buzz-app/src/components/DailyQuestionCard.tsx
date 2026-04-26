@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,14 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, DailyQuestionResponse } from '../services/api';
+import { useBeijingMidnightCountdown } from '../utils/countdown';
 
-export default function DailyQuestionCard() {
+const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<DailyQuestionResponse | null>(null);
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const cd = useBeijingMidnightCountdown();
 
   const load = useCallback(async () => {
     try {
@@ -25,6 +27,8 @@ export default function DailyQuestionCard() {
     } catch {}
     setLoading(false);
   }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(
     useCallback(() => {
@@ -109,9 +113,15 @@ export default function DailyQuestionCard() {
           </TouchableOpacity>
         </View>
       )}
+
+      <Text style={styles.refreshHint}>
+        {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
+      </Text>
     </View>
   );
-}
+});
+
+export default DailyQuestionCard;
 
 const styles = StyleSheet.create({
   card: {
@@ -206,5 +216,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.text,
     lineHeight: 22,
+  },
+  refreshHint: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: 12,
   },
 });

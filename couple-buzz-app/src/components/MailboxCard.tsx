@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -13,8 +13,9 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, MailboxResponse } from '../services/api';
+import { useCountdown } from '../utils/countdown';
 
-export default function MailboxCard() {
+const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<MailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [content, setContent] = useState('');
@@ -46,6 +47,10 @@ export default function MailboxCard() {
       load();
     }, [load])
   );
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
+
+  const cd = useCountdown(data?.reveal_at ?? null);
 
   const playSealAnimation = () =>
     new Promise<void>((resolve) => {
@@ -115,12 +120,8 @@ export default function MailboxCard() {
 
   if (!data) return null;
 
-  const { phase, my_message, partner_message, partner_wrote, reveal_at } = data;
-
-  const revealDate = new Date(reveal_at);
-  const now = new Date();
-  const msLeft = Math.max(0, revealDate.getTime() - now.getTime());
-  const hoursLeft = Math.ceil(msLeft / 3600000);
+  const { phase, my_message, partner_message, partner_wrote } = data;
+  const countdownLabel = cd.done ? '即将揭晓' : `${cd.hh}:${cd.mm}:${cd.ss} 后揭晓`;
 
   const stampRotateInterpolate = stampRotate.interpolate({
     inputRange: [0, 1],
@@ -151,9 +152,7 @@ export default function MailboxCard() {
             <Text style={styles.sealedEnvelopeIcon}>💌</Text>
           </View>
           <Text style={styles.sealedTitle}>这一场的信已封存</Text>
-          <Text style={styles.sealedSubtitle}>
-            {hoursLeft > 0 ? `${hoursLeft} 小时后揭晓` : '即将揭晓'}
-          </Text>
+          <Text style={styles.sealedSubtitle}>{countdownLabel}</Text>
           <View style={styles.sealedPreview}>
             <Text style={styles.sealedPreviewText} numberOfLines={3}>
               {my_message}
@@ -227,9 +226,7 @@ export default function MailboxCard() {
                 <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
               </TouchableOpacity>
               <Text style={styles.hint}>提交后不能修改哦</Text>
-              <Text style={styles.countdown}>
-                {hoursLeft > 0 ? `还有 ${hoursLeft} 小时揭晓` : '即将揭晓'}
-              </Text>
+              <Text style={styles.countdown}>{countdownLabel}</Text>
             </>
           )}
         </View>
@@ -255,7 +252,9 @@ export default function MailboxCard() {
       )}
     </View>
   );
-}
+});
+
+export default MailboxCard;
 
 const styles = StyleSheet.create({
   card: {

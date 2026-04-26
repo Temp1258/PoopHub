@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 
-export default function TimeCapsuleCard() {
+const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [capsules, setCapsules] = useState<CapsuleItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -31,6 +31,8 @@ export default function TimeCapsuleCard() {
     } catch {}
     setLoading(false);
   }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -191,7 +193,9 @@ export default function TimeCapsuleCard() {
       )}
     </View>
   );
-}
+});
+
+export default TimeCapsuleCard;
 
 const styles = StyleSheet.create({
   card: {

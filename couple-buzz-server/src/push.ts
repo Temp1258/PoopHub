@@ -59,6 +59,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   capsule_unlock: { title: '💌 时间胶囊', body: '你有一封来自过去的信～' },
   bucket_new: { title: '📝 新心愿', body: '{name} 添加了一个新心愿' },
   bucket_complete: { title: '✅ 心愿达成', body: '{name} 完成了一个心愿！' },
+  date_new: { title: '📅 新纪念日', body: '{name} 添加了一个新纪念日' },
   snap_submitted: { title: '📸 每日快照', body: '{name} 拍了今天的快照，在等你的照片' },
   snap_both: { title: '📸 每日快照', body: '你们都拍了今天的快照！快来看看 💕' },
   touch: { title: '拍臭宝！👏', body: '{name} 想你了！🥹' },

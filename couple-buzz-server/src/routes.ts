@@ -477,7 +477,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   });
 
   // POST /api/dates
-  router.post('/dates', (req: Request, res: Response) => {
+  router.post('/dates', async (req: Request, res: Response) => {
     const userId = req.userId!;
     const { title, date, recurring } = req.body;
 
@@ -494,6 +494,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (existing.length >= 20) return res.status(400).json({ error: 'Maximum 20 dates' });
 
     const created = dbOps.createImportantDate(userId, user.partner_id, title.trim(), date, !!recurring);
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, 'date_new', user.name);
+    }
+
     res.json({ date: created });
   });
 
@@ -555,7 +561,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const today = new Date().toISOString().slice(0, 10);
+    // Daily question rolls at Beijing-time midnight (matches the client countdown).
+    const today = getLocalDate('Asia/Shanghai');
 
     // Get or assign today's question (avoid repeating completed ones)
     let index = dbOps.getQuestionAssignment(today);
@@ -599,7 +606,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDate('Asia/Shanghai');
 
     // Get today's assigned question index
     let index = dbOps.getQuestionAssignment(today);

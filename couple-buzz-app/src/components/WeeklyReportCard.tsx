@@ -1,24 +1,24 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, ACTION_EMOJI } from '../constants';
 import { api, WeeklyReportResponse } from '../services/api';
 
-export default function WeeklyReportCard() {
+const WeeklyReportCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<WeeklyReportResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useFocusEffect(
-    useCallback(() => {
-      (async () => {
-        try {
-          const result = await api.getWeeklyReport();
-          setData(result);
-        } catch {}
-        setLoading(false);
-      })();
-    }, [])
-  );
+  const load = useCallback(async () => {
+    try {
+      const result = await api.getWeeklyReport();
+      setData(result);
+    } catch {}
+    setLoading(false);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   if (loading) {
     return (
@@ -83,7 +83,9 @@ export default function WeeklyReportCard() {
       </View>
     </View>
   );
-}
+});
+
+export default WeeklyReportCard;
 
 const styles = StyleSheet.create({
   card: {

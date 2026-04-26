@@ -1,10 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, ACTION_EMOJI } from '../constants';
 import { api, StatsResponse } from '../services/api';
 
-export default function StatsCard() {
+const StatsCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -15,6 +15,8 @@ export default function StatsCard() {
     } catch {}
     setLoading(false);
   }, []);
+
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(
     useCallback(() => {
@@ -91,7 +93,9 @@ export default function StatsCard() {
       )}
     </View>
   );
-}
+});
+
+export default StatsCard;
 
 const styles = StyleSheet.create({
   card: {
