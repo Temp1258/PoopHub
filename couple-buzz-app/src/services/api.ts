@@ -1,4 +1,4 @@
-import { API_URL, DEMO_MODE } from '../constants';
+import { API_URL } from '../constants';
 import { storage } from '../utils/storage';
 
 // Thrown only when the server has definitively rejected the session
@@ -187,18 +187,6 @@ export interface StatsResponse {
   first_action_date: string | null;
 }
 
-export interface CalendarDay {
-  date: string;
-  count: number;
-  my_count: number;
-  partner_count: number;
-  top_action: string | null;
-}
-
-export interface CalendarResponse {
-  days: CalendarDay[];
-}
-
 export interface DailyAnswerResponse {
   success: boolean;
   both_answered: boolean;
@@ -287,29 +275,6 @@ export interface SnapMonth {
   both_snapped: boolean;
 }
 
-export interface WeeklyChallengeResponse {
-  challenge: {
-    id: number;
-    title: string;
-    description: string;
-    type: string;
-    target: number;
-    reward_points: number;
-    difficulty: string;
-  };
-  progress: number;
-  target: number;
-  status: 'active' | 'completed' | 'expired';
-  week_start: string;
-  my_response: string | null;
-  couple_points: number;
-}
-
-export interface CoincidenceStatsResponse {
-  total_count: number;
-  total_seconds: number;
-}
-
 function getDeviceTimezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -318,165 +283,7 @@ function getDeviceTimezone(): string {
   }
 }
 
-const mockHistory: HistoryAction[] = [
-  { id: 1, user_id: 'demo-user-001', user_name: '我', action_type: 'miss', sender_timezone: 'Asia/Shanghai', created_at: new Date().toISOString().slice(0, 19) },
-  { id: 2, user_id: 'demo-user-002', user_name: '宝贝', action_type: 'kiss', sender_timezone: 'America/New_York', created_at: new Date().toISOString().slice(0, 19) },
-  { id: 3, user_id: 'demo-user-001', user_name: '我', action_type: 'poop', sender_timezone: 'Asia/Shanghai', created_at: new Date(Date.now() - 3600000).toISOString().slice(0, 19) },
-  { id: 4, user_id: 'demo-user-002', user_name: '宝贝', action_type: 'pat', sender_timezone: 'America/New_York', created_at: new Date(Date.now() - 7200000).toISOString().slice(0, 19) },
-];
-
-const demoApi = {
-  async register(name: string, _password: string): Promise<RegisterResponse> {
-    await new Promise(r => setTimeout(r, 500));
-    return { user_id: 'AB12CD', access_token: 'demo-at', refresh_token: 'demo-rt' };
-  },
-
-  async login(_userId: string, _password: string): Promise<LoginResponse> {
-    await new Promise(r => setTimeout(r, 500));
-    return { user_id: 'AB12CD', partner_name: '宝贝', access_token: 'demo-at', refresh_token: 'demo-rt' };
-  },
-
-  async pair(_partnerId: string): Promise<PairResponse> {
-    await new Promise(r => setTimeout(r, 500));
-    return { success: true, partner_name: '宝贝' };
-  },
-
-  async getStatus(): Promise<StatusResponse> {
-    await new Promise(r => setTimeout(r, 300));
-    return { paired: true, partner_name: '宝贝', name: '我', timezone: 'Asia/Shanghai', partner_timezone: 'America/New_York', partner_remark: '', streak: 7 };
-  },
-
-  async sendAction(_actionType: string): Promise<ActionResponse> {
-    await new Promise(r => setTimeout(r, 300));
-    return { success: true };
-  },
-
-  async getHistory(_limit = 50): Promise<HistoryResponse> {
-    await new Promise(r => setTimeout(r, 300));
-    return { actions: mockHistory, reactions: {} };
-  },
-
-  async sendReaction(_actionId: number, _actionType: string): Promise<ReactionResponse> {
-    return { success: true, reaction_id: 99 };
-  },
-
-  async getWsTicket(): Promise<WsTicketResponse> {
-    return { ticket: 'demo-ticket', expires_in: 30 };
-  },
-
-  async updateToken(_deviceToken: string): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-
-  async updateProfile(_name: string, _timezone: string, _partnerTimezone: string, _partnerRemark: string): Promise<ProfileResponse> {
-    await new Promise(r => setTimeout(r, 300));
-    return { success: true, name: _name, timezone: _timezone, partner_timezone: _partnerTimezone, partner_remark: _partnerRemark };
-  },
-
-  async getDates(): Promise<DatesResponse> {
-    return { dates: [], pinned: { title: '见面', date: '2026-04-15', days_away: 12 } };
-  },
-
-  async createDate(_title: string, _date: string, _recurring: boolean): Promise<{ date: ImportantDate }> {
-    return { date: { id: 1, user_id: '', partner_id: '', title: _title, date: _date, recurring: _recurring ? 1 : 0, pinned: 0, created_at: '' } };
-  },
-
-  async deleteDate(_id: number): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-
-  async pinDate(_id: number): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-
-  async getDailyQuestion(): Promise<DailyQuestionResponse> {
-    return { question: '你最喜欢对方的哪个特点？', question_index: 0, date: new Date().toISOString().slice(0, 10), my_answer: null, partner_answer: null, partner_answered: false, both_answered: false };
-  },
-
-  async submitDailyAnswer(_answer: string): Promise<DailyAnswerResponse> {
-    return { success: true, both_answered: false, partner_answer: null };
-  },
-
-  async getStats(): Promise<StatsResponse> {
-    return { total_actions: 0, my_actions: 0, partner_actions: 0, top_actions: [], hourly: [], monthly: [], first_action_date: null };
-  },
-
-  async getCalendar(_month: string): Promise<CalendarResponse> {
-    return { days: [] };
-  },
-
-  async getRitualStatus(): Promise<RitualStatusResponse> {
-    return { local_hour: 9, morning: { my_completed: false, partner_completed: false, both_completed: false }, evening: { my_completed: false, partner_completed: false, both_completed: false }, daily_recap: null };
-  },
-
-  async submitRitual(_type: 'morning' | 'evening'): Promise<RitualResponse> {
-    return { success: true, ritual_type: _type, ritual_date: new Date().toISOString().slice(0, 10), both_completed: false };
-  },
-
-  async getMailbox(): Promise<MailboxResponse> {
-    return { week_key: '', phase: 'writing', my_message: null, partner_message: null, reveal_at: '', can_edit: true };
-  },
-
-  async submitMailbox(_content: string): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-
-  async getMailboxArchive(_limit?: number): Promise<MailboxArchiveResponse> {
-    return { weeks: [] };
-  },
-
-  async getWeeklyReport(_week?: string): Promise<WeeklyReportResponse> {
-    return { week_key: '', total: 0, last_week_total: 0, change_percent: 0, my_count: 0, partner_count: 0, streak: 0, top_actions: [], daily_question_rate: '0/7', ritual_morning_rate: '0/7', ritual_evening_rate: '0/7', temperature: 0, temperature_label: '' };
-  },
-
-  async createCapsule(_content: string, _unlockDate: string): Promise<{ id: number }> {
-    return { id: 1 };
-  },
-  async getCapsules(): Promise<{ capsules: CapsuleItem[] }> {
-    return { capsules: [] };
-  },
-  async openCapsule(_id: number): Promise<{ success: boolean; content: string }> {
-    return { success: true, content: '' };
-  },
-
-  async getBucket(): Promise<{ items: BucketItemResponse[]; total: number; completed_count: number }> {
-    return { items: [], total: 0, completed_count: 0 };
-  },
-  async createBucketItem(_title: string, _category?: string): Promise<{ item: BucketItemResponse }> {
-    return { item: {} as any };
-  },
-  async completeBucketItem(_id: number): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-  async uncompleteBucketItem(_id: number): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-  async deleteBucketItem(_id: number): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-
-  async getSnapToday(): Promise<SnapTodayResponse> {
-    return { snap_date: '', my_snapped: false, partner_snapped: false, my_photo: null, partner_photo: null };
-  },
-  async getSnaps(_month: string): Promise<{ snaps: SnapMonth[] }> {
-    return { snaps: [] };
-  },
-
-  async getWeeklyChallenge(): Promise<WeeklyChallengeResponse> {
-    return { challenge: { id: 0, title: '', description: '', type: '', target: 0, reward_points: 0, difficulty: '' }, progress: 0, target: 0, status: 'active', week_start: '', my_response: null, couple_points: 0 };
-  },
-  async submitChallengeResponse(_response: string): Promise<{ success: boolean }> {
-    return { success: true };
-  },
-  async getCouplePoints(): Promise<{ points: number }> {
-    return { points: 0 };
-  },
-  async getCoincidenceStats(): Promise<CoincidenceStatsResponse> {
-    return { total_count: 0, total_seconds: 0 };
-  },
-};
-
-const realApi = {
+export const api = {
   register(name: string, password: string): Promise<RegisterResponse> {
     return request('/api/register', {
       method: 'POST',
@@ -572,10 +379,6 @@ const realApi = {
     return request('/api/stats');
   },
 
-  getCalendar(month: string): Promise<CalendarResponse> {
-    return request(`/api/calendar?month=${month}`);
-  },
-
   getRitualStatus(): Promise<RitualStatusResponse> {
     return request('/api/ritual/status');
   },
@@ -638,19 +441,4 @@ const realApi = {
   getSnaps(month: string): Promise<{ snaps: SnapMonth[] }> {
     return request(`/api/snaps?month=${month}`);
   },
-
-  getWeeklyChallenge(): Promise<WeeklyChallengeResponse> {
-    return request('/api/weekly-challenge');
-  },
-  submitChallengeResponse(response: string): Promise<{ success: boolean }> {
-    return request('/api/weekly-challenge/response', { method: 'POST', body: JSON.stringify({ response }) });
-  },
-  getCouplePoints(): Promise<{ points: number }> {
-    return request('/api/couple-points');
-  },
-  getCoincidenceStats(): Promise<CoincidenceStatsResponse> {
-    return request('/api/coincidences/stats');
-  },
 };
-
-export const api = DEMO_MODE ? demoApi : realApi;

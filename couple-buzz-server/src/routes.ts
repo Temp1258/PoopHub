@@ -4,8 +4,6 @@ import path from 'path';
 import fs from 'fs';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
-import { CHALLENGES } from './challenges';
-import { computeProgress } from './challengeVerifier';
 import { createWsTicket } from './socket';
 import {
   generateAccessToken,
@@ -60,7 +58,7 @@ function getYesterdayDate(todayStr: string): string {
   return date.toISOString().slice(0, 10);
 }
 
-// Used by weekly report and weekly challenge. Mailbox now uses session keys, not week.
+// Used by weekly report. Mailbox uses session keys, not week.
 function getCurrentWeekMonday(): string {
   const now = new Date();
   const day = now.getUTCDay();
@@ -644,23 +642,6 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json(stats);
   });
 
-  // GET /api/calendar?month=2026-04
-  router.get('/calendar', (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const month = req.query.month as string;
-
-    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-      return res.status(400).json({ error: 'month parameter required (YYYY-MM)' });
-    }
-
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.json({ days: [] });
-
-    const days = dbOps.getCalendarData(userId, user.partner_id, month);
-    res.json({ days });
-  });
-
   // POST /api/ritual
   router.post('/ritual', async (req: Request, res: Response) => {
     const userId = req.userId!;
@@ -1185,122 +1166,6 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }));
 
     res.json({ snaps });
-  });
-
-  // GET /api/weekly-challenge
-  router.get('/weekly-challenge', (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
-
-    const weekStart = getCurrentWeekMonday();
-    let challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
-
-    // Auto-assign if none (handle race condition with UNIQUE constraint)
-    if (!challenge) {
-      try {
-        const recent = dbOps.getRecentChallengeIndexes(userId, user.partner_id, 20);
-        const recentSet = new Set(recent);
-        const available = CHALLENGES.filter(c => !recentSet.has(c.id));
-        const pool = available.length > 0 ? available : CHALLENGES;
-        const picked = pool[Math.floor(Math.random() * pool.length)];
-        challenge = dbOps.assignWeeklyChallenge(userId, user.partner_id, picked.id, weekStart);
-      } catch {
-        // Race condition: partner already assigned, re-fetch
-        challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
-      }
-    }
-
-    if (!challenge) return res.status(500).json({ error: 'Failed to assign challenge' });
-    const ch = challenge; // narrow type for rest of handler
-
-    const def = CHALLENGES.find(c => c.id === ch.challenge_index);
-    if (!def) return res.status(500).json({ error: 'Challenge definition not found' });
-
-    let progress = 0;
-    if (ch.status === 'completed') {
-      progress = def.target;
-    } else {
-      progress = computeProgress(dbOps, ch, def, userId);
-      if (progress >= def.target && ch.status === 'active') {
-        dbOps.completeWeeklyChallenge(ch.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
-      }
-    }
-
-    const myResponse = dbOps.getChallengeResponse(ch.id, userId);
-    const points = dbOps.getCouplePoints(userId, user.partner_id);
-
-    res.json({
-      challenge: def,
-      progress: Math.min(progress, def.target),
-      target: def.target,
-      status: ch.status,
-      week_start: weekStart,
-      my_response: myResponse,
-      couple_points: points,
-    });
-  });
-
-  // POST /api/weekly-challenge/response
-  router.post('/weekly-challenge/response', async (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const { response } = req.body;
-
-    if (!response || typeof response !== 'string' || !response.trim()) {
-      return res.status(400).json({ error: 'response is required' });
-    }
-    if (response.length > 1000) return res.status(400).json({ error: 'response max 1000 characters' });
-
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
-
-    const weekStart = getCurrentWeekMonday();
-    const challenge = dbOps.getWeeklyChallenge(userId, user.partner_id, weekStart);
-    if (!challenge) return res.status(400).json({ error: 'No active challenge' });
-
-    const def = CHALLENGES.find(c => c.id === challenge.challenge_index);
-    if (!def || def.type !== 'custom_response') {
-      return res.status(400).json({ error: 'This challenge does not accept text responses' });
-    }
-
-    dbOps.submitChallengeResponse(challenge.id, userId, response.trim());
-
-    // Check completion (custom_response target is typically 1 per person)
-    const progress = computeProgress(dbOps, challenge, def, userId);
-    if (progress >= def.target && challenge.status === 'active') {
-      dbOps.completeWeeklyChallenge(challenge.id, def.reward_points, userId, user.partner_id, `challenge:${def.id}`);
-    }
-
-    const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, 'challenge_response', user.name);
-    }
-
-    res.json({ success: true });
-  });
-
-  // GET /api/couple-points
-  router.get('/couple-points', (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.json({ points: 0 });
-
-    const points = dbOps.getCouplePoints(userId, user.partner_id);
-    res.json({ points });
-  });
-
-  // GET /api/coincidences/stats
-  router.get('/coincidences/stats', (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.json({ total_count: 0, total_seconds: 0 });
-
-    const stats = dbOps.getCoincidenceStats(userId, user.partner_id);
-    res.json(stats);
   });
 
   // GET /api/ws-ticket

@@ -1,7 +1,5 @@
 import Constants from 'expo-constants';
 
-export const DEMO_MODE = false;
-
 export const API_URL = Constants.expoConfig?.extra?.apiUrl ?? 'http://localhost:3000';
 
 export const COLORS = {

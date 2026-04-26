@@ -58,14 +58,6 @@ export interface StatsData {
   first_action_date: string | null;
 }
 
-export interface CalendarDay {
-  date: string;
-  count: number;
-  my_count: number;
-  partner_count: number;
-  top_action: string | null;
-}
-
 export interface RefreshToken {
   id: number;
   user_id: string;
@@ -121,17 +113,6 @@ export interface DailySnap {
   created_at: string;
 }
 
-export interface WeeklyChallenge {
-  id: number;
-  user_id: string;
-  partner_id: string;
-  challenge_index: number;
-  week_start: string;
-  status: 'active' | 'completed' | 'expired';
-  completed_at: string | null;
-  created_at: string;
-}
-
 export interface DbOps {
   createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void;
   getUser(id: string): User | undefined;
@@ -155,7 +136,6 @@ export interface DbOps {
   deleteRefreshToken(tokenHash: string): void;
   deleteAllRefreshTokens(userId: string): void;
   incrementTokenVersion(userId: string): void;
-  getUnpairedUser(excludeId: string): User | undefined;
   getStreak(userId: string, partnerId: string): number;
   createImportantDate(userId: string, partnerId: string, title: string, date: string, recurring: boolean): ImportantDate;
   getImportantDates(userId: string, partnerId: string): ImportantDate[];
@@ -168,7 +148,6 @@ export interface DbOps {
   setQuestionAssignment(questionDate: string, questionIndex: number): void;
   getCompletedQuestionIndexes(userId: string, partnerId: string): Set<number>;
   getStats(userId: string, partnerId: string): StatsData;
-  getCalendarData(userId: string, partnerId: string, yearMonth: string): CalendarDay[];
   // Rituals
   submitRitual(userId: string, ritualType: 'morning' | 'evening', ritualDate: string): boolean;
   getRituals(ritualDate: string, userId: string, partnerId: string): Ritual[];
@@ -200,26 +179,6 @@ export interface DbOps {
   saveSnap(userId: string, snapDate: string, photoPath: string): boolean;
   getSnap(userId: string, snapDate: string): DailySnap | undefined;
   getSnaps(userId: string, partnerId: string, month: string): { snap_date: string; user_photo: string | null; partner_photo: string | null }[];
-  // Weekly Challenges
-  getWeeklyChallenge(userId: string, partnerId: string, weekStart: string): WeeklyChallenge | undefined;
-  assignWeeklyChallenge(userId: string, partnerId: string, challengeIndex: number, weekStart: string): WeeklyChallenge;
-  getRecentChallengeIndexes(userId: string, partnerId: string, limit: number): number[];
-  completeWeeklyChallenge(id: number, points: number, userId: string, partnerId: string, reason: string): void;
-  getChallengeResponse(challengeId: number, userId: string): string | null;
-  submitChallengeResponse(challengeId: number, userId: string, response: string): void;
-  // Couple Points
-  getCouplePoints(userId: string, partnerId: string): number;
-  // Challenge verification queries
-  countActionsInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string, actionType?: string): number;
-  countUserActionsInWeek(userId: string, weekStart: string, weekEnd: string, actionType?: string): number;
-  countDistinctActionTypesInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number;
-  countUserDistinctActionTypesInWeek(userId: string, weekStart: string, weekEnd: string): number;
-  countBothActiveDaysInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number;
-  countBothAnsweredQuestionsInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number;
-  // Coincidences
-  logCoincidence(userId: string, partnerId: string): number;
-  endCoincidence(id: number, durationSeconds: number): void;
-  getCoincidenceStats(userId: string, partnerId: string): { total_count: number; total_seconds: number };
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -365,43 +324,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE INDEX IF NOT EXISTS idx_bucket_couple ON bucket_items(user_id, partner_id);
     CREATE INDEX IF NOT EXISTS idx_snaps_date ON daily_snaps(snap_date);
 
-    CREATE TABLE IF NOT EXISTS weekly_challenges (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      partner_id TEXT NOT NULL,
-      challenge_index INTEGER NOT NULL,
-      week_start TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      completed_at DATETIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, partner_id, week_start)
-    );
-
-    CREATE TABLE IF NOT EXISTS challenge_responses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      challenge_id INTEGER NOT NULL,
-      user_id TEXT NOT NULL,
-      response_text TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(challenge_id, user_id),
-      FOREIGN KEY (challenge_id) REFERENCES weekly_challenges(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS couple_points (
-      user_id TEXT NOT NULL,
-      partner_id TEXT NOT NULL,
-      points INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(user_id, partner_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS coincidences (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      partner_id TEXT NOT NULL,
-      duration_seconds INTEGER,
-      started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      ended_at DATETIME
-    );
   `);
 
   // Migrations for existing databases
@@ -534,9 +456,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtIncrementTokenVersion = db.prepare(
     'UPDATE users SET token_version = token_version + 1 WHERE id = ?'
   );
-  const stmtGetUnpairedUser = db.prepare(
-    'SELECT * FROM users WHERE partner_id IS NULL AND id != ? LIMIT 1'
-  );
 
   const stmtGetStreak = db.prepare(`
     WITH daily_activity AS (
@@ -615,12 +534,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   const stmtStatsFirstDate = db.prepare(
     'SELECT MIN(created_at) as first_date FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL'
-  );
-  const stmtCalendarDays = db.prepare(
-    "SELECT DATE(created_at) as date, COUNT(*) as count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as my_count, SUM(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as partner_count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at)"
-  );
-  const stmtCalendarTopAction = db.prepare(
-    "SELECT date, action_type FROM (SELECT DATE(created_at) as date, action_type, COUNT(*) as cnt, ROW_NUMBER() OVER (PARTITION BY DATE(created_at) ORDER BY COUNT(*) DESC) as rn FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ? GROUP BY DATE(created_at), action_type) WHERE rn = 1"
   );
 
   // Ritual statements
@@ -730,76 +643,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     GROUP BY s.snap_date ORDER BY s.snap_date DESC
   `);
 
-  // Challenge statements
-  const stmtGetChallenge = db.prepare(
-    'SELECT * FROM weekly_challenges WHERE ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)) AND week_start = ?'
-  );
-  const stmtInsertChallenge = db.prepare(
-    'INSERT INTO weekly_challenges (user_id, partner_id, challenge_index, week_start) VALUES (?, ?, ?, ?)'
-  );
-  const stmtGetChallengeById = db.prepare('SELECT * FROM weekly_challenges WHERE id = ?');
-  const stmtRecentChallenges = db.prepare(
-    'SELECT challenge_index FROM weekly_challenges WHERE ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)) ORDER BY created_at DESC LIMIT ?'
-  );
-  const stmtCompleteChallenge = db.prepare(
-    'UPDATE weekly_challenges SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?'
-  );
-  const stmtGetChallengeResponse = db.prepare(
-    'SELECT response_text FROM challenge_responses WHERE challenge_id = ? AND user_id = ?'
-  );
-  const stmtSubmitChallengeResponse = db.prepare(
-    'INSERT INTO challenge_responses (challenge_id, user_id, response_text) VALUES (?, ?, ?) ON CONFLICT(challenge_id, user_id) DO UPDATE SET response_text = excluded.response_text'
-  );
-  const stmtGetCouplePoints = db.prepare(
-    'SELECT points FROM couple_points WHERE (user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)'
-  );
-  const stmtAddCouplePoints = db.prepare(
-    'INSERT INTO couple_points (user_id, partner_id, points) VALUES (?, ?, ?) ON CONFLICT(user_id, partner_id) DO UPDATE SET points = points + ?'
-  );
-
-  // Verification queries
-  const stmtCountActions = db.prepare(
-    'SELECT COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
-  );
-  const stmtCountActionsByType = db.prepare(
-    'SELECT COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND action_type = ? AND created_at >= ? AND created_at < ?'
-  );
-  const stmtCountUserActions = db.prepare(
-    'SELECT COUNT(*) as count FROM actions WHERE user_id = ? AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
-  );
-  const stmtCountUserActionsByType = db.prepare(
-    'SELECT COUNT(*) as count FROM actions WHERE user_id = ? AND reply_to IS NULL AND action_type = ? AND created_at >= ? AND created_at < ?'
-  );
-  const stmtCountDistinctTypes = db.prepare(
-    'SELECT COUNT(DISTINCT action_type) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
-  );
-  const stmtCountUserDistinctTypes = db.prepare(
-    'SELECT COUNT(DISTINCT action_type) as count FROM actions WHERE user_id = ? AND reply_to IS NULL AND created_at >= ? AND created_at < ?'
-  );
-  const stmtCountBothActiveDays = db.prepare(`
-    SELECT COUNT(*) as count FROM (
-      SELECT DATE(created_at) as day FROM actions
-      WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ?
-      GROUP BY DATE(created_at) HAVING COUNT(DISTINCT user_id) = 2
-    )
-  `);
-  const stmtCountBothAnsweredQ = db.prepare(`
-    SELECT COUNT(DISTINCT a1.question_date) as count FROM daily_answers a1
-    JOIN daily_answers a2 ON a1.question_date = a2.question_date AND a1.user_id != a2.user_id
-    WHERE a1.user_id = ? AND a2.user_id = ? AND a1.question_date >= ? AND a1.question_date < ?
-  `);
-
-  // Coincidence statements
-  const stmtLogCoincidence = db.prepare(
-    'INSERT INTO coincidences (user_id, partner_id) VALUES (?, ?)'
-  );
-  const stmtEndCoincidence = db.prepare(
-    'UPDATE coincidences SET ended_at = CURRENT_TIMESTAMP, duration_seconds = ? WHERE id = ?'
-  );
-  const stmtCoincidenceStats = db.prepare(
-    'SELECT COUNT(*) as total_count, COALESCE(SUM(duration_seconds), 0) as total_seconds FROM coincidences WHERE ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)) AND ended_at IS NOT NULL'
-  );
-
   const dbOps: DbOps = {
     createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void {
       insertUser.run(id, name, passwordHash, pairCode, timezone);
@@ -906,10 +749,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtIncrementTokenVersion.run(userId);
     },
 
-    getUnpairedUser(excludeId: string): User | undefined {
-      return stmtGetUnpairedUser.get(excludeId) as User | undefined;
-    },
-
     getStreak(userId: string, partnerId: string): number {
       const row = stmtGetStreak.get(userId, partnerId) as { length: number } | undefined;
       return row?.length ?? 0;
@@ -991,21 +830,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         monthly,
         first_action_date: firstRow?.first_date?.slice(0, 10) ?? null,
       };
-    },
-
-    getCalendarData(userId: string, partnerId: string, yearMonth: string): CalendarDay[] {
-      const startDate = `${yearMonth}-01`;
-      const [y, m] = yearMonth.split('-').map(Number);
-      const nextMonth = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
-
-      const days = stmtCalendarDays.all(userId, partnerId, userId, partnerId, startDate, nextMonth) as { date: string; count: number; my_count: number; partner_count: number }[];
-      const topActions = stmtCalendarTopAction.all(userId, partnerId, startDate, nextMonth) as { date: string; action_type: string }[];
-      const topMap = new Map(topActions.map(r => [r.date, r.action_type]));
-
-      return days.map(d => ({
-        ...d,
-        top_action: topMap.get(d.date) ?? null,
-      }));
     },
 
     // Rituals
@@ -1152,95 +976,6 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       const startDate = `${month}-01`;
       const nextMonth = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
       return stmtGetSnapsMonth.all(userId, partnerId, userId, partnerId, startDate, nextMonth) as any[];
-    },
-
-    // Weekly Challenges
-    getWeeklyChallenge(userId: string, partnerId: string, weekStart: string): WeeklyChallenge | undefined {
-      return stmtGetChallenge.get(userId, partnerId, partnerId, userId, weekStart) as WeeklyChallenge | undefined;
-    },
-
-    assignWeeklyChallenge(userId: string, partnerId: string, challengeIndex: number, weekStart: string): WeeklyChallenge {
-      const result = stmtInsertChallenge.run(userId, partnerId, challengeIndex, weekStart);
-      return stmtGetChallengeById.get(result.lastInsertRowid) as WeeklyChallenge;
-    },
-
-    getRecentChallengeIndexes(userId: string, partnerId: string, limit: number): number[] {
-      const rows = stmtRecentChallenges.all(userId, partnerId, partnerId, userId, limit) as { challenge_index: number }[];
-      return rows.map(r => r.challenge_index);
-    },
-
-    completeWeeklyChallenge(id: number, points: number, userId: string, partnerId: string, reason: string): void {
-      db.transaction(() => {
-        stmtCompleteChallenge.run('completed', id);
-        stmtAddCouplePoints.run(userId, partnerId, points, points);
-      })();
-    },
-
-    getChallengeResponse(challengeId: number, userId: string): string | null {
-      const row = stmtGetChallengeResponse.get(challengeId, userId) as { response_text: string } | undefined;
-      return row?.response_text ?? null;
-    },
-
-    submitChallengeResponse(challengeId: number, userId: string, response: string): void {
-      stmtSubmitChallengeResponse.run(challengeId, userId, response);
-    },
-
-    getCouplePoints(userId: string, partnerId: string): number {
-      const row = stmtGetCouplePoints.get(userId, partnerId, partnerId, userId) as { points: number } | undefined;
-      return row?.points ?? 0;
-    },
-
-    countActionsInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string, actionType?: string): number {
-      if (actionType) {
-        const row = stmtCountActionsByType.get(userId, partnerId, actionType, weekStart, weekEnd) as { count: number };
-        return row.count;
-      }
-      const row = stmtCountActions.get(userId, partnerId, weekStart, weekEnd) as { count: number };
-      return row.count;
-    },
-
-    countUserActionsInWeek(userId: string, weekStart: string, weekEnd: string, actionType?: string): number {
-      if (actionType) {
-        const row = stmtCountUserActionsByType.get(userId, actionType, weekStart, weekEnd) as { count: number };
-        return row.count;
-      }
-      const row = stmtCountUserActions.get(userId, weekStart, weekEnd) as { count: number };
-      return row.count;
-    },
-
-    countDistinctActionTypesInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number {
-      const row = stmtCountDistinctTypes.get(userId, partnerId, weekStart, weekEnd) as { count: number };
-      return row.count;
-    },
-
-    countUserDistinctActionTypesInWeek(userId: string, weekStart: string, weekEnd: string): number {
-      const row = stmtCountUserDistinctTypes.get(userId, weekStart, weekEnd) as { count: number };
-      return row.count;
-    },
-
-    countBothActiveDaysInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number {
-      const row = stmtCountBothActiveDays.get(userId, partnerId, weekStart, weekEnd) as { count: number };
-      return row.count;
-    },
-
-    countBothAnsweredQuestionsInWeek(userId: string, partnerId: string, weekStart: string, weekEnd: string): number {
-      const row = stmtCountBothAnsweredQ.get(userId, partnerId, weekStart, weekEnd) as { count: number };
-      return row.count;
-    },
-
-    // Coincidences
-    logCoincidence(userId: string, partnerId: string): number {
-      const result = stmtLogCoincidence.run(userId, partnerId);
-      return Number(result.lastInsertRowid);
-    },
-
-    endCoincidence(id: number, durationSeconds: number): void {
-      stmtEndCoincidence.run(durationSeconds, id);
-    },
-
-    getCoincidenceStats(userId: string, partnerId: string): { total_count: number; total_seconds: number } {
-      const row = stmtCoincidenceStats.get(userId, partnerId, partnerId, userId) as { total_count: number; total_seconds: number };
-      return { total_count: row.total_count, total_seconds: row.total_seconds };
     },
   };
 

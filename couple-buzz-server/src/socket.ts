@@ -14,9 +14,7 @@ interface CouplePresence {
   sockets: Map<string, string>; // userId -> socketId
   bothOnlineTimer?: ReturnType<typeof setTimeout>;
   bothEmitted: boolean;
-  coincidenceId?: number;
-  coincidenceStart?: number;
-  userIds: [string, string]; // stored for DB logging
+  userIds: [string, string];
 }
 
 const tickets = new Map<string, Ticket>();
@@ -74,7 +72,7 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     presence.sockets.set(userId, socket.id);
 
     socket.join(key);
-    checkBothOnline(io, key, presence, dbOps);
+    checkBothOnline(io, key, presence);
     socket.to(key).emit('partner_online', { online: true });
 
     // Check if partner is in the same room and currently touching
@@ -135,14 +133,6 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
       if (presence.bothEmitted) {
         io.to(key).emit('presence_single');
         presence.bothEmitted = false;
-
-        // End coincidence logging
-        if (presence.coincidenceId && presence.coincidenceStart) {
-          const duration = Math.round((Date.now() - presence.coincidenceStart) / 1000);
-          try { dbOps.endCoincidence(presence.coincidenceId, duration); } catch {}
-          presence.coincidenceId = undefined;
-          presence.coincidenceStart = undefined;
-        }
       }
 
       if (presence.sockets.size === 0) {
@@ -161,20 +151,13 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
   return io;
 }
 
-function checkBothOnline(io: Server, key: string, presence: CouplePresence, dbOps: DbOps) {
+function checkBothOnline(io: Server, key: string, presence: CouplePresence) {
   if (presence.sockets.size >= 2) {
     if (presence.bothOnlineTimer) clearTimeout(presence.bothOnlineTimer);
     presence.bothOnlineTimer = setTimeout(() => {
       if (presence.sockets.size >= 2) {
         io.to(key).emit('presence_both');
         presence.bothEmitted = true;
-
-        // Log coincidence
-        try {
-          const [uid, pid] = presence.userIds;
-          presence.coincidenceId = dbOps.logCoincidence(uid, pid);
-          presence.coincidenceStart = Date.now();
-        } catch {}
       }
     }, 3000);
   }
