@@ -5,7 +5,9 @@
   "scripts": {
     "start": "expo start",
     "ios": "expo start --ios",
-    "android": "expo start --android"
+    "android": "expo start --android",
+    "ota:preview": "API_URL=https://api.couple-buzz.com:8443 eas update --branch preview",
+    "ota:production": "API_URL=https://api.couple-buzz.com:8443 eas update --branch production"
   },
   "dependencies": {
     "@bacons/apple-targets": "^4.0.6",

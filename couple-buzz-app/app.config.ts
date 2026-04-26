@@ -34,7 +34,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     '@react-native-community/datetimepicker',
   ],
   extra: {
-    apiUrl: process.env.API_URL || 'http://localhost:3000',
+    // Default to production so a missing/empty .env never ships a dev URL via
+    // `eas update` (which auto-loads .env). Local dev overrides via API_URL=...
+    apiUrl: process.env.API_URL || 'https://api.couple-buzz.com:8443',
     eas: {
       projectId: 'a6ec0a8e-b73d-4be3-b927-cf8b435f1ab7',
     },
