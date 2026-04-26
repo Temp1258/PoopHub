@@ -244,6 +244,7 @@ export interface CapsuleItem {
   unlock_date: string;
   is_unlockable: boolean;
   opened_at: string | null;
+  visibility: 'self' | 'partner';
   created_at: string;
 }
 
@@ -409,8 +410,8 @@ export const api = {
     return request(`/api/weekly-report${week ? `?week=${week}` : ''}`);
   },
 
-  createCapsule(content: string, unlockDate: string): Promise<{ id: number }> {
-    return request('/api/capsules', { method: 'POST', body: JSON.stringify({ content, unlock_date: unlockDate }) });
+  createCapsule(content: string, unlockDate: string, visibility: 'self' | 'partner'): Promise<{ id: number }> {
+    return request('/api/capsules', { method: 'POST', body: JSON.stringify({ content, unlock_date: unlockDate, visibility }) });
   },
   getCapsules(): Promise<{ capsules: CapsuleItem[] }> {
     return request('/api/capsules');

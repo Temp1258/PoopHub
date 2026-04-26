@@ -16,8 +16,9 @@ export type ActionType =
   | 'haha' | 'hehe' | 'cry' | 'wuwu' | 'sad' | 'clown'
   | 'angry_silent' | 'angry_talk'
   | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'play' | 'clean' | 'poop' | 'pick_nose'
-  | 'slap'
-  | 'work' | 'where_r_u' | 'what_doing' | 'ping';
+  | 'slap' | 'gym' | 'milk_tea' | 'drink'
+  | 'work' | 'where_r_u' | 'what_doing' | 'ping'
+  | 'call_wife' | 'call_husband' | 'call_baby';
 
 export interface ActionConfig {
   type: ActionType;
@@ -71,12 +72,18 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'poop', emoji: '💩', label: '晒特', color: '#C4A882' },
       { type: 'pick_nose', emoji: '🤏', label: '抠鼻屎', color: '#D4C5A9' },
       { type: 'work', emoji: '💻', label: '工作', color: '#A8D8EA' },
+      { type: 'gym', emoji: '🏋️', label: '健身', color: '#B5D8CC' },
+      { type: 'milk_tea', emoji: '🧋', label: '喝奶茶', color: '#E3C9A8' },
+      { type: 'drink', emoji: '🥤', label: '喝饮料', color: '#A8D8EA' },
     ],
   },
   {
     title: '找你',
     actions: [
       { type: 'ping', emoji: '🛎️', label: 'Ping', color: '#FFD699' },
+      { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },
+      { type: 'call_husband', emoji: '🤵', label: '召唤老公', color: '#A8D8EA' },
+      { type: 'call_baby', emoji: '🍼', label: '召唤宝贝', color: '#FFCAD4' },
     ],
   },
 ];

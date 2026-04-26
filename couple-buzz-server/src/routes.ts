@@ -27,6 +27,8 @@ const VALID_ACTIONS: ReadonlySet<string> = new Set([
   'where_r_u', 'what_doing', 'sleep', 'play', 'clean',
   'cry', 'wuwu', 'sad', 'clown', 'haha', 'hehe', 'work',
   'slap', 'ping',
+  'call_wife', 'call_husband', 'call_baby',
+  'gym', 'milk_tea', 'drink',
 ]);
 
 // Timezone helpers
@@ -50,6 +52,44 @@ function getLocalDate(timezone: string): string {
 function getLocalHour(timezone: string): number {
   const h = parseInt(new Date().toLocaleString('en-US', { timeZone: safeTimezone(timezone), hour: 'numeric', hour12: false }));
   return h === 24 ? 0 : h;
+}
+
+// Distance from "now" until midnight of `targetDateStr` in `timezone`,
+// formatted like "3天5小时". Falls back to "0小时" if the target is past.
+function formatDayHourCountdown(targetDateStr: string, timezone: string): string {
+  const tz = safeTimezone(timezone);
+  const now = new Date();
+
+  // Midnight of target date in the target timezone, expressed as a UTC instant.
+  // Build via en-CA locale to compute the offset.
+  const offsetMin = (() => {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        timeZoneName: 'shortOffset',
+      });
+      const parts = fmt.formatToParts(now);
+      const off = parts.find(p => p.type === 'timeZoneName')?.value || 'GMT+0';
+      const m = off.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+      if (!m) return 0;
+      const sign = m[1] === '+' ? 1 : -1;
+      return sign * (parseInt(m[2], 10) * 60 + (m[3] ? parseInt(m[3], 10) : 0));
+    } catch {
+      return 0;
+    }
+  })();
+
+  const [y, mo, d] = targetDateStr.split('-').map(Number);
+  // 00:00 local time = 00:00 UTC minus offset
+  const targetUtcMs = Date.UTC(y, mo - 1, d, 0, 0, 0) - offsetMin * 60 * 1000;
+  const diffMs = targetUtcMs - now.getTime();
+  if (diffMs <= 0) return '0小时';
+
+  const totalHours = Math.floor(diffMs / (60 * 60 * 1000));
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  if (days === 0) return `${hours}小时`;
+  return `${days}天${hours}小时`;
 }
 
 function getYesterdayDate(todayStr: string): string {
@@ -94,7 +134,8 @@ function getRevealTime(sessionKey: string): Date {
 export type SendPushFn = (
   deviceToken: string,
   actionType: string,
-  senderName: string
+  senderName: string,
+  extra?: Record<string, string>
 ) => Promise<boolean>;
 
 // Generate a random 4-digit pair code
@@ -905,9 +946,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   });
 
   // POST /api/capsules
-  router.post('/capsules', (req: Request, res: Response) => {
+  router.post('/capsules', async (req: Request, res: Response) => {
     const userId = req.userId!;
-    const { content, unlock_date } = req.body;
+    const { content, unlock_date, visibility } = req.body;
 
     if (!content || typeof content !== 'string' || !content.trim()) {
       return res.status(400).json({ error: 'content is required' });
@@ -918,6 +959,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!unlock_date || typeof unlock_date !== 'string') {
       return res.status(400).json({ error: 'unlock_date is required' });
     }
+    const vis: 'self' | 'partner' = visibility === 'self' ? 'self' : 'partner';
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -933,7 +975,18 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Maximum 50 pending capsules' });
     }
 
-    const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date);
+    const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date, vis);
+
+    // Notify partner only when this capsule is meant for them. Body includes a
+    // day+hour countdown so the partner knows when to expect it.
+    if (vis === 'partner') {
+      const partner = dbOps.getUser(user.partner_id);
+      if (partner?.device_token) {
+        const countdown = formatDayHourCountdown(unlock_date, partner.timezone);
+        await pushFn(partner.device_token, 'capsule_buried', user.name, { countdown });
+      }
+    }
+
     res.json({ id: capsule.id, unlock_date: capsule.unlock_date, created_at: capsule.created_at });
   });
 
@@ -945,15 +998,20 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user.partner_id) return res.json({ capsules: [] });
 
     const userToday = getLocalDate(user.timezone);
-    const capsules = dbOps.getCapsules(userId, user.partner_id).map(c => ({
-      id: c.id,
-      author: c.user_id === userId ? 'me' : 'partner',
-      content: c.opened_at ? c.content : null,
-      unlock_date: c.unlock_date,
-      is_unlockable: c.unlock_date <= userToday && !c.opened_at,
-      opened_at: c.opened_at,
-      created_at: c.created_at,
-    }));
+    // 'self' capsules are private to the author. 'partner' (default) capsules
+    // are visible to both — the recipient gets the surprise + countdown push.
+    const capsules = dbOps.getCapsules(userId, user.partner_id)
+      .filter(c => c.visibility !== 'self' || c.user_id === userId)
+      .map(c => ({
+        id: c.id,
+        author: c.user_id === userId ? 'me' : 'partner',
+        content: c.opened_at ? c.content : null,
+        unlock_date: c.unlock_date,
+        is_unlockable: c.unlock_date <= userToday && !c.opened_at,
+        opened_at: c.opened_at,
+        visibility: c.visibility,
+        created_at: c.created_at,
+      }));
 
     res.json({ capsules });
   });

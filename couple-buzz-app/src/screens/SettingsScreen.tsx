@@ -45,9 +45,12 @@ export default function SettingsScreen() {
   const [name, setName] = useState('');
   const [timezone, setTimezone] = useState('');
   const [partnerTimezone, setPartnerTimezone] = useState('');
+  const [partnerRemark, setPartnerRemark] = useState('');
   const [originalName, setOriginalName] = useState('');
   const [originalTimezone, setOriginalTimezone] = useState('');
   const [originalPartnerTz, setOriginalPartnerTz] = useState('');
+  const [originalPartnerRemark, setOriginalPartnerRemark] = useState('');
+  const [savingRemark, setSavingRemark] = useState(false);
   const [saving, setSaving] = useState(false);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
   const [userId, setUserId] = useState('');
@@ -71,9 +74,12 @@ export default function SettingsScreen() {
       setName(status.name);
       setTimezone(status.timezone);
       setPartnerTimezone(status.partner_timezone);
+      setPartnerRemark(status.partner_remark || '');
       setOriginalName(status.name);
       setOriginalTimezone(status.timezone);
       setOriginalPartnerTz(status.partner_timezone);
+      setOriginalPartnerRemark(status.partner_remark || '');
+      await storage.setPartnerRemark(status.partner_remark || '');
       if (status.partner_id) {
         setPartnerId(status.partner_id);
         await storage.setPartnerId(status.partner_id);
@@ -81,6 +87,11 @@ export default function SettingsScreen() {
     } catch {
       const localName = await storage.getUserName();
       if (localName) setName(localName);
+      const cachedRemark = await storage.getPartnerRemark();
+      if (cachedRemark) {
+        setPartnerRemark(cachedRemark);
+        setOriginalPartnerRemark(cachedRemark);
+      }
       const cachedPid = await storage.getPartnerId();
       if (cachedPid) setPartnerId(cachedPid);
     }
@@ -124,11 +135,11 @@ export default function SettingsScreen() {
 
     setSaving(true);
     try {
-      const currentRemark = await storage.getPartnerRemark() || '';
-      const result = await api.updateProfile(trimmed, timezone, partnerTimezone, currentRemark);
+      const result = await api.updateProfile(trimmed, timezone, partnerTimezone, partnerRemark);
       await storage.setUserName(result.name);
       await storage.setTimezone(result.timezone);
       await storage.setPartnerTimezone(result.partner_timezone);
+      await storage.setPartnerRemark(result.partner_remark);
       setOriginalName(result.name);
       setOriginalTimezone(result.timezone);
       setOriginalPartnerTz(result.partner_timezone);
@@ -140,6 +151,21 @@ export default function SettingsScreen() {
       Alert.alert('保存失败', error.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveRemark = async () => {
+    setSavingRemark(true);
+    try {
+      const result = await api.updateProfile(name.trim() || originalName, timezone, partnerTimezone, partnerRemark.trim());
+      await storage.setPartnerRemark(result.partner_remark);
+      setPartnerRemark(result.partner_remark);
+      setOriginalPartnerRemark(result.partner_remark);
+      Alert.alert('', '备注已保存');
+    } catch (error: any) {
+      Alert.alert('保存失败', error.message);
+    } finally {
+      setSavingRemark(false);
     }
   };
 
@@ -339,6 +365,32 @@ export default function SettingsScreen() {
           <Text style={styles.addDateButtonText}>+ 添加纪念日</Text>
         </TouchableOpacity>
       )}
+
+      {partnerId ? (
+        <>
+          <Text style={[styles.sectionTitle, { marginTop: 40 }]}>对 ta 的备注</Text>
+          <TextInput
+            style={styles.input}
+            value={partnerRemark}
+            onChangeText={setPartnerRemark}
+            placeholder="给 ta 起个昵称（仅自己可见）"
+            placeholderTextColor={COLORS.textLight}
+            maxLength={20}
+          />
+          <TouchableOpacity
+            style={[
+              styles.remarkSaveBtn,
+              (partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark) && styles.saveButtonDisabled,
+            ]}
+            onPress={handleSaveRemark}
+            disabled={partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark}
+          >
+            <Text style={styles.remarkSaveText}>
+              {savingRemark ? '保存中...' : '保存备注'}
+            </Text>
+          </TouchableOpacity>
+        </>
+      ) : null}
 
       <Modal visible={modalTarget !== null} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
@@ -702,5 +754,18 @@ const styles = StyleSheet.create({
   addDateButtonText: {
     fontSize: 15,
     color: COLORS.textLight,
+  },
+  remarkSaveBtn: {
+    height: 44,
+    backgroundColor: COLORS.kiss,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  remarkSaveText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.white,
   },
 });

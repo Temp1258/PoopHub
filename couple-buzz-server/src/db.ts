@@ -90,6 +90,7 @@ export interface TimeCapsule {
   content: string;
   unlock_date: string;
   opened_at: string | null;
+  visibility: 'self' | 'partner';
   created_at: string;
 }
 
@@ -165,7 +166,7 @@ export interface DbOps {
     dailyQuestionDays: number; ritualMorningDays: number; ritualEveningDays: number;
   };
   // Time Capsules
-  createCapsule(userId: string, partnerId: string, content: string, unlockDate: string): TimeCapsule;
+  createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, visibility: 'self' | 'partner'): TimeCapsule;
   getCapsules(userId: string, partnerId: string): TimeCapsule[];
   openCapsule(id: number): boolean;
   getUnlockableCapsules(today: string): TimeCapsule[];
@@ -288,6 +289,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       content TEXT NOT NULL,
       unlock_date TEXT NOT NULL,
       opened_at DATETIME DEFAULT NULL,
+      visibility TEXT NOT NULL DEFAULT 'partner',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -387,6 +389,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (mailboxCols.length > 0 && !mailboxCols.some((c) => c.name === 'locked')) {
     db.exec('ALTER TABLE mailbox ADD COLUMN locked INTEGER NOT NULL DEFAULT 0');
     db.exec('UPDATE mailbox SET locked = 1');
+  }
+
+  // Migration: add visibility column to time_capsules. Pre-existing capsules
+  // default to 'partner' (the original product behavior was both-can-see).
+  const capsuleCols = db.pragma('table_info(time_capsules)') as { name: string }[];
+  if (capsuleCols.length > 0 && !capsuleCols.some((c) => c.name === 'visibility')) {
+    db.exec("ALTER TABLE time_capsules ADD COLUMN visibility TEXT NOT NULL DEFAULT 'partner'");
   }
 
   const insertUser = db.prepare(
@@ -596,7 +605,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
   // Time capsule statements
   const stmtInsertCapsule = db.prepare(
-    'INSERT INTO time_capsules (user_id, partner_id, content, unlock_date) VALUES (?, ?, ?, ?)'
+    'INSERT INTO time_capsules (user_id, partner_id, content, unlock_date, visibility) VALUES (?, ?, ?, ?, ?)'
   );
   const stmtGetCapsuleById = db.prepare('SELECT * FROM time_capsules WHERE id = ?');
   const stmtGetCapsules = db.prepare(
@@ -918,8 +927,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     // Time Capsules
-    createCapsule(userId: string, partnerId: string, content: string, unlockDate: string): TimeCapsule {
-      const result = stmtInsertCapsule.run(userId, partnerId, content, unlockDate);
+    createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, visibility: 'self' | 'partner'): TimeCapsule {
+      const result = stmtInsertCapsule.run(userId, partnerId, content, unlockDate, visibility);
       return stmtGetCapsuleById.get(result.lastInsertRowid) as TimeCapsule;
     },
 

@@ -43,6 +43,12 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   work: { title: '💻 工作', body: '{name} 在工作' },
   slap: { title: '👋 打你', body: '{name} 打了你一巴掌！' },
   ping: { title: '🛎️ Ping', body: '{name} 按了一下铃！' },
+  call_wife: { title: '👰 召唤老婆', body: '{name} 在召唤老婆～' },
+  call_husband: { title: '🤵 召唤老公', body: '{name} 在召唤老公～' },
+  call_baby: { title: '🍼 召唤宝贝', body: '{name} 在召唤宝贝～' },
+  gym: { title: '🏋️ 健身', body: '{name} 在健身，今天也要变强！' },
+  milk_tea: { title: '🧋 喝奶茶', body: '{name} 在喝奶茶，馋不馋？' },
+  drink: { title: '🥤 喝饮料', body: '{name} 在喝饮料，要不要来一杯？' },
   unpair: { title: '💔 已解除配对', body: '{name} 解除了配对' },
   daily_answer: { title: '📝 每日问答', body: '{name} 回答了今天的问题，在等你的答案' },
   daily_both: { title: '📝 每日问答', body: '你们都回答了！快来看看对方的答案' },
@@ -57,6 +63,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   mailbox_reveal: { title: '📮 树洞信箱', body: '本场的信已揭晓！快来看看 💌' },
   weekly_report: { title: '📊 恋爱周报', body: '本周恋爱报告来了！' },
   capsule_unlock: { title: '💌 时间胶囊', body: '你有一封来自过去的信～' },
+  capsule_buried: { title: '💌 时间胶囊', body: '{name} 埋下了一个时间胶囊，{countdown} 后开启' },
   bucket_new: { title: '📝 新心愿', body: '{name} 添加了一个新心愿' },
   bucket_complete: { title: '✅ 心愿达成', body: '{name} 完成了一个心愿！' },
   date_new: { title: '📅 新纪念日', body: '{name} 添加了一个新纪念日' },
@@ -98,7 +105,8 @@ export function initAPNs(dbOps?: DbOps): void {
 export async function sendPush(
   deviceToken: string,
   actionType: string,
-  senderName: string
+  senderName: string,
+  extra?: Record<string, string>
 ): Promise<boolean> {
   if (!provider) {
     console.error('[APNs] Provider not initialized');
@@ -111,15 +119,22 @@ export async function sendPush(
     return false;
   }
 
+  let body = message.body.replace('{name}', senderName);
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) {
+      body = body.replace(`{${key}}`, value);
+    }
+  }
+
   const notification = new apn.Notification();
   notification.alert = {
     title: message.title,
-    body: message.body.replace('{name}', senderName),
+    body,
   };
   notification.sound = 'default';
   notification.badge = 1;
   notification.topic = process.env.APN_BUNDLE_ID || 'com.couplebuzz.app';
-  notification.payload = { actionType, senderName };
+  notification.payload = { actionType, senderName, ...(extra || {}) };
 
   try {
     const result = await provider.send(notification, deviceToken);

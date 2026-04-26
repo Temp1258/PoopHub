@@ -14,12 +14,15 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 
+type Visibility = 'self' | 'partner';
+
 const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [capsules, setCapsules] = useState<CapsuleItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [content, setContent] = useState('');
   const [unlockDate, setUnlockDate] = useState<Date | null>(null);
+  const [visibility, setVisibility] = useState<Visibility>('partner');
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -57,9 +60,10 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
     const dateStr = formatDate(unlockDate);
     setSubmitting(true);
     try {
-      await api.createCapsule(content.trim(), dateStr);
+      await api.createCapsule(content.trim(), dateStr, visibility);
       setContent('');
       setUnlockDate(null);
+      setVisibility('partner');
       setShowCreate(false);
       setShowDatePicker(false);
       await load();
@@ -67,6 +71,20 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
       Alert.alert('', e.message);
     }
     setSubmitting(false);
+  };
+
+  const formatCountdown = (dateStr: string): string => {
+    // Same day+hour granularity as the backend's push body so the UI matches
+    // what the partner sees in their notification.
+    const [y, mo, d] = dateStr.split('-').map(Number);
+    const target = new Date(y, mo - 1, d, 0, 0, 0);
+    const diffMs = target.getTime() - Date.now();
+    if (diffMs <= 0) return '已可开启';
+    const totalHours = Math.floor(diffMs / (60 * 60 * 1000));
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    if (days === 0) return `${hours}小时后`;
+    return `${days}天${hours}小时后`;
   };
 
   const handleOpen = async (capsule: CapsuleItem) => {
@@ -91,7 +109,6 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
   const unlockable = capsules.filter(c => c.is_unlockable);
   const opened = capsules.filter(c => c.opened_at);
   const nearest = waiting.length > 0 ? waiting[0] : null;
-  const daysUntil = nearest ? Math.ceil((new Date(nearest.unlock_date).getTime() - Date.now()) / 86400000) : 0;
 
   return (
     <View style={styles.card}>
@@ -113,9 +130,28 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
           )}
 
           {waiting.length > 0 && (
-            <Text style={styles.waitingText}>
-              {waiting.length} 个胶囊等待中{nearest ? ` · 最近: ${daysUntil}天后` : ''}
-            </Text>
+            <View style={styles.waitingBlock}>
+              <Text style={styles.waitingText}>
+                {waiting.length} 个胶囊等待中{nearest ? ` · 最近: ${formatCountdown(nearest.unlock_date)}` : ''}
+              </Text>
+              {waiting.map(c => (
+                <View key={c.id} style={styles.waitingItem}>
+                  <Text style={styles.waitingItemEmoji}>
+                    {c.author === 'me' ? (c.visibility === 'self' ? '🔒' : '💌') : '🎁'}
+                  </Text>
+                  <View style={styles.waitingItemBody}>
+                    <Text style={styles.waitingItemTitle}>
+                      {c.author === 'me'
+                        ? (c.visibility === 'self' ? '给自己的信' : '给 ta 的信')
+                        : 'ta 埋下的信'}
+                    </Text>
+                    <Text style={styles.waitingItemSub}>
+                      {c.unlock_date} · {formatCountdown(c.unlock_date)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
           )}
 
           {expanded && opened.length > 0 && (
@@ -149,6 +185,27 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
             maxLength={1000}
             multiline
           />
+          <View style={styles.visRow}>
+            <TouchableOpacity
+              style={[styles.visChip, visibility === 'self' && styles.visChipActive]}
+              onPress={() => setVisibility('self')}
+            >
+              <Text style={[styles.visEmoji]}>🔒</Text>
+              <Text style={[styles.visLabel, visibility === 'self' && styles.visLabelActive]}>给自己看</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.visChip, visibility === 'partner' && styles.visChipActive]}
+              onPress={() => setVisibility('partner')}
+            >
+              <Text style={[styles.visEmoji]}>💌</Text>
+              <Text style={[styles.visLabel, visibility === 'partner' && styles.visLabelActive]}>给对方看</Text>
+            </TouchableOpacity>
+          </View>
+          {visibility === 'partner' && (
+            <Text style={styles.visHint}>
+              ta 会立刻收到提醒：你埋下了一个胶囊 + 开启倒计时
+            </Text>
+          )}
           <TouchableOpacity
             style={styles.dateButton}
             onPress={() => setShowDatePicker(true)}
@@ -174,6 +231,7 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
               setShowDatePicker(false);
               setUnlockDate(null);
               setContent('');
+              setVisibility('partner');
             }}>
               <Text style={styles.cancelText}>取消</Text>
             </TouchableOpacity>
@@ -231,7 +289,49 @@ const styles = StyleSheet.create({
   },
   unlockableEmoji: { fontSize: 24 },
   unlockableText: { fontSize: 15, fontWeight: '500', color: COLORS.kiss },
+  waitingBlock: { gap: 6 },
   waitingText: { fontSize: 13, color: COLORS.textLight, textAlign: 'center', paddingVertical: 8 },
+  waitingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  waitingItemEmoji: { fontSize: 20 },
+  waitingItemBody: { flex: 1 },
+  waitingItemTitle: { fontSize: 14, color: COLORS.text, fontWeight: '500' },
+  waitingItemSub: { fontSize: 12, color: COLORS.textLight, marginTop: 2 },
+  visRow: { flexDirection: 'row', gap: 8 },
+  visChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+  },
+  visChipActive: {
+    borderColor: COLORS.kiss,
+    backgroundColor: '#FFF0F3',
+  },
+  visEmoji: { fontSize: 16 },
+  visLabel: { fontSize: 14, color: COLORS.textLight, fontWeight: '500' },
+  visLabelActive: { color: COLORS.kiss, fontWeight: '600' },
+  visHint: {
+    fontSize: 12,
+    color: COLORS.kiss,
+    textAlign: 'center',
+    marginTop: -4,
+  },
   openedItem: {
     backgroundColor: COLORS.background,
     borderRadius: 10,

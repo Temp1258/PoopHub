@@ -20,12 +20,15 @@ const CATEGORIES = [
   { value: 'other', label: '其他' },
 ];
 
-const BucketListCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
+interface Props {
+  onCelebrate?: () => void;
+}
+
+const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onCelebrate }, ref) => {
   const [items, setItems] = useState<BucketItemResponse[]>([]);
   const [total, setTotal] = useState(0);
   const [completedCount, setCompletedCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newCategory, setNewCategory] = useState<string | null>(null);
@@ -58,17 +61,39 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref)
     }
   };
 
-  const handleToggle = async (item: BucketItemResponse) => {
+  const completeWithCelebration = async (item: BucketItemResponse) => {
     try {
-      if (item.completed) {
-        await api.uncompleteBucketItem(item.id);
-      } else {
-        await api.completeBucketItem(item.id);
-      }
+      await api.completeBucketItem(item.id);
       await load();
+      onCelebrate?.();
     } catch (e: any) {
       Alert.alert('', e.message || '操作失败');
     }
+  };
+
+  const handleToggle = (item: BucketItemResponse) => {
+    if (item.completed) {
+      Alert.alert('取消完成？', `把"${item.title}"标记为未完成？`, [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '取消完成',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.uncompleteBucketItem(item.id);
+              await load();
+            } catch (e: any) {
+              Alert.alert('', e.message || '操作失败');
+            }
+          },
+        },
+      ]);
+      return;
+    }
+    Alert.alert('完成心愿？', `确定完成"${item.title}"？`, [
+      { text: '取消', style: 'cancel' },
+      { text: '完成 🎉', onPress: () => completeWithCelebration(item) },
+    ]);
   };
 
   const handleDelete = (item: BucketItemResponse) => {
@@ -94,81 +119,73 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref)
 
       <Text style={styles.summary}>{completedCount}/{total} 已完成</Text>
 
-      {expanded && (
-        <View>
-          <View style={styles.filterRow}>
-            {CATEGORIES.map(c => (
+      <View style={styles.filterRow}>
+        {CATEGORIES.map(c => (
+          <TouchableOpacity
+            key={c.label}
+            style={[styles.filterChip, filter === c.value && styles.filterChipActive]}
+            onPress={() => setFilter(c.value)}
+          >
+            <Text style={[styles.filterText, filter === c.value && styles.filterTextActive]}>{c.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {filtered.map(item => (
+        <TouchableOpacity
+          key={item.id}
+          style={styles.itemRow}
+          onPress={() => handleToggle(item)}
+          onLongPress={() => handleDelete(item)}
+        >
+          <Text style={styles.checkbox}>{item.completed ? '✅' : '⬜'}</Text>
+          <View style={styles.itemInfo}>
+            <Text style={[styles.itemTitle, !!item.completed && styles.itemTitleDone]}>{item.title}</Text>
+            {item.category && <Text style={styles.itemCategory}>{item.category}</Text>}
+          </View>
+        </TouchableOpacity>
+      ))}
+
+      {showAdd ? (
+        <View style={styles.addForm}>
+          <TextInput
+            style={styles.input}
+            value={newTitle}
+            onChangeText={setNewTitle}
+            placeholder="心愿名称"
+            placeholderTextColor={COLORS.textLight}
+            maxLength={50}
+            autoFocus
+          />
+          <View style={styles.catRow}>
+            {CATEGORIES.slice(1).map(c => (
               <TouchableOpacity
-                key={c.label}
-                style={[styles.filterChip, filter === c.value && styles.filterChipActive]}
-                onPress={() => setFilter(c.value)}
+                key={c.value}
+                style={[styles.catChip, newCategory === c.value && styles.catChipActive]}
+                onPress={() => setNewCategory(newCategory === c.value ? null : c.value)}
               >
-                <Text style={[styles.filterText, filter === c.value && styles.filterTextActive]}>{c.label}</Text>
+                <Text style={[styles.catText, newCategory === c.value && styles.catTextActive]}>{c.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
-
-          {filtered.map(item => (
+          <View style={styles.addActions}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAdd(false)}>
+              <Text style={styles.cancelText}>取消</Text>
+            </TouchableOpacity>
             <TouchableOpacity
-              key={item.id}
-              style={styles.itemRow}
-              onPress={() => handleToggle(item)}
-              onLongPress={() => handleDelete(item)}
+              style={[styles.submitBtn, !newTitle.trim() && styles.submitDisabled]}
+              onPress={handleAdd}
+              disabled={!newTitle.trim()}
             >
-              <Text style={styles.checkbox}>{item.completed ? '✅' : '⬜'}</Text>
-              <View style={styles.itemInfo}>
-                <Text style={[styles.itemTitle, !!item.completed && styles.itemTitleDone]}>{item.title}</Text>
-                {item.category && <Text style={styles.itemCategory}>{item.category}</Text>}
-              </View>
+              <Text style={styles.submitText}>添加</Text>
             </TouchableOpacity>
-          ))}
-
-          {showAdd ? (
-            <View style={styles.addForm}>
-              <TextInput
-                style={styles.input}
-                value={newTitle}
-                onChangeText={setNewTitle}
-                placeholder="心愿名称"
-                placeholderTextColor={COLORS.textLight}
-                maxLength={50}
-                autoFocus
-              />
-              <View style={styles.catRow}>
-                {CATEGORIES.slice(1).map(c => (
-                  <TouchableOpacity
-                    key={c.value}
-                    style={[styles.catChip, newCategory === c.value && styles.catChipActive]}
-                    onPress={() => setNewCategory(newCategory === c.value ? null : c.value)}
-                  >
-                    <Text style={[styles.catText, newCategory === c.value && styles.catTextActive]}>{c.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <View style={styles.addActions}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAdd(false)}>
-                  <Text style={styles.cancelText}>取消</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.submitBtn, !newTitle.trim() && styles.submitDisabled]}
-                  onPress={handleAdd}
-                  disabled={!newTitle.trim()}
-                >
-                  <Text style={styles.submitText}>添加</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : (
-            <TouchableOpacity style={styles.addLink} onPress={() => setShowAdd(true)}>
-              <Text style={styles.addLinkText}>+ 添加心愿</Text>
-            </TouchableOpacity>
-          )}
+          </View>
         </View>
+      ) : (
+        <TouchableOpacity style={styles.addLink} onPress={() => setShowAdd(true)}>
+          <Text style={styles.addLinkText}>+ 添加心愿</Text>
+        </TouchableOpacity>
       )}
-
-      <TouchableOpacity style={styles.toggleBtn} onPress={() => setExpanded(!expanded)}>
-        <Text style={styles.toggleText}>{expanded ? '收起' : '查看全部'}</Text>
-      </TouchableOpacity>
     </View>
   );
 });
@@ -205,6 +222,4 @@ const styles = StyleSheet.create({
   submitText: { fontSize: 14, fontWeight: '600', color: COLORS.white },
   addLink: { height: 40, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed', borderRadius: 10, marginTop: 8 },
   addLinkText: { fontSize: 13, color: COLORS.textLight },
-  toggleBtn: { alignItems: 'center', marginTop: 8 },
-  toggleText: { fontSize: 13, color: COLORS.textLight },
 });

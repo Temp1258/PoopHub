@@ -27,6 +27,10 @@ import ReactionPicker from '../components/ReactionPicker';
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 const TOOLBAR_HEIGHT = 56;
 const PANEL_HEIGHT = SCREEN_HEIGHT * 0.5 - TOOLBAR_HEIGHT;
+// Panel sits above the toolbar (`bottom: TOOLBAR_HEIGHT`). To fully hide it
+// off-screen we need to translate by panel height + toolbar height; otherwise
+// the dragHandle and the first row of the emoji grid peek out above the pill.
+const PANEL_HIDDEN = PANEL_HEIGHT + TOOLBAR_HEIGHT;
 const COLUMNS = 5;
 const PANEL_PADDING_X = 12;
 const COL_GAP = 8;
@@ -168,13 +172,13 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
 
   // Bottom emoji panel
   const [panelOpen, setPanelOpen] = useState(false);
-  const panY = useRef(new Animated.Value(PANEL_HEIGHT)).current;
+  const panY = useRef(new Animated.Value(PANEL_HIDDEN)).current;
   const scrollYRef = useRef(0);
   const panelOpenRef = useRef(false);
   panelOpenRef.current = panelOpen;
 
   const closePanel = useCallback(() => {
-    Animated.spring(panY, { toValue: PANEL_HEIGHT, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
+    Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
       setPanelOpen(false);
     });
   }, [panY]);
@@ -200,17 +204,17 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       },
       onPanResponderMove: (_, g) => {
         if (g.dy < 0) {
-          const progress = Math.min(-g.dy, PANEL_HEIGHT);
-          panY.setValue(PANEL_HEIGHT - progress);
+          const progress = Math.min(-g.dy, PANEL_HIDDEN);
+          panY.setValue(PANEL_HIDDEN - progress);
         } else {
-          panY.setValue(PANEL_HEIGHT);
+          panY.setValue(PANEL_HIDDEN);
         }
       },
       onPanResponderRelease: (_, g) => {
         if (g.dy < -50 || g.vy < -0.5) {
           Animated.spring(panY, { toValue: 0, friction: 9, tension: 80, useNativeDriver: true }).start();
         } else {
-          Animated.spring(panY, { toValue: PANEL_HEIGHT, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
+          Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
             setPanelOpen(false);
           });
         }
@@ -234,7 +238,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       },
       onPanResponderRelease: (_, g) => {
         if (g.dy > 80 || g.vy > 0.5) {
-          Animated.spring(panY, { toValue: PANEL_HEIGHT, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
+          Animated.spring(panY, { toValue: PANEL_HIDDEN, friction: 9, tension: 80, useNativeDriver: true }).start(() => {
             setPanelOpen(false);
           });
         } else {
