@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, ScrollView, StyleSheet, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import RitualButton from '../components/RitualButton';
@@ -28,24 +28,27 @@ export default function DailyScreen() {
     }
   }, []);
 
+  // Outer View pushes the ScrollView (and therefore the refresh spinner)
+  // below the safe area; spinner ends up roughly between screen top and the
+  // first card. Cards no longer need their own paddingTop.
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor={COLORS.kiss}
-          progressViewOffset={60}
-        />
-      }
-    >
-      <RitualButton ref={ritualRef} />
-      <DailyQuestionCard ref={questionRef} />
-      <DailySnapCard ref={snapRef} />
-    </ScrollView>
+    <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={COLORS.kiss}
+          />
+        }
+      >
+        <RitualButton ref={ritualRef} />
+        <DailyQuestionCard ref={questionRef} />
+        <DailySnapCard ref={snapRef} />
+      </ScrollView>
+    </View>
   );
 }
 

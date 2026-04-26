@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, ScrollView, StyleSheet, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import MailboxCard from '../components/MailboxCard';
@@ -29,23 +29,23 @@ export default function MailboxScreen() {
   }, []);
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor={COLORS.kiss}
-          progressViewOffset={60}
-        />
-      }
-    >
-      <MailboxCard ref={mailboxRef} />
-      <TimeCapsuleCard ref={capsuleRef} />
-      <BucketListCard ref={bucketRef} />
-    </ScrollView>
+    <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={COLORS.kiss}
+          />
+        }
+      >
+        <MailboxCard ref={mailboxRef} />
+        <TimeCapsuleCard ref={capsuleRef} />
+        <BucketListCard ref={bucketRef} />
+      </ScrollView>
+    </View>
   );
 }
 

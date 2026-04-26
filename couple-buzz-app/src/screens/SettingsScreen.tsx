@@ -189,15 +189,14 @@ export default function SettingsScreen() {
   const activeValue = modalTarget === 'my' ? timezone : partnerTimezone;
 
   return (
+    <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
     <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
+      contentContainerStyle={styles.content}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
           onRefresh={onRefresh}
           tintColor={COLORS.kiss}
-          progressViewOffset={60}
         />
       }
     >
@@ -375,6 +374,7 @@ export default function SettingsScreen() {
         </View>
       </Modal>
     </ScrollView>
+    </View>
   );
 }
 
