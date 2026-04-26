@@ -14,6 +14,7 @@ import {
   hashPassword,
   verifyPassword,
   generateUserId,
+  signImagePath,
 } from './auth';
 
 // Whitelist of action types a client is allowed to send via POST /action and
@@ -293,6 +294,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     if (partner.id === userId) {
       return res.status(400).json({ error: 'Cannot pair with yourself' });
+    }
+
+    // Reject pairing with someone who's already paired — otherwise we'd silently
+    // overwrite their existing partnership and orphan the original spouse's pointer.
+    if (partner.partner_id) {
+      return res.status(400).json({ error: 'Partner is already paired with someone else' });
     }
 
     dbOps.pairUsers(userId, partner.id);
@@ -1147,8 +1154,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       snap_date: today,
       my_snapped: !!mySnap,
       partner_snapped: !!partnerSnap,
-      my_photo: mySnap?.photo_path ? `/uploads/${mySnap.photo_path}` : null,
-      partner_photo: partnerSnap?.photo_path ? `/uploads/${partnerSnap.photo_path}` : null,
+      my_photo: mySnap?.photo_path ? signImagePath(mySnap.photo_path) : null,
+      partner_photo: partnerSnap?.photo_path ? signImagePath(partnerSnap.photo_path) : null,
     });
   });
 
@@ -1167,8 +1174,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const snaps = dbOps.getSnaps(userId, user.partner_id, month).map(s => ({
       date: s.snap_date,
-      my_photo: s.user_photo ? `/uploads/${s.user_photo}` : null,
-      partner_photo: s.partner_photo ? `/uploads/${s.partner_photo}` : null,
+      my_photo: s.user_photo ? signImagePath(s.user_photo) : null,
+      partner_photo: s.partner_photo ? signImagePath(s.partner_photo) : null,
       both_snapped: !!s.user_photo && !!s.partner_photo,
     }));
 

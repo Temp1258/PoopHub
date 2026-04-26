@@ -69,6 +69,31 @@ export function generateUserId(): string {
   return id;
 }
 
+// Image URLs use HMAC-signed query params instead of an Authorization header,
+// because <Image source={{ uri }}> in React Native doesn't carry headers by
+// default. Only callers who already passed `/api/snaps/*` auth get the URL,
+// and the signature expires in an hour. Path traversal is blocked at the
+// route handler.
+const IMAGE_URL_TTL_MS = 60 * 60 * 1000;
+
+export function signImagePath(photoPath: string): string {
+  const expires = Date.now() + IMAGE_URL_TTL_MS;
+  const payload = `${photoPath}/${expires}`;
+  const sig = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
+  return `/uploads/${photoPath}?expires=${expires}&sig=${sig}`;
+}
+
+export function verifyImageSig(photoPath: string, expires: string, sig: string): boolean {
+  const expiresNum = Number(expires);
+  if (!Number.isFinite(expiresNum) || Date.now() > expiresNum) return false;
+  const payload = `${photoPath}/${expiresNum}`;
+  const expected = crypto.createHmac('sha256', JWT_SECRET).update(payload).digest('hex');
+  const actual = Buffer.from(sig, 'hex');
+  const expectedBuf = Buffer.from(expected, 'hex');
+  if (actual.length !== expectedBuf.length) return false;
+  return crypto.timingSafeEqual(actual, expectedBuf);
+}
+
 export function createAuthMiddleware(dbOps: DbOps) {
   return (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;

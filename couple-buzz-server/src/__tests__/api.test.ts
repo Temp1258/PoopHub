@@ -270,6 +270,19 @@ describe('POST /api/pair', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Already paired');
   });
+
+  it('should return 400 when partner is already paired with someone else', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);  // alice paired with bob
+    const charlie = await registerUser(app, 'Charlie');
+
+    const res = await request(app)
+      .post('/api/pair')
+      .set('Authorization', `Bearer ${charlie.access_token}`)
+      .send({ partner_id: alice.user_id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Partner is already paired with someone else');
+  });
 });
 
 describe('POST /api/action', () => {

@@ -4,6 +4,7 @@ dotenv.config();
 import { createServer } from 'http';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import routes from './routes';
@@ -12,6 +13,7 @@ import { setupSocket } from './socket';
 import { dbOps } from './db';
 import { startScheduler } from './scheduler';
 import { sendPush } from './push';
+import { verifyImageSig } from './auth';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -64,8 +66,34 @@ app.use('/api/pair', pairLimiter);
 app.use('/api/auth', authLimiter);
 app.use('/api', apiLimiter);
 
-// Static files for snap uploads
-app.use('/uploads', express.static(path.join(__dirname, '..', 'data', 'snaps')));
+// Snap photos require an HMAC-signed URL (issued by /api/snaps/*) to fetch.
+// userId / filename go in the path; expires + sig in the query string.
+const SNAPS_DIR = path.join(__dirname, '..', 'data', 'snaps');
+app.get('/uploads/:userId/:filename', (req, res) => {
+  const { userId, filename } = req.params;
+  const { expires, sig } = req.query;
+
+  // Strict shape checks — also blocks path traversal via .. or slashes.
+  if (!/^[A-Z0-9]{6}$/.test(userId)) {
+    return res.status(400).json({ error: 'Invalid userId' });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}\.jpg$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  if (typeof expires !== 'string' || typeof sig !== 'string') {
+    return res.status(400).json({ error: 'Missing signature' });
+  }
+
+  if (!verifyImageSig(`${userId}/${filename}`, expires, sig)) {
+    return res.status(403).json({ error: 'Invalid or expired signature' });
+  }
+
+  const filePath = path.join(SNAPS_DIR, userId, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Photo not found' });
+  }
+  res.sendFile(filePath);
+});
 
 // Routes (includes both public and protected, with auth middleware)
 app.use('/api', routes);
