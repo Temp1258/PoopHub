@@ -193,11 +193,14 @@ export default function SettingsScreen() {
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.kiss} />
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          tintColor={COLORS.kiss}
+          progressViewOffset={60}
+        />
       }
     >
-      <Text style={styles.screenTitle}>数据</Text>
-
       {userId ? (
         <View style={styles.coupleIdRow}>
           <View style={styles.idCard}>
@@ -383,13 +386,6 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: 20,
     paddingBottom: 40,
-  },
-  screenTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: 32,
-    textAlign: 'center',
   },
   coupleIdRow: {
     flexDirection: 'row',

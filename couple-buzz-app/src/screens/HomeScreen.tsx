@@ -86,7 +86,6 @@ export default function HomeScreen({ partnerName, streak }: Props) {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <Text style={styles.title}>心心相印</Text>
         {(streak > 0 || pinnedDate) && (
           <View style={styles.badgeRow}>
             {streak > 0 && (
@@ -143,11 +142,6 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     paddingHorizontal: 20,
     alignItems: 'center',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: COLORS.text,
   },
   badgeRow: {
     flexDirection: 'row',

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Text, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { ScrollView, StyleSheet, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import RitualButton from '../components/RitualButton';
@@ -34,10 +34,14 @@ export default function DailyScreen() {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12 }]}
       showsVerticalScrollIndicator={false}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.kiss} />
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          tintColor={COLORS.kiss}
+          progressViewOffset={60}
+        />
       }
     >
-      <Text style={styles.title}>每日</Text>
       <RitualButton ref={ritualRef} />
       <DailyQuestionCard ref={questionRef} />
       <DailySnapCard ref={snapRef} />
@@ -54,11 +58,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 40,
     gap: 16,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.text,
-    textAlign: 'center',
   },
 });
