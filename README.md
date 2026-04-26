@@ -142,7 +142,7 @@ npm run ios                 # 或 npm start 扫码
 
 ## 构建与部署
 
-**App 端**：使用 EAS Build（profile 定义在 `couple-buzz-app/eas.json`）。`development` / `preview` / `production` 三套 profile 均指向生产 API，便于真机测试。OTA 更新走 EAS Updates，`runtimeVersion` 跟随 `appVersion`。
+**App 端**：使用 EAS Build（profile 定义在 `couple-buzz-app/eas.json`）。`development` / `preview` 两套 profile 均指向生产 API；`preview` 用于真机 internal distribution，是日常发布通道。OTA 更新走 EAS Updates，`runtimeVersion` 跟随 `appVersion`，发布命令 `npm run ota:preview`。
 
 **Server 端**：自托管 Node.js 进程，SQLite 作为单机数据库。`scripts/backup.sh` 配合 cron 做每日备份（保留最近 30 份）。生产环境前端通常经由 HTTPS 反代（域名：`api.couple-buzz.com`）。
 

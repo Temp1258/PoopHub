@@ -20,14 +20,6 @@
         "API_URL": "https://api.couple-buzz.com:8443"
       },
       "node": "20.20.0"
-    },
-    "production": {
-      "autoIncrement": true,
-      "distribution": "internal",
-      "channel": "production",
-      "env": {
-        "API_URL": "https://api.couple-buzz.com:8443"
-      }
     }
   }
 }
