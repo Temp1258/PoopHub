@@ -19,6 +19,7 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import UsScreen from './src/screens/UsScreen';
 import MailboxScreen from './src/screens/MailboxScreen';
+import AnniversaryWishScreen from './src/screens/AnniversaryWishScreen';
 
 const Tab = createMaterialTopTabNavigator();
 
@@ -121,6 +122,14 @@ function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen
         options={{
           tabBarLabel: '信箱',
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📮</Text>,
+        }}
+      />
+      <Tab.Screen
+        name="Promises"
+        component={AnniversaryWishScreen}
+        options={{
+          tabBarLabel: '约定',
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🎀</Text>,
         }}
       />
       <Tab.Screen

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,13 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, BucketItemResponse } from '../services/api';
+import { storage } from '../utils/storage';
+
+// Brand colors per side: kiss-pink for the current user, soft blue for the
+// partner. Used as a 4px left bar + chip on each item so we can tell at a
+// glance who added a wish.
+const MINE_COLOR = COLORS.kiss;
+const PARTNER_COLOR = '#7AB8D6';
 
 const CATEGORIES = [
   { value: null, label: '全部' },
@@ -33,6 +40,11 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onC
   const [newTitle, setNewTitle] = useState('');
   const [newCategory, setNewCategory] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    storage.getUserId().then(setMyUserId);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -131,20 +143,28 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onC
         ))}
       </View>
 
-      {filtered.map(item => (
-        <TouchableOpacity
-          key={item.id}
-          style={styles.itemRow}
-          onPress={() => handleToggle(item)}
-          onLongPress={() => handleDelete(item)}
-        >
-          <Text style={styles.checkbox}>{item.completed ? '✅' : '⬜'}</Text>
-          <View style={styles.itemInfo}>
-            <Text style={[styles.itemTitle, !!item.completed && styles.itemTitleDone]}>{item.title}</Text>
-            {item.category && <Text style={styles.itemCategory}>{item.category}</Text>}
-          </View>
-        </TouchableOpacity>
-      ))}
+      {filtered.map(item => {
+        const mine = !!myUserId && item.created_by === myUserId;
+        const accent = mine ? MINE_COLOR : PARTNER_COLOR;
+        return (
+          <TouchableOpacity
+            key={item.id}
+            style={styles.itemRow}
+            onPress={() => handleToggle(item)}
+            onLongPress={() => handleDelete(item)}
+          >
+            <View style={[styles.accentBar, { backgroundColor: accent }]} />
+            <Text style={styles.checkbox}>{item.completed ? '✅' : '⬜'}</Text>
+            <View style={styles.itemInfo}>
+              <Text style={[styles.itemTitle, !!item.completed && styles.itemTitleDone]}>{item.title}</Text>
+              {item.category ? <Text style={styles.itemCategory}>{item.category}</Text> : null}
+            </View>
+            <View style={[styles.authorChip, { borderColor: accent }]}>
+              <Text style={[styles.authorChipText, { color: accent }]}>{mine ? '我' : 'ta'}</Text>
+            </View>
+          </TouchableOpacity>
+        );
+      })}
 
       {showAdd ? (
         <View style={styles.addForm}>
@@ -201,12 +221,21 @@ const styles = StyleSheet.create({
   filterChipActive: { backgroundColor: COLORS.kiss, borderColor: COLORS.kiss },
   filterText: { fontSize: 12, color: COLORS.textLight },
   filterTextActive: { color: COLORS.white, fontWeight: '600' },
-  itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
+  itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingLeft: 10, gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border, position: 'relative' },
+  accentBar: { position: 'absolute', left: 0, top: 6, bottom: 6, width: 4, borderRadius: 2 },
   checkbox: { fontSize: 18 },
   itemInfo: { flex: 1 },
   itemTitle: { fontSize: 15, color: COLORS.text },
   itemTitleDone: { textDecorationLine: 'line-through', color: COLORS.textLight },
   itemCategory: { fontSize: 11, color: COLORS.textLight, marginTop: 2 },
+  authorChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 1,
+    backgroundColor: COLORS.white,
+  },
+  authorChipText: { fontSize: 11, fontWeight: '700' },
   addForm: { marginTop: 12, gap: 8 },
   input: { backgroundColor: COLORS.background, borderRadius: 12, paddingHorizontal: 16, height: 44, fontSize: 16, color: COLORS.text, borderWidth: 1, borderColor: COLORS.border },
   catRow: { flexDirection: 'row', gap: 6 },

@@ -921,11 +921,16 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const phase = now >= revealAt ? 'revealed' : 'writing';
 
     const messages = dbOps.getMailboxMessages(sessionKey, userId, user.partner_id);
+    const mySealed = !!messages.mine && phase === 'writing';
 
     res.json({
       week_key: sessionKey,
       phase,
-      my_message: messages.mine?.content ?? null,
+      // Once written but not yet revealed, the letter is "in transit" — even
+      // the author cannot peek at their own content. Only on reveal does the
+      // server return both messages.
+      my_message: phase === 'revealed' ? (messages.mine?.content ?? null) : null,
+      my_sealed: mySealed,
       partner_message: phase === 'revealed' ? (messages.partner?.content ?? null) : null,
       partner_wrote: phase === 'revealed' ? !!messages.partner : undefined,
       reveal_at: revealAt.toISOString(),

@@ -212,7 +212,10 @@ export interface RitualResponse {
 export interface MailboxResponse {
   week_key: string;
   phase: 'writing' | 'revealed';
+  // In writing phase the server hides own content (sealed in transit). Use
+  // `my_sealed` to know whether the user already submitted this round.
   my_message: string | null;
+  my_sealed: boolean;
   partner_message: string | null;
   partner_wrote?: boolean;
   reveal_at: string;

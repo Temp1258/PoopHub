@@ -974,6 +974,10 @@ describe('Mailbox API', () => {
     expect(res.body.week_key).toBeDefined();
     expect(res.body.phase).toBeDefined();
     expect(res.body.reveal_at).toBeDefined();
+    // Before writing, my_sealed must be false so the UI knows whether to
+    // render the countdown banner.
+    expect(res.body.my_sealed).toBe(false);
+    expect(res.body.my_message).toBeNull();
   });
 
   it('should submit mailbox message', async () => {
@@ -994,11 +998,13 @@ describe('Mailbox API', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
 
-      // Verify it's stored
+      // Verify it's stored & sealed (in-transit: own content not returned)
       const getRes = await request(app)
         .get('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`);
-      expect(getRes.body.my_message).toBe('我想对你说...');
+      expect(getRes.body.my_message).toBeNull();
+      expect(getRes.body.my_sealed).toBe(true);
+      expect(getRes.body.can_edit).toBe(false);
     }
   });
 
@@ -1026,7 +1032,9 @@ describe('Mailbox API', () => {
       const getRes = await request(app)
         .get('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`);
-      expect(getRes.body.my_message).toBe('第一版');
+      // Sealed in writing phase — content not returned, only the sealed flag.
+      expect(getRes.body.my_message).toBeNull();
+      expect(getRes.body.my_sealed).toBe(true);
       expect(getRes.body.can_edit).toBe(false);
     }
   });
