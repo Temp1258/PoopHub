@@ -8,6 +8,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   Animated,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
@@ -41,11 +43,14 @@ interface LetterCard {
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
 
-// Carousel metrics — each card snaps to the vertical center of the scroll
-// area, with the card right above and below visible as peek.
+// Layout interval — drives snapping. Cards lay out at i*SNAP_INTERVAL apart.
 const CARD_HEIGHT = 220;
 const CARD_GAP = 16;
 const SNAP_INTERVAL = CARD_HEIGHT + CARD_GAP;
+
+// Visual stacking offset — how much each peek card sticks out beyond the
+// centered card. Smaller = tighter stack (more Apple Wallet-like).
+const STACK_OFFSET = 40;
 
 const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) => {
   const insets = useSafeAreaInsets();
@@ -53,7 +58,9 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
   const [cards, setCards] = useState<LetterCard[]>([]);
   const [revealAnim, setRevealAnim] = useState<LetterCard | null>(null);
   const [listHeight, setListHeight] = useState(0);
+  const [centerIdx, setCenterIdx] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
+  const scrollViewRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     try {
@@ -69,7 +76,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
       const out: LetterCard[] = [];
 
-      // Inbox = received only. Skip own outgoing content.
       for (const w of mailbox.weeks || []) {
         if (!w.partner_content) continue;
         out.push({
@@ -114,6 +120,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
       out.sort((a, b) => (a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0));
       setCards(out);
+      setCenterIdx(0);
     } finally {
       setLoading(false);
     }
@@ -127,9 +134,30 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
     load();
   }, [visible, load]);
 
-  // Vertical padding so the first and last card can each sit centered. The
-  // wrapper View's onLayout supplies the available scroll height.
   const verticalPad = listHeight > 0 ? Math.max(0, (listHeight - CARD_HEIGHT) / 2) : 0;
+
+  // Native-driven scroll → drives transforms. JS listener also runs to update
+  // dynamic zIndex (which can't be animated by the native driver).
+  const onScroll = Animated.event(
+    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+    {
+      useNativeDriver: true,
+      listener: (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+        const idx = Math.round(e.nativeEvent.contentOffset.y / SNAP_INTERVAL);
+        const clamped = Math.max(0, Math.min(cards.length - 1, idx));
+        if (clamped !== centerIdx) setCenterIdx(clamped);
+      },
+    }
+  );
+
+  const handleCardPress = (index: number, card: LetterCard) => {
+    if (index === centerIdx) {
+      setRevealAnim(card);
+    } else {
+      // Tapping a peek card brings it to center first; user taps again to open.
+      scrollViewRef.current?.scrollTo({ y: index * SNAP_INTERVAL, animated: true });
+    }
+  };
 
   return (
     <Modal
@@ -162,6 +190,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
             </View>
           ) : listHeight > 0 ? (
             <Animated.ScrollView
+              ref={scrollViewRef as any}
               contentContainerStyle={[
                 styles.stackContainer,
                 { paddingTop: verticalPad, paddingBottom: verticalPad },
@@ -169,47 +198,74 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
               showsVerticalScrollIndicator={false}
               snapToInterval={SNAP_INTERVAL}
               decelerationRate="fast"
-              onScroll={Animated.event(
-                [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-                { useNativeDriver: true }
-              )}
+              onScroll={onScroll}
               scrollEventThrottle={16}
             >
               {cards.map((card, index) => {
-                // Each card's "centered" scroll offset is index * SNAP_INTERVAL.
-                // Cards within ±1 SNAP_INTERVAL of that offset scale toward 1
-                // (centered = full size); farther cards stay at 0.92 (peek).
-                const cardCenter = index * SNAP_INTERVAL;
+                const cardScrollAtCenter = index * SNAP_INTERVAL;
+                // translateY pulls the card from its natural paging position
+                // toward a tight stack around the centered card. relativeIndex
+                // ≈ +1 → card is one slot below; we shift it up by (SNAP -
+                // STACK) so it's only STACK_OFFSET below center.
+                const translateY = scrollY.interpolate({
+                  inputRange: [
+                    cardScrollAtCenter - SNAP_INTERVAL,
+                    cardScrollAtCenter,
+                    cardScrollAtCenter + SNAP_INTERVAL,
+                  ],
+                  outputRange: [
+                    STACK_OFFSET - SNAP_INTERVAL, // far-below relative slots: pulled up
+                    0,                             // centered: no shift
+                    SNAP_INTERVAL - STACK_OFFSET,  // far-above relative slots: pushed down
+                  ],
+                  extrapolate: 'extend',
+                });
                 const scale = scrollY.interpolate({
                   inputRange: [
-                    cardCenter - SNAP_INTERVAL,
-                    cardCenter,
-                    cardCenter + SNAP_INTERVAL,
+                    cardScrollAtCenter - 2 * SNAP_INTERVAL,
+                    cardScrollAtCenter - SNAP_INTERVAL,
+                    cardScrollAtCenter,
+                    cardScrollAtCenter + SNAP_INTERVAL,
+                    cardScrollAtCenter + 2 * SNAP_INTERVAL,
                   ],
-                  outputRange: [0.92, 1, 0.92],
+                  outputRange: [0.86, 0.93, 1, 0.93, 0.86],
                   extrapolate: 'clamp',
                 });
                 const opacity = scrollY.interpolate({
                   inputRange: [
-                    cardCenter - SNAP_INTERVAL,
-                    cardCenter,
-                    cardCenter + SNAP_INTERVAL,
+                    cardScrollAtCenter - 3 * SNAP_INTERVAL,
+                    cardScrollAtCenter - 2 * SNAP_INTERVAL,
+                    cardScrollAtCenter - SNAP_INTERVAL,
+                    cardScrollAtCenter,
+                    cardScrollAtCenter + SNAP_INTERVAL,
+                    cardScrollAtCenter + 2 * SNAP_INTERVAL,
+                    cardScrollAtCenter + 3 * SNAP_INTERVAL,
                   ],
-                  outputRange: [0.6, 1, 0.6],
+                  outputRange: [0, 0.4, 0.85, 1, 0.85, 0.4, 0],
                   extrapolate: 'clamp',
                 });
+
+                // Centered card on top, then nearest neighbors, etc.
+                const dist = Math.abs(index - centerIdx);
+                const zIdx = cards.length - dist;
+
                 return (
                   <Animated.View
                     key={card.key}
                     style={[
                       styles.cardSlot,
-                      { marginBottom: index === cards.length - 1 ? 0 : CARD_GAP },
-                      { transform: [{ scale }], opacity },
+                      index === cards.length - 1 ? null : { marginBottom: CARD_GAP },
+                      {
+                        zIndex: zIdx,
+                        elevation: zIdx,
+                        transform: [{ translateY }, { scale }],
+                        opacity,
+                      },
                     ]}
                   >
                     <TouchableOpacity
                       activeOpacity={0.85}
-                      onPress={() => setRevealAnim(card)}
+                      onPress={() => handleCardPress(index, card)}
                       style={[styles.card, { backgroundColor: card.accent }]}
                     >
                       <View style={styles.cardHeader}>
@@ -227,7 +283,9 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                         </Text>
                       </View>
                       <View style={styles.cardFooter}>
-                        <Text style={styles.cardCta}>轻点开启 →</Text>
+                        <Text style={styles.cardCta}>
+                          {index === centerIdx ? '轻点开启 →' : '轻点居中'}
+                        </Text>
                       </View>
                     </TouchableOpacity>
                   </Animated.View>
@@ -237,7 +295,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           ) : null}
         </View>
 
-        {/* Inbox re-reads use the quick reveal — no envelope ceremony. */}
         <EnvelopeOpenAnimation
           visible={!!revealAnim}
           wrapInModal={false}
@@ -308,9 +365,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 16,
     shadowColor: '#000',
-    shadowOpacity: 0.14,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
     justifyContent: 'space-between',
   },
   cardHeader: {
