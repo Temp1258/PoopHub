@@ -1507,6 +1507,47 @@ describe('POST /api/daily-reaction', () => {
     expect(get.body.my_reaction_to_partner).toBe('up');
   });
 
+  it('rejects malformed unlock_date on /capsules', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+    for (const bad of ['2099', 'tomorrow', '2099-13-01', '2099-02-31', '<script>']) {
+      const res = await request(app)
+        .post('/api/capsules')
+        .set('Authorization', `Bearer ${alice.access_token}`)
+        .send({ content: 'test', unlock_date: bad });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('rejects non-string user_id on /login (no 500)', async () => {
+    const { app } = createTestApp();
+    const res = await request(app)
+      .post('/api/login')
+      .send({ user_id: 12345, password: 'whatever' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects non-string partner_id on /pair (no 500)', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const res = await request(app)
+      .post('/api/pair')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ partner_id: 12345 });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects oversized daily question answer', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+    const res = await request(app)
+      .post('/api/daily-question/answer')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ answer: 'x'.repeat(600) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/max 500/);
+  });
+
   it('reaction is one-shot — cannot be changed once made', async () => {
     const { app } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);

@@ -685,12 +685,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
 
   // Daily reaction statements (👍/👎 on partner's daily content)
-  // INSERT OR REPLACE so the same reactor can flip up↔down on the same target.
+  // DO NOTHING so a concurrent second insert can't bypass the route-level
+  // "one-shot" check (which currently runs same-tick under better-sqlite3
+  // sync API; this is defense in depth for any future multi-instance setup).
   const stmtSetDailyReaction = db.prepare(`
     INSERT INTO daily_reactions (reactor_id, target_user_id, target_date, target_type, reaction)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(reactor_id, target_user_id, target_date, target_type)
-    DO UPDATE SET reaction = excluded.reaction, created_at = CURRENT_TIMESTAMP
+    DO NOTHING
   `);
   const stmtGetDailyReaction = db.prepare(
     'SELECT reaction FROM daily_reactions WHERE reactor_id = ? AND target_user_id = ? AND target_date = ? AND target_type = ?'

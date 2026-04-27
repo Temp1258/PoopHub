@@ -230,6 +230,9 @@ export function createPublicRouter(dbOps: DbOps): Router {
     if (!user_id || !password) {
       return res.status(400).json({ error: 'user_id and password are required' });
     }
+    if (typeof user_id !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: 'user_id and password must be strings' });
+    }
 
     const user = dbOps.getUser(user_id.toUpperCase());
     if (!user) {
@@ -351,6 +354,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     if (!partnerId) {
       return res.status(400).json({ error: 'partner_id is required' });
+    }
+    if (typeof partnerId !== 'string') {
+      return res.status(400).json({ error: 'partner_id must be a string' });
     }
 
     const user = dbOps.getUser(userId);
@@ -501,8 +507,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const userId = req.userId!;
     const { device_token } = req.body;
 
-    if (!device_token) {
+    if (!device_token || typeof device_token !== 'string') {
       return res.status(400).json({ error: 'device_token is required' });
+    }
+    if (device_token.length > 200) {
+      return res.status(400).json({ error: 'device_token too long' });
     }
 
     const user = dbOps.getUser(userId);
@@ -733,6 +742,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     if (!answer || typeof answer !== 'string' || !answer.trim()) {
       return res.status(400).json({ error: 'answer is required' });
+    }
+    // Server-side cap. Client UI also limits to 200 chars; this is the
+    // edge guard so a misbehaving client can't bloat the row.
+    if (answer.length > 500) {
+      return res.status(400).json({ error: 'answer max 500 characters' });
     }
 
     const user = dbOps.getUser(userId);
@@ -1043,6 +1057,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
     if (!unlock_date || typeof unlock_date !== 'string') {
       return res.status(400).json({ error: 'unlock_date is required' });
+    }
+    if (!isValidDateString(unlock_date)) {
+      return res.status(400).json({ error: 'unlock_date must be YYYY-MM-DD' });
     }
     const vis: 'self' | 'partner' = visibility === 'self' ? 'self' : 'partner';
 
