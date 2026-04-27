@@ -17,7 +17,7 @@ export type ActionType =
   | 'angry_silent' | 'angry_talk'
   | 'show_off'
   | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'clean' | 'poop' | 'pick_nose'
-  | 'phone' | 'tablet' | 'lazy'
+  | 'tablet' | 'lazy'
   | 'red_note' | 'board_game' | 'party' | 'driving' | 'audiobook' | 'riding' | 'meeting'
   | 'slap' | 'gym' | 'milk_tea' | 'drink'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping'
@@ -77,7 +77,6 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'sleepy', emoji: '😴', label: '困', color: '#C3AED6' },
       { type: 'sleep', emoji: '🛌', label: '睡觉', color: '#C3AED6' },
       { type: 'lazy', emoji: '🛋️', label: '瘫着', color: '#C3AED6' },
-      { type: 'phone', emoji: '📱', label: '看手机', color: '#A8D8EA' },
       { type: 'tablet', emoji: '📺', label: '看平板', color: '#B5D8CC' },
       { type: 'red_note', emoji: '📕', label: '刷小红书', color: '#FFB5C2' },
       { type: 'audiobook', emoji: '🎧', label: '听小说', color: '#C3AED6' },
@@ -93,17 +92,19 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'gym', emoji: '🏋️', label: '健身', color: '#B5D8CC' },
       { type: 'milk_tea', emoji: '🧋', label: '喝奶茶', color: '#E3C9A8' },
       { type: 'drink', emoji: '🥤', label: '喝饮料', color: '#A8D8EA' },
-      { type: 'ping', emoji: '🛎️', label: 'Ping', color: '#FFD699' },
     ],
   },
   {
     title: '找你',
     centerLastRow: true,
+    // 5 buttons: 召唤宝贝 stays in cell 2 (center). 在干嘛 / ping bookend
+    // the row symmetrically as the two "问候" actions.
     actions: [
       { type: 'what_doing', emoji: '🧐', label: '在干嘛', color: '#FFEAA7' },
       { type: 'call_husband', emoji: '🤵', label: '召唤老公', color: '#A8D8EA' },
       { type: 'call_baby', emoji: '🍼', label: '召唤宝贝', color: '#FFCAD4' },
       { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },
+      { type: 'ping', emoji: '🛎️', label: 'Ping', color: '#FFD699' },
     ],
   },
 ];
@@ -118,5 +119,6 @@ export const ACTION_EMOJI: Record<string, string> = {
   // Legacy types removed from the picker but kept in emoji map so historical
   // history rows don't display as "?".
   smug: '🤩',  // replaced by 'praise_you'
-  play: '🎮',  // replaced by 'phone'
+  play: '🎮',  // earlier replacement, retained for old history
+  phone: '📱', // removed from picker but kept for old history
 };

@@ -33,7 +33,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   what_doing: { title: '🧐 在干嘛', body: '{name} 想知道你在干嘛' },
   sleep: { title: '🛌 睡觉', body: '{name} 去睡觉啦' },
   play: { title: '🎮 玩', body: '{name} 在玩～' },  // legacy, kept for old client compat
-  phone: { title: '📱 看手机', body: '{name} 在看手机～' },
+  phone: { title: '📱 看手机', body: '{name} 在看手机～' },  // legacy, kept for old client compat
   tablet: { title: '📺 看平板', body: '{name} 在看平板～' },
   lazy: { title: '🛋️ 瘫着', body: '{name} 瘫着，懒得动～' },
   red_note: { title: '📕 刷小红书', body: '{name} 在刷小红书呢' },
