@@ -15,10 +15,11 @@ export type ActionType =
   | 'miss' | 'love' | 'kiss' | 'pat' | 'finger_heart' | 'shy' | 'rose' | 'hug'
   | 'haha' | 'hehe' | 'cry' | 'wuwu' | 'sad' | 'clown'
   | 'angry_silent' | 'angry_talk'
+  | 'show_off' | 'smug'
   | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'play' | 'clean' | 'poop' | 'pick_nose'
   | 'slap' | 'gym' | 'milk_tea' | 'drink'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping'
-  | 'call_wife' | 'call_husband' | 'call_baby';
+  | 'call_wife' | 'call_husband' | 'call_baby' | 'praise_me';
 
 export interface ActionConfig {
   type: ActionType;
@@ -58,6 +59,8 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'angry_silent', emoji: '🙉', label: '生气·闭嘴', color: '#FF9B9B' },
       { type: 'angry_talk', emoji: '😤', label: '生气·说话', color: '#FFB088' },
       { type: 'clown', emoji: '🤡', label: '小丑', color: '#FFD699' },
+      { type: 'show_off', emoji: '😎', label: '得瑟', color: '#A8D8EA' },
+      { type: 'smug', emoji: '🤩', label: '得意', color: '#FFEAA7' },
     ],
   },
   {
@@ -84,6 +87,7 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },
       { type: 'call_husband', emoji: '🤵', label: '召唤老公', color: '#A8D8EA' },
       { type: 'call_baby', emoji: '🍼', label: '召唤宝贝', color: '#FFCAD4' },
+      { type: 'praise_me', emoji: '🌟', label: '夸我', color: '#FFEAA7' },
     ],
   },
 ];

@@ -1426,3 +1426,97 @@ describe('Push body sanitization', () => {
     expect(fnForm).toBe('hello $&');         // function form preserves literal
   });
 });
+
+describe('POST /api/urge', () => {
+  it('rejects urging if you have not answered yourself', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+    const res = await request(app)
+      .post('/api/urge')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ type: 'question' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/your own/i);
+  });
+
+  it('rejects urging if partner already answered', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${alice.access_token}`).send({ answer: 'a' });
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${bob.access_token}`).send({ answer: 'b' });
+    const res = await request(app)
+      .post('/api/urge')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ type: 'question' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/already answered/i);
+  });
+
+  it('sends urge_question push when conditions met', async () => {
+    const { app, mockPush } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${alice.access_token}`).send({ answer: 'a' });
+    (mockPush as jest.Mock).mockClear();
+    const res = await request(app)
+      .post('/api/urge')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ type: 'question' });
+    expect(res.status).toBe(200);
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'urge_question', 'Alice');
+  });
+
+  it('rejects invalid type', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+    const res = await request(app)
+      .post('/api/urge')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ type: 'wrong' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/daily-reaction', () => {
+  it('rejects if both have not answered yet', async () => {
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${alice.access_token}`).send({ answer: 'a' });
+    const res = await request(app)
+      .post('/api/daily-reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ type: 'question', reaction: 'up' });
+    expect(res.status).toBe(400);
+  });
+
+  it('records reaction and sends push when both answered', async () => {
+    const { app, mockPush } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${alice.access_token}`).send({ answer: 'a' });
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${bob.access_token}`).send({ answer: 'b' });
+    (mockPush as jest.Mock).mockClear();
+    const res = await request(app)
+      .post('/api/daily-reaction')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ type: 'question', reaction: 'up' });
+    expect(res.status).toBe(200);
+    expect(res.body.reaction).toBe('up');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'react_question_up', 'Alice');
+
+    // Visible in subsequent GET /daily-question
+    const get = await request(app).get('/api/daily-question').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(get.body.my_reaction_to_partner).toBe('up');
+  });
+
+  it('flips reaction up <-> down (INSERT OR REPLACE)', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${alice.access_token}`).send({ answer: 'a' });
+    await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${bob.access_token}`).send({ answer: 'b' });
+
+    await request(app).post('/api/daily-reaction').set('Authorization', `Bearer ${alice.access_token}`).send({ type: 'question', reaction: 'up' });
+    await request(app).post('/api/daily-reaction').set('Authorization', `Bearer ${alice.access_token}`).send({ type: 'question', reaction: 'down' });
+
+    const get = await request(app).get('/api/daily-question').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(get.body.my_reaction_to_partner).toBe('down');
+  });
+});

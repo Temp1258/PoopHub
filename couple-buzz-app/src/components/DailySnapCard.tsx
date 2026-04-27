@@ -1,17 +1,32 @@
-import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Haptics from 'expo-haptics';
 import { COLORS, API_URL } from '../constants';
 import { api, SnapTodayResponse } from '../services/api';
 import { storage } from '../utils/storage';
 import { useBeijingMidnightCountdown } from '../utils/countdown';
 
+const URGE_COOLDOWN_MS = 30 * 1000;
+
 const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<SnapTodayResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [urging, setUrging] = useState(false);
+  const [reacting, setReacting] = useState(false);
+  const lastUrgeRef = useRef(0);
   const cd = useBeijingMidnightCountdown();
+
+  // Tick every second so the cooldown countdown re-renders
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => forceTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeRef.current));
+  const inCooldown = cooldownLeft > 0;
 
   const load = useCallback(async () => {
     try {
@@ -117,11 +132,70 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
       )}
 
       {data.my_snapped && !data.partner_snapped && (
-        <Text style={styles.waiting}>等待 ta 的快照...</Text>
+        <>
+          <Text style={styles.waiting}>等待 ta 的快照...</Text>
+          <TouchableOpacity
+            style={[styles.urgeBtn, (urging || inCooldown) && styles.urgeBtnDisabled]}
+            onPress={async () => {
+              const now = Date.now();
+              if (now - lastUrgeRef.current < URGE_COOLDOWN_MS) return;
+              setUrging(true);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              try {
+                await api.urge('snap');
+                lastUrgeRef.current = Date.now();
+                Alert.alert('', '已经催 ta 了 ⏰');
+              } catch (e: any) {
+                Alert.alert('', e.message || '催促失败');
+              } finally {
+                setUrging(false);
+              }
+            }}
+            disabled={urging || inCooldown}
+          >
+            <Text style={styles.urgeText}>
+              {urging ? '催促中...' : inCooldown ? `${Math.ceil(cooldownLeft / 1000)}s 后可再催` : '⏰ 拍照！'}
+            </Text>
+          </TouchableOpacity>
+        </>
       )}
 
       {data.my_snapped && data.partner_snapped && (
-        <Text style={styles.both}>今天的快照已完成！</Text>
+        <>
+          <Text style={styles.both}>今天的快照已完成！</Text>
+          <View style={styles.reactRow}>
+            <TouchableOpacity
+              style={[styles.reactBtn, styles.reactUp, data.my_reaction_to_partner === 'up' && styles.reactUpActive]}
+              onPress={async () => {
+                if (reacting) return;
+                setReacting(true);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setData(prev => prev ? { ...prev, my_reaction_to_partner: 'up' } : prev);
+                try { await api.dailyReaction('snap', 'up'); }
+                catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
+                finally { setReacting(false); }
+              }}
+              disabled={reacting}
+            >
+              <Text style={styles.reactEmoji}>👍</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.reactBtn, styles.reactDown, data.my_reaction_to_partner === 'down' && styles.reactDownActive]}
+              onPress={async () => {
+                if (reacting) return;
+                setReacting(true);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setData(prev => prev ? { ...prev, my_reaction_to_partner: 'down' } : prev);
+                try { await api.dailyReaction('snap', 'down'); }
+                catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
+                finally { setReacting(false); }
+              }}
+              disabled={reacting}
+            >
+              <Text style={styles.reactEmoji}>👎</Text>
+            </TouchableOpacity>
+          </View>
+        </>
       )}
 
       <Text style={styles.refreshHint}>
@@ -148,4 +222,14 @@ const styles = StyleSheet.create({
   waiting: { fontSize: 13, color: COLORS.textLight, textAlign: 'center' },
   both: { fontSize: 13, color: COLORS.kiss, textAlign: 'center', fontWeight: '500' },
   refreshHint: { fontSize: 12, color: COLORS.textLight, textAlign: 'center', marginTop: 12 },
+  urgeBtn: { height: 44, backgroundColor: COLORS.kiss, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginTop: 12 },
+  urgeBtnDisabled: { opacity: 0.4 },
+  urgeText: { fontSize: 16, fontWeight: '600', color: COLORS.white },
+  reactRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  reactBtn: { flex: 1, height: 38, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1 },
+  reactUp: { borderColor: '#B8E6CF', backgroundColor: '#F0FBF5' },
+  reactUpActive: { borderColor: '#4CD964', backgroundColor: '#4CD964' },
+  reactDown: { borderColor: '#FFC2C2', backgroundColor: '#FFF0F0' },
+  reactDownActive: { borderColor: '#FF6B6B', backgroundColor: '#FF6B6B' },
+  reactEmoji: { fontSize: 20 },
 });

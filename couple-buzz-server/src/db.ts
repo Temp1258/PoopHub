@@ -115,6 +115,16 @@ export interface DailySnap {
   created_at: string;
 }
 
+export interface DailyReaction {
+  id: number;
+  reactor_id: string;
+  target_user_id: string;
+  target_date: string;
+  target_type: 'question' | 'snap';
+  reaction: 'up' | 'down';
+  created_at: string;
+}
+
 export interface DbOps {
   createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void;
   getUser(id: string): User | undefined;
@@ -186,6 +196,9 @@ export interface DbOps {
   saveSnap(userId: string, snapDate: string, photoPath: string): boolean;
   getSnap(userId: string, snapDate: string): DailySnap | undefined;
   getSnaps(userId: string, partnerId: string, month: string): { snap_date: string; user_photo: string | null; partner_photo: string | null }[];
+  // Daily Reactions (👍/👎 on partner's daily question answer or daily snap)
+  setDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap', reaction: 'up' | 'down'): void;
+  getDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap'): 'up' | 'down' | null;
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -324,6 +337,19 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       UNIQUE(user_id, snap_date)
     );
 
+    CREATE TABLE IF NOT EXISTS daily_reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reactor_id TEXT NOT NULL,
+      target_user_id TEXT NOT NULL,
+      target_date TEXT NOT NULL,
+      target_type TEXT NOT NULL CHECK(target_type IN ('question', 'snap')),
+      reaction TEXT NOT NULL CHECK(reaction IN ('up', 'down')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (reactor_id) REFERENCES users(id),
+      FOREIGN KEY (target_user_id) REFERENCES users(id),
+      UNIQUE(reactor_id, target_user_id, target_date, target_type)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
@@ -332,6 +358,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE INDEX IF NOT EXISTS idx_capsules_unlock ON time_capsules(unlock_date);
     CREATE INDEX IF NOT EXISTS idx_bucket_couple ON bucket_items(user_id, partner_id);
     CREATE INDEX IF NOT EXISTS idx_snaps_date ON daily_snaps(snap_date);
+    CREATE INDEX IF NOT EXISTS idx_daily_reactions_lookup ON daily_reactions(reactor_id, target_user_id, target_date, target_type);
 
   `);
 
@@ -655,6 +682,18 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   const stmtDeleteBucket = db.prepare(
     'DELETE FROM bucket_items WHERE id = ? AND (user_id = ? OR partner_id = ?)'
+  );
+
+  // Daily reaction statements (👍/👎 on partner's daily content)
+  // INSERT OR REPLACE so the same reactor can flip up↔down on the same target.
+  const stmtSetDailyReaction = db.prepare(`
+    INSERT INTO daily_reactions (reactor_id, target_user_id, target_date, target_type, reaction)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(reactor_id, target_user_id, target_date, target_type)
+    DO UPDATE SET reaction = excluded.reaction, created_at = CURRENT_TIMESTAMP
+  `);
+  const stmtGetDailyReaction = db.prepare(
+    'SELECT reaction FROM daily_reactions WHERE reactor_id = ? AND target_user_id = ? AND target_date = ? AND target_type = ?'
   );
 
   // Daily snap statements
@@ -1022,6 +1061,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       const startDate = `${month}-01`;
       const nextMonth = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
       return stmtGetSnapsMonth.all(userId, partnerId, userId, partnerId, startDate, nextMonth) as any[];
+    },
+
+    setDailyReaction(reactorId, targetUserId, targetDate, targetType, reaction): void {
+      stmtSetDailyReaction.run(reactorId, targetUserId, targetDate, targetType, reaction);
+    },
+
+    getDailyReaction(reactorId, targetUserId, targetDate, targetType): 'up' | 'down' | null {
+      const row = stmtGetDailyReaction.get(reactorId, targetUserId, targetDate, targetType) as { reaction: 'up' | 'down' } | undefined;
+      return row?.reaction ?? null;
     },
   };
 

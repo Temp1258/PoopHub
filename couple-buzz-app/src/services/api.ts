@@ -175,6 +175,8 @@ export interface DailyQuestionResponse {
   partner_answer: string | null;
   partner_answered: boolean;
   both_answered: boolean;
+  my_reaction_to_partner: 'up' | 'down' | null;
+  partner_reaction_to_me: 'up' | 'down' | null;
 }
 
 export interface StatsResponse {
@@ -267,6 +269,8 @@ export interface SnapTodayResponse {
   partner_snapped: boolean;
   my_photo: string | null;
   partner_photo: string | null;
+  my_reaction_to_partner: 'up' | 'down' | null;
+  partner_reaction_to_me: 'up' | 'down' | null;
 }
 
 export interface SnapMonth {
@@ -448,5 +452,12 @@ export const api = {
   },
   getSnaps(month: string): Promise<{ snaps: SnapMonth[] }> {
     return request(`/api/snaps?month=${month}`);
+  },
+
+  urge(type: 'question' | 'snap'): Promise<{ success: boolean }> {
+    return request('/api/urge', { method: 'POST', body: JSON.stringify({ type }) });
+  },
+  dailyReaction(type: 'question' | 'snap', reaction: 'up' | 'down'): Promise<{ success: boolean; reaction: 'up' | 'down' }> {
+    return request('/api/daily-reaction', { method: 'POST', body: JSON.stringify({ type, reaction }) });
   },
 };

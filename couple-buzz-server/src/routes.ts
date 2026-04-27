@@ -37,6 +37,7 @@ const VALID_ACTIONS: ReadonlySet<string> = new Set([
   'slap', 'ping',
   'call_wife', 'call_husband', 'call_baby',
   'gym', 'milk_tea', 'drink',
+  'show_off', 'smug', 'praise_me',
 ]);
 
 // Timezone helpers
@@ -701,6 +702,15 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
     const bothAnswered = !!answers.mine && !!answers.partner;
 
+    // Reactions only meaningful once both answered. Send the partner's date
+    // for "ta's reaction to my answer" (correct since they react to my row).
+    const myReactionToPartner = bothAnswered
+      ? dbOps.getDailyReaction(userId, user.partner_id, today, 'question')
+      : null;
+    const partnerReactionToMe = bothAnswered
+      ? dbOps.getDailyReaction(user.partner_id, userId, today, 'question')
+      : null;
+
     res.json({
       question,
       question_index: index,
@@ -709,6 +719,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       partner_answer: bothAnswered ? answers.partner!.answer : null,
       partner_answered: !!answers.partner,
       both_answered: bothAnswered,
+      my_reaction_to_partner: myReactionToPartner,
+      partner_reaction_to_me: partnerReactionToMe,
     });
   });
 
@@ -1304,12 +1316,22 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const partnerToday = user.partner_id ? getLocalDate(partnerTz) : today;
     const partnerSnap = user.partner_id ? dbOps.getSnap(user.partner_id, partnerToday) : undefined;
 
+    const bothSnapped = !!mySnap && !!partnerSnap;
+    const myReactionToPartner = (bothSnapped && user.partner_id)
+      ? dbOps.getDailyReaction(userId, user.partner_id, partnerToday, 'snap')
+      : null;
+    const partnerReactionToMe = (bothSnapped && user.partner_id)
+      ? dbOps.getDailyReaction(user.partner_id, userId, today, 'snap')
+      : null;
+
     res.json({
       snap_date: today,
       my_snapped: !!mySnap,
       partner_snapped: !!partnerSnap,
       my_photo: mySnap?.photo_path ? signImagePath(mySnap.photo_path) : null,
       partner_photo: partnerSnap?.photo_path ? signImagePath(partnerSnap.photo_path) : null,
+      my_reaction_to_partner: myReactionToPartner,
+      partner_reaction_to_me: partnerReactionToMe,
     });
   });
 
@@ -1334,6 +1356,88 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }));
 
     res.json({ snaps });
+  });
+
+  // POST /api/urge — nudge partner to fill today's question or take today's snap.
+  // Only valid when caller has filled their side AND partner hasn't.
+  router.post('/urge', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { type } = req.body;
+
+    if (type !== 'question' && type !== 'snap') {
+      return res.status(400).json({ error: 'type must be "question" or "snap"' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    if (type === 'question') {
+      const today = getLocalDate('Asia/Shanghai');
+      const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+      if (!answers.mine) return res.status(400).json({ error: 'Answer your own first' });
+      if (answers.partner) return res.status(400).json({ error: 'Partner already answered' });
+    } else {
+      const myToday = getLocalDate(user.timezone);
+      const partnerTz = dbOps.getUser(user.partner_id)?.timezone || 'Asia/Shanghai';
+      const partnerToday = getLocalDate(partnerTz);
+      if (!dbOps.getSnap(userId, myToday)) return res.status(400).json({ error: 'Snap your own first' });
+      if (dbOps.getSnap(user.partner_id, partnerToday)) return res.status(400).json({ error: 'Partner already snapped' });
+    }
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      await pushFn(partner.device_token, type === 'question' ? 'urge_question' : 'urge_snap', user.name);
+    }
+
+    res.json({ success: true });
+  });
+
+  // POST /api/daily-reaction — 👍/👎 to partner's question answer or snap.
+  // Only valid after both have filled their side.
+  router.post('/daily-reaction', async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { type, reaction } = req.body;
+
+    if (type !== 'question' && type !== 'snap') {
+      return res.status(400).json({ error: 'type must be "question" or "snap"' });
+    }
+    if (reaction !== 'up' && reaction !== 'down') {
+      return res.status(400).json({ error: 'reaction must be "up" or "down"' });
+    }
+
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
+
+    let targetDate: string;
+    if (type === 'question') {
+      const today = getLocalDate('Asia/Shanghai');
+      const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+      if (!answers.mine || !answers.partner) {
+        return res.status(400).json({ error: 'Both must answer before reacting' });
+      }
+      targetDate = today;
+    } else {
+      const myToday = getLocalDate(user.timezone);
+      const partnerTz = dbOps.getUser(user.partner_id)?.timezone || 'Asia/Shanghai';
+      const partnerToday = getLocalDate(partnerTz);
+      if (!dbOps.getSnap(userId, myToday) || !dbOps.getSnap(user.partner_id, partnerToday)) {
+        return res.status(400).json({ error: 'Both must snap before reacting' });
+      }
+      // Reaction is keyed on the *target's* date (partner's snap date)
+      targetDate = partnerToday;
+    }
+
+    dbOps.setDailyReaction(userId, user.partner_id, targetDate, type, reaction);
+
+    const partner = dbOps.getUser(user.partner_id);
+    if (partner?.device_token) {
+      const pushType = `react_${type}_${reaction}` as 'react_question_up' | 'react_question_down' | 'react_snap_up' | 'react_snap_down';
+      await pushFn(partner.device_token, pushType, user.name);
+    }
+
+    res.json({ success: true, reaction });
   });
 
   // GET /api/ws-ticket

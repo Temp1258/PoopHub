@@ -1,4 +1,4 @@
-import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,17 +6,24 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, DailyQuestionResponse } from '../services/api';
 import { useBeijingMidnightCountdown } from '../utils/countdown';
+
+const URGE_COOLDOWN_MS = 30 * 1000;
 
 const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<DailyQuestionResponse | null>(null);
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [urging, setUrging] = useState(false);
+  const [reacting, setReacting] = useState(false);
+  const lastUrgeRef = useRef(0);
   const cd = useBeijingMidnightCountdown();
 
   const load = useCallback(async () => {
@@ -57,6 +64,52 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     setSubmitting(false);
   };
 
+  const handleUrge = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastUrgeRef.current < URGE_COOLDOWN_MS) {
+      const left = Math.ceil((URGE_COOLDOWN_MS - (now - lastUrgeRef.current)) / 1000);
+      Alert.alert('', `稍等 ${left} 秒再催 ta～`);
+      return;
+    }
+    setUrging(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await api.urge('question');
+      lastUrgeRef.current = Date.now();
+      Alert.alert('', '已经催 ta 了 ⏰');
+    } catch (e: any) {
+      Alert.alert('', e.message || '催促失败');
+    } finally {
+      setUrging(false);
+    }
+  }, []);
+
+  // Cooldown clock just to redraw button label every second
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => forceTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeRef.current));
+  const inCooldown = cooldownLeft > 0;
+
+  const handleReact = useCallback(async (reaction: 'up' | 'down') => {
+    if (reacting) return;
+    setReacting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Optimistic update
+    setData(prev => prev ? { ...prev, my_reaction_to_partner: reaction } : prev);
+    try {
+      await api.dailyReaction('question', reaction);
+    } catch (e: any) {
+      // Revert on failure
+      load();
+      Alert.alert('', e.message || '操作失败');
+    } finally {
+      setReacting(false);
+    }
+  }, [reacting, load]);
+
   if (loading) {
     return (
       <View style={styles.card}>
@@ -67,7 +120,7 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
 
   if (!data) return null;
 
-  const { question, my_answer, partner_answer, both_answered } = data;
+  const { question, my_answer, partner_answer, both_answered, my_reaction_to_partner } = data;
 
   return (
     <View style={styles.card}>
@@ -83,6 +136,22 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
           <View style={styles.answerBox}>
             <Text style={styles.answerLabel}>ta 的答案</Text>
             <Text style={styles.answerText}>{partner_answer}</Text>
+            <View style={styles.reactRow}>
+              <TouchableOpacity
+                style={[styles.reactBtn, styles.reactUp, my_reaction_to_partner === 'up' && styles.reactUpActive]}
+                onPress={() => handleReact('up')}
+                disabled={reacting}
+              >
+                <Text style={[styles.reactEmoji, my_reaction_to_partner === 'up' && styles.reactEmojiActive]}>👍</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.reactBtn, styles.reactDown, my_reaction_to_partner === 'down' && styles.reactDownActive]}
+                onPress={() => handleReact('down')}
+                disabled={reacting}
+              >
+                <Text style={[styles.reactEmoji, my_reaction_to_partner === 'down' && styles.reactEmojiActive]}>👎</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       ) : my_answer ? (
@@ -92,6 +161,15 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
             <Text style={styles.myAnswerText}>{my_answer}</Text>
           </View>
           <Text style={styles.waiting}>等待 ta 的答案...</Text>
+          <TouchableOpacity
+            style={[styles.urgeBtn, (urging || inCooldown) && styles.urgeBtnDisabled]}
+            onPress={handleUrge}
+            disabled={urging || inCooldown}
+          >
+            <Text style={styles.urgeText}>
+              {urging ? '催促中...' : inCooldown ? `${Math.ceil(cooldownLeft / 1000)}s 后可再催` : '⏰ 快答！'}
+            </Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <View>
@@ -198,6 +276,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 16,
   },
+  urgeBtn: {
+    height: 44,
+    backgroundColor: COLORS.kiss,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  urgeBtnDisabled: {
+    opacity: 0.4,
+  },
+  urgeText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.white,
+  },
   reveal: {
     gap: 12,
   },
@@ -218,6 +312,41 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.text,
     lineHeight: 22,
+  },
+  reactRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  reactBtn: {
+    flex: 1,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  reactUp: {
+    borderColor: '#B8E6CF',
+    backgroundColor: '#F0FBF5',
+  },
+  reactUpActive: {
+    borderColor: '#4CD964',
+    backgroundColor: '#4CD964',
+  },
+  reactDown: {
+    borderColor: '#FFC2C2',
+    backgroundColor: '#FFF0F0',
+  },
+  reactDownActive: {
+    borderColor: '#FF6B6B',
+    backgroundColor: '#FF6B6B',
+  },
+  reactEmoji: {
+    fontSize: 20,
+  },
+  reactEmojiActive: {
+    // Native emoji color stays — just for grouping any future tweaks
   },
   refreshHint: {
     fontSize: 12,
