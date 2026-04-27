@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   Modal,
   View,
@@ -28,7 +28,6 @@ type LetterKind = 'mailbox' | 'capsule';
 interface LetterCard {
   key: string;
   kind: LetterKind;
-  // ISO-ish sort key, descending
   sortAt: string;
   date: string;
   from: string;
@@ -41,7 +40,9 @@ interface LetterCard {
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
 
-// Stack metrics — each card peeks ~120pt under the next, mimicking Wallet.
+// Wallet cascade metrics — each card peeks ~110pt under the next when at
+// rest, and Sticky behavior makes whichever card sits at the top fully
+// visible during scroll.
 const CARD_HEIGHT = 200;
 const CARD_PEEK = 110;
 
@@ -53,8 +54,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
   const load = useCallback(async () => {
     try {
-      // Names: partner remark (private nickname) wins over the partner's
-      // own profile name so the inbox feels personal.
       const [myName, partnerRemark, partnerName, mailbox, capsules] = await Promise.all([
         storage.getUserName(),
         storage.getPartnerRemark(),
@@ -67,52 +66,38 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
       const out: LetterCard[] = [];
 
-      // Each mailbox round becomes up to two cards — one per side that wrote.
+      // Inbox = letters I *received*. Mailbox: only the partner's side of
+      // each round. (My own outgoing content is a sent-mail concept and
+      // doesn't belong in the inbox.)
       for (const w of mailbox.weeks || []) {
-        const date = formatMailboxDate(w.week_key);
-        if (w.partner_content) {
-          out.push({
-            key: `m-${w.week_key}-p`,
-            kind: 'mailbox',
-            sortAt: w.week_key + '-p',
-            date,
-            from: ta,
-            to: me,
-            body: w.partner_content,
-            kindLabel: '次日达',
-            accent: MAILBOX_ACCENT,
-          });
-        }
-        if (w.my_content) {
-          out.push({
-            key: `m-${w.week_key}-m`,
-            kind: 'mailbox',
-            sortAt: w.week_key + '-m',
-            date,
-            from: me,
-            to: ta,
-            body: w.my_content,
-            kindLabel: '次日达',
-            accent: MAILBOX_ACCENT,
-          });
-        }
+        if (!w.partner_content) continue;
+        out.push({
+          key: `m-${w.week_key}`,
+          kind: 'mailbox',
+          sortAt: w.week_key,
+          date: formatMailboxDate(w.week_key),
+          from: ta,
+          to: me,
+          body: w.partner_content,
+          kindLabel: '次日达 · 来自 ta',
+          accent: MAILBOX_ACCENT,
+        });
       }
 
-      // Capsules: one card per opened letter, with content non-null.
+      // Capsules: keep partner-authored ones (received) and self capsules
+      // (the user explicitly said opened self capsules count). Skip outgoing
+      // capsules I sent to ta.
       for (const c of capsules.capsules || []) {
         if (!c.opened_at || !c.content) continue;
+        if (c.author === 'me' && c.visibility === 'partner') continue;
+
         let from = me;
         let to = ta;
         let kindLabel = '择日达';
-        if (c.author === 'me') {
-          if (c.visibility === 'self') {
-            from = me; to = me;
-            kindLabel = '择日达 · 给自己';
-          } else {
-            from = me; to = ta;
-            kindLabel = '择日达 · 给 ta';
-          }
-        } else {
+        if (c.author === 'me' && c.visibility === 'self') {
+          from = me; to = me;
+          kindLabel = '择日达 · 给自己';
+        } else if (c.author === 'partner') {
           from = ta; to = me;
           kindLabel = '择日达 · 来自 ta';
         }
@@ -138,13 +123,20 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
   useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
-  // Refresh on every modal open so the parent's pull-to-refresh seeds the
-  // freshest data; the inbox itself has no internal RefreshControl.
   useEffect(() => {
     if (!visible) return;
     setLoading(true);
     load();
   }, [visible, load]);
+
+  // Every card index is a sticky header — RN's multi-sticky behavior is
+  // exactly the Wallet cascade: as a card scrolls to the top, it docks; the
+  // next sticky card pushes it off when *its* layout y crosses the scroll
+  // offset. So the topmost visible card is always fully shown.
+  const stickyIndices = useMemo(
+    () => cards.map((_, i) => i),
+    [cards]
+  );
 
   return (
     <Modal
@@ -175,9 +167,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           <ScrollView
             contentContainerStyle={[styles.stackContainer, { paddingBottom: insets.bottom + 60 }]}
             showsVerticalScrollIndicator={false}
-            // No RefreshControl on purpose — the parent screen's pull-to-
-            // refresh seeds the data, and an empty top here lets the system
-            // sheet gesture handle "swipe down to dismiss" cleanly.
+            stickyHeaderIndices={stickyIndices}
           >
             {cards.map((card, index) => (
               <TouchableOpacity
@@ -189,8 +179,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                   {
                     backgroundColor: card.accent,
                     marginTop: index === 0 ? 0 : -CARD_PEEK,
-                    zIndex: cards.length - index,
-                    elevation: cards.length - index,
                   },
                 ]}
               >
@@ -216,8 +204,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           </ScrollView>
         )}
 
-        {/* Inline overlay (not a Modal) — avoids the visible re-mount that
-            stacking two Modals causes when opening a letter from the inbox. */}
         <EnvelopeOpenAnimation
           visible={!!revealAnim}
           wrapInModal={false}
@@ -236,7 +222,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 export default InboxScreen;
 
 function formatMailboxDate(weekKey: string): string {
-  // Format: YYYY-MM-DD-AM / -PM
   const date = weekKey.slice(0, 10);
   const phase = weekKey.slice(11);
   return `${date} ${phase === 'AM' ? '上半场' : '下半场'}`;
@@ -277,6 +262,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 4,
   },
+  // Layout: each card spans CARD_HEIGHT, but consumes only (CARD_HEIGHT - CARD_PEEK)
+  // of vertical space via a negative top margin (applied per-card except the
+  // first via inline style). At rest this gives the Wallet peek look; while
+  // scrolling, sticky behavior keeps the active top card fully visible.
   card: {
     height: CARD_HEIGHT,
     borderRadius: 18,
