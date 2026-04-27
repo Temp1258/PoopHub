@@ -220,6 +220,8 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                   ],
                   extrapolate: 'extend',
                 });
+                // Scale alone carries the "depth" feel — far cards stay
+                // fully opaque so the whole stack remains visible.
                 const scale = scrollY.interpolate({
                   inputRange: [
                     cardScrollAtCenter - 2 * SNAP_INTERVAL,
@@ -229,19 +231,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                     cardScrollAtCenter + 2 * SNAP_INTERVAL,
                   ],
                   outputRange: [0.86, 0.93, 1, 0.93, 0.86],
-                  extrapolate: 'clamp',
-                });
-                const opacity = scrollY.interpolate({
-                  inputRange: [
-                    cardScrollAtCenter - 3 * SNAP_INTERVAL,
-                    cardScrollAtCenter - 2 * SNAP_INTERVAL,
-                    cardScrollAtCenter - SNAP_INTERVAL,
-                    cardScrollAtCenter,
-                    cardScrollAtCenter + SNAP_INTERVAL,
-                    cardScrollAtCenter + 2 * SNAP_INTERVAL,
-                    cardScrollAtCenter + 3 * SNAP_INTERVAL,
-                  ],
-                  outputRange: [0, 0.4, 0.85, 1, 0.85, 0.4, 0],
                   extrapolate: 'clamp',
                 });
 
@@ -259,7 +248,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                         zIndex: zIdx,
                         elevation: zIdx,
                         transform: [{ translateY }, { scale }],
-                        opacity,
                       },
                     ]}
                   >
