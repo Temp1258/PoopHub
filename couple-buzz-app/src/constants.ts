@@ -18,6 +18,7 @@ export type ActionType =
   | 'show_off'
   | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'clean' | 'poop' | 'pick_nose'
   | 'phone' | 'tablet' | 'lazy'
+  | 'red_note' | 'board_game' | 'party' | 'driving' | 'audiobook' | 'riding' | 'meeting'
   | 'slap' | 'gym' | 'milk_tea' | 'drink'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping'
   | 'call_wife' | 'call_husband' | 'call_baby'
@@ -78,6 +79,13 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'lazy', emoji: '🛋️', label: '瘫着', color: '#C3AED6' },
       { type: 'phone', emoji: '📱', label: '看手机', color: '#A8D8EA' },
       { type: 'tablet', emoji: '📺', label: '看平板', color: '#B5D8CC' },
+      { type: 'red_note', emoji: '📕', label: '刷小红书', color: '#FFB5C2' },
+      { type: 'audiobook', emoji: '🎧', label: '听小说', color: '#C3AED6' },
+      { type: 'board_game', emoji: '🎲', label: '桌游', color: '#FFD699' },
+      { type: 'party', emoji: '🎉', label: '聚会', color: '#FFCAD4' },
+      { type: 'driving', emoji: '🚗', label: '开车', color: '#A8D8EA' },
+      { type: 'riding', emoji: '🚌', label: '坐车', color: '#B8E6CF' },
+      { type: 'meeting', emoji: '👥', label: '开会', color: '#D4C5A9' },
       { type: 'clean', emoji: '🧹', label: '打扫卫生', color: '#B8E6CF' },
       { type: 'poop', emoji: '💩', label: '晒特', color: '#C4A882' },
       { type: 'pick_nose', emoji: '🤏', label: '抠鼻屎', color: '#D4C5A9' },
@@ -91,8 +99,8 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
   {
     title: '找你',
     centerLastRow: true,
-    // Order matters: shown left → middle → right
     actions: [
+      { type: 'what_doing', emoji: '🧐', label: '在干嘛', color: '#FFEAA7' },
       { type: 'call_husband', emoji: '🤵', label: '召唤老公', color: '#A8D8EA' },
       { type: 'call_baby', emoji: '🍼', label: '召唤宝贝', color: '#FFCAD4' },
       { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },

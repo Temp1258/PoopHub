@@ -163,12 +163,26 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
       {data.my_snapped && data.partner_snapped && (
         <>
           <Text style={styles.both}>今天的快照已完成！</Text>
+
+          {/* Partner's reaction to my snap (read-only) */}
+          {data.partner_reaction_to_me ? (
+            <View style={styles.reactedBlock}>
+              <Text style={styles.reactedEmoji}>
+                {data.partner_reaction_to_me === 'up' ? '👍' : '👎'}
+              </Text>
+              <Text style={styles.reactedText}>ta 对我的快照的评价</Text>
+            </View>
+          ) : (
+            <Text style={styles.waitingForReact}>ta 还没评价你的快照</Text>
+          )}
+
+          {/* My reaction to partner's snap (interactive once, then read-only) */}
           {data.my_reaction_to_partner ? (
             <View style={styles.reactedBlock}>
               <Text style={styles.reactedEmoji}>
                 {data.my_reaction_to_partner === 'up' ? '👍' : '👎'}
               </Text>
-              <Text style={styles.reactedText}>已评价</Text>
+              <Text style={styles.reactedText}>我对 ta 的快照的评价</Text>
             </View>
           ) : (
             <View style={styles.reactRow}>
@@ -242,4 +256,5 @@ const styles = StyleSheet.create({
   reactedBlock: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12, paddingVertical: 8, backgroundColor: COLORS.background, borderRadius: 10 },
   reactedEmoji: { fontSize: 22 },
   reactedText: { fontSize: 13, color: COLORS.textLight, fontWeight: '500' },
+  waitingForReact: { fontSize: 12, color: COLORS.textLight, textAlign: 'center', marginTop: 10, fontStyle: 'italic' },
 });

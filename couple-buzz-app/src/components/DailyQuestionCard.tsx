@@ -122,7 +122,7 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
 
   if (!data) return null;
 
-  const { question, my_answer, partner_answer, both_answered, my_reaction_to_partner } = data;
+  const { question, my_answer, partner_answer, both_answered, my_reaction_to_partner, partner_reaction_to_me } = data;
 
   return (
     <View style={styles.card}>
@@ -134,6 +134,16 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
           <View style={styles.answerBox}>
             <Text style={styles.answerLabel}>我的答案</Text>
             <Text style={styles.answerText}>{my_answer}</Text>
+            {partner_reaction_to_me ? (
+              <View style={styles.reactedBlock}>
+                <Text style={styles.reactedEmoji}>
+                  {partner_reaction_to_me === 'up' ? '👍' : '👎'}
+                </Text>
+                <Text style={styles.reactedText}>ta 的评价</Text>
+              </View>
+            ) : (
+              <Text style={styles.waitingForReact}>ta 还没评价你的答案</Text>
+            )}
           </View>
           <View style={styles.answerBox}>
             <Text style={styles.answerLabel}>ta 的答案</Text>
@@ -143,7 +153,7 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
                 <Text style={styles.reactedEmoji}>
                   {my_reaction_to_partner === 'up' ? '👍' : '👎'}
                 </Text>
-                <Text style={styles.reactedText}>已评价</Text>
+                <Text style={styles.reactedText}>我的评价</Text>
               </View>
             ) : (
               <View style={styles.reactRow}>
@@ -365,6 +375,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.textLight,
     fontWeight: '500',
+  },
+  waitingForReact: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: 10,
+    fontStyle: 'italic',
   },
   refreshHint: {
     fontSize: 12,

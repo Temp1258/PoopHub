@@ -1,1 +1,87 @@
+# ============================================================
+# Repo-wide ignore. Sub-projects (couple-buzz-server / couple-buzz-app)
+# have their own .gitignore for project-specific paths (data/, dist/,
+# certs/, etc). This file covers cross-cutting concerns + defense in
+# depth so an accidental file never sneaks into a commit.
+# ============================================================
+
+# === macOS / Windows / Linux OS junk ===
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# === Editor / IDE ===
+.vscode/
+.idea/
+.cursor/
+.claude/
+*.swp
+*.swo
+*~
+
+# === Logs ===
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# === Test / coverage ===
+coverage/
+.nyc_output/
+
+# === Build output (sub-dirs already cover their own; this is a safety net) ===
+dist/
+build/
+node_modules/
+
+# === Secrets — env files, private keys, certs ===
+# Sub-dir .gitignore already lists these for each app, but mirror them
+# here so a file placed at the repo root can never leak.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.cer
+*.crt
+*.mobileprovision
+secrets/
+
+# === Backups / encrypted blobs ===
+# Encrypted SQLite backups (.gpg) and exported GPG keys (.asc) must
+# never be committed even if they're encrypted — they're operational
+# data, not source.
+*.gpg
+*.asc
+*.pgp
+*.bak
+*.backup
+*.tar.gz
+*.zip
+
+# === Local-only scratchpad / private notes ===
+# Convention: any file ending in .local or .private (or in a private/
+# folder) is treated as never-committed. Useful for "I'll write down
+# the VPS IP / SSH cmd / scratch ideas here" without risk.
+*.local
+*.local.*
+*.private
+*.private.*
+private/
+NOTES.md
+TODO.private.md
+
+# === Misc ===
+.expo/
+*.tsbuildinfo
