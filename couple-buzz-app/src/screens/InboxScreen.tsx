@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   Modal,
   View,
@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
@@ -40,17 +41,19 @@ interface LetterCard {
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
 
-// Wallet cascade metrics — each card peeks ~110pt under the next when at
-// rest, and Sticky behavior makes whichever card sits at the top fully
-// visible during scroll.
-const CARD_HEIGHT = 200;
-const CARD_PEEK = 110;
+// Carousel metrics — each card snaps to the vertical center of the scroll
+// area, with the card right above and below visible as peek.
+const CARD_HEIGHT = 220;
+const CARD_GAP = 16;
+const SNAP_INTERVAL = CARD_HEIGHT + CARD_GAP;
 
 const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) => {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [cards, setCards] = useState<LetterCard[]>([]);
   const [revealAnim, setRevealAnim] = useState<LetterCard | null>(null);
+  const [listHeight, setListHeight] = useState(0);
+  const scrollY = useRef(new Animated.Value(0)).current;
 
   const load = useCallback(async () => {
     try {
@@ -66,9 +69,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
       const out: LetterCard[] = [];
 
-      // Inbox = letters I *received*. Mailbox: only the partner's side of
-      // each round. (My own outgoing content is a sent-mail concept and
-      // doesn't belong in the inbox.)
+      // Inbox = received only. Skip own outgoing content.
       for (const w of mailbox.weeks || []) {
         if (!w.partner_content) continue;
         out.push({
@@ -84,9 +85,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
         });
       }
 
-      // Capsules: keep partner-authored ones (received) and self capsules
-      // (the user explicitly said opened self capsules count). Skip outgoing
-      // capsules I sent to ta.
       for (const c of capsules.capsules || []) {
         if (!c.opened_at || !c.content) continue;
         if (c.author === 'me' && c.visibility === 'partner') continue;
@@ -129,14 +127,9 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
     load();
   }, [visible, load]);
 
-  // Every card index is a sticky header — RN's multi-sticky behavior is
-  // exactly the Wallet cascade: as a card scrolls to the top, it docks; the
-  // next sticky card pushes it off when *its* layout y crosses the scroll
-  // offset. So the topmost visible card is always fully shown.
-  const stickyIndices = useMemo(
-    () => cards.map((_, i) => i),
-    [cards]
-  );
+  // Vertical padding so the first and last card can each sit centered. The
+  // wrapper View's onLayout supplies the available scroll height.
+  const verticalPad = listHeight > 0 ? Math.max(0, (listHeight - CARD_HEIGHT) / 2) : 0;
 
   return (
     <Modal
@@ -153,60 +146,102 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           </TouchableOpacity>
         </View>
 
-        {loading ? (
-          <View style={styles.centered}>
-            <ActivityIndicator color={COLORS.kiss} />
-          </View>
-        ) : cards.length === 0 ? (
-          <View style={styles.centered}>
-            <Text style={styles.emptyEmoji}>💌</Text>
-            <Text style={styles.emptyTitle}>还没有收到信</Text>
-            <Text style={styles.emptySub}>已送达的次日达和已开启的择日达都会出现在这里</Text>
-          </View>
-        ) : (
-          <ScrollView
-            contentContainerStyle={[styles.stackContainer, { paddingBottom: insets.bottom + 60 }]}
-            showsVerticalScrollIndicator={false}
-            stickyHeaderIndices={stickyIndices}
-          >
-            {cards.map((card, index) => (
-              <TouchableOpacity
-                key={card.key}
-                activeOpacity={0.85}
-                onPress={() => setRevealAnim(card)}
-                style={[
-                  styles.card,
-                  {
-                    backgroundColor: card.accent,
-                    marginTop: index === 0 ? 0 : -CARD_PEEK,
-                  },
-                ]}
-              >
-                <View style={styles.cardHeader}>
-                  <Text style={styles.cardKind}>{card.kindLabel}</Text>
-                  <Text style={styles.cardDate}>{card.date}</Text>
-                </View>
-                <View style={styles.cardFromTo}>
-                  <Text style={styles.cardFromToText} numberOfLines={1}>
-                    {card.from} → {card.to}
-                  </Text>
-                </View>
-                <View style={styles.cardSnippetWrap}>
-                  <Text style={styles.cardSnippet} numberOfLines={2}>
-                    {card.body}
-                  </Text>
-                </View>
-                <View style={styles.cardFooter}>
-                  <Text style={styles.cardCta}>轻点开启 →</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
+        <View
+          style={styles.listWrap}
+          onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
+        >
+          {loading ? (
+            <View style={styles.centered}>
+              <ActivityIndicator color={COLORS.kiss} />
+            </View>
+          ) : cards.length === 0 ? (
+            <View style={styles.centered}>
+              <Text style={styles.emptyEmoji}>💌</Text>
+              <Text style={styles.emptyTitle}>还没有收到信</Text>
+              <Text style={styles.emptySub}>已送达的次日达和已开启的择日达都会出现在这里</Text>
+            </View>
+          ) : listHeight > 0 ? (
+            <Animated.ScrollView
+              contentContainerStyle={[
+                styles.stackContainer,
+                { paddingTop: verticalPad, paddingBottom: verticalPad },
+              ]}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={SNAP_INTERVAL}
+              decelerationRate="fast"
+              onScroll={Animated.event(
+                [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+                { useNativeDriver: true }
+              )}
+              scrollEventThrottle={16}
+            >
+              {cards.map((card, index) => {
+                // Each card's "centered" scroll offset is index * SNAP_INTERVAL.
+                // Cards within ±1 SNAP_INTERVAL of that offset scale toward 1
+                // (centered = full size); farther cards stay at 0.92 (peek).
+                const cardCenter = index * SNAP_INTERVAL;
+                const scale = scrollY.interpolate({
+                  inputRange: [
+                    cardCenter - SNAP_INTERVAL,
+                    cardCenter,
+                    cardCenter + SNAP_INTERVAL,
+                  ],
+                  outputRange: [0.92, 1, 0.92],
+                  extrapolate: 'clamp',
+                });
+                const opacity = scrollY.interpolate({
+                  inputRange: [
+                    cardCenter - SNAP_INTERVAL,
+                    cardCenter,
+                    cardCenter + SNAP_INTERVAL,
+                  ],
+                  outputRange: [0.6, 1, 0.6],
+                  extrapolate: 'clamp',
+                });
+                return (
+                  <Animated.View
+                    key={card.key}
+                    style={[
+                      styles.cardSlot,
+                      { marginBottom: index === cards.length - 1 ? 0 : CARD_GAP },
+                      { transform: [{ scale }], opacity },
+                    ]}
+                  >
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => setRevealAnim(card)}
+                      style={[styles.card, { backgroundColor: card.accent }]}
+                    >
+                      <View style={styles.cardHeader}>
+                        <Text style={styles.cardKind}>{card.kindLabel}</Text>
+                        <Text style={styles.cardDate}>{card.date}</Text>
+                      </View>
+                      <View style={styles.cardFromTo}>
+                        <Text style={styles.cardFromToText} numberOfLines={1}>
+                          {card.from} → {card.to}
+                        </Text>
+                      </View>
+                      <View style={styles.cardSnippetWrap}>
+                        <Text style={styles.cardSnippet} numberOfLines={3}>
+                          {card.body}
+                        </Text>
+                      </View>
+                      <View style={styles.cardFooter}>
+                        <Text style={styles.cardCta}>轻点开启 →</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </Animated.View>
+                );
+              })}
+            </Animated.ScrollView>
+          ) : null}
+        </View>
 
+        {/* Inbox re-reads use the quick reveal — no envelope ceremony. */}
         <EnvelopeOpenAnimation
           visible={!!revealAnim}
           wrapInModal={false}
+          skipEnvelope
           kindLabel={revealAnim?.kindLabel}
           from={revealAnim?.from}
           to={revealAnim?.to}
@@ -249,6 +284,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.kiss,
   },
+  listWrap: {
+    flex: 1,
+  },
   centered: {
     flex: 1,
     justifyContent: 'center',
@@ -260,21 +298,19 @@ const styles = StyleSheet.create({
   emptySub: { fontSize: 13, color: COLORS.textLight, textAlign: 'center', lineHeight: 19 },
   stackContainer: {
     paddingHorizontal: 16,
-    paddingTop: 4,
   },
-  // Layout: each card spans CARD_HEIGHT, but consumes only (CARD_HEIGHT - CARD_PEEK)
-  // of vertical space via a negative top margin (applied per-card except the
-  // first via inline style). At rest this gives the Wallet peek look; while
-  // scrolling, sticky behavior keeps the active top card fully visible.
-  card: {
+  cardSlot: {
     height: CARD_HEIGHT,
+  },
+  card: {
+    flex: 1,
     borderRadius: 18,
     paddingHorizontal: 18,
     paddingVertical: 16,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
     justifyContent: 'space-between',
   },
   cardHeader: {

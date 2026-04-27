@@ -4,7 +4,6 @@ import { COLORS } from '../constants';
 
 interface Props {
   visible: boolean;
-  // Letter content shown after the envelope unfolds.
   content: string;
   from?: string;
   to?: string;
@@ -12,9 +11,12 @@ interface Props {
   kindLabel?: string;
   onClose: () => void;
   // When false, render as an absolute-positioned overlay instead of a Modal.
-  // Use false when the parent is already inside a Modal (e.g. InboxScreen)
-  // to avoid the visible re-mount that double-Modal stacking causes.
+  // Use false when the parent is already inside a Modal (e.g. InboxScreen).
   wrapInModal?: boolean;
+  // When true, skip the envelope/flap choreography and reveal the letter
+  // directly with a quick fade + scale-up. Use this for inbox re-reads where
+  // the full ceremony would feel slow.
+  skipEnvelope?: boolean;
 }
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -24,14 +26,6 @@ const FLAP_H = Math.round(ENV_H * 0.6);
 const LETTER_W = SCREEN_W - 40;
 const LETTER_MAX_H = Math.round(SCREEN_H * 0.7);
 
-// Reveal sequence:
-//   1) wrapper fades in + envelope springs up        (closed envelope)
-//   2) flap rotates open                             (envelope opens)
-//   3) letter mounts and slides out, scaling to size (content reveal)
-//
-// The letter is *only mounted into the tree once stage === 'letter'*. Until
-// then, no <View> with content exists, so there's zero risk of a first-frame
-// flash where the native side hasn't yet applied opacity=0.
 type Stage = 'idle' | 'envelope' | 'letter';
 
 export default function EnvelopeOpenAnimation({
@@ -43,6 +37,7 @@ export default function EnvelopeOpenAnimation({
   kindLabel,
   onClose,
   wrapInModal = true,
+  skipEnvelope = false,
 }: Props) {
   const [stage, setStage] = useState<Stage>('idle');
   const wrapperOpacity = useRef(new Animated.Value(0)).current;
@@ -50,7 +45,10 @@ export default function EnvelopeOpenAnimation({
   const flapRotate = useRef(new Animated.Value(0)).current;
   const letterOpacity = useRef(new Animated.Value(0)).current;
   const letterTranslateY = useRef(new Animated.Value(0)).current;
-  const letterScale = useRef(new Animated.Value(0.4)).current;
+  // Letter scale starting point differs by mode: envelope mode starts very
+  // small (rises out of the envelope); skipEnvelope starts close to 1 for a
+  // quick zoom-in.
+  const letterScale = useRef(new Animated.Value(skipEnvelope ? 0.92 : 0.4)).current;
 
   useEffect(() => {
     if (!visible) {
@@ -58,31 +56,44 @@ export default function EnvelopeOpenAnimation({
       return;
     }
 
-    setStage('envelope');
+    // Reset for a clean replay every time the modal opens.
+    setStage('idle');
     wrapperOpacity.setValue(0);
     envelopeScale.setValue(0.6);
     flapRotate.setValue(0);
     letterOpacity.setValue(0);
     letterTranslateY.setValue(0);
-    letterScale.setValue(0.4);
+    letterScale.setValue(skipEnvelope ? 0.92 : 0.4);
 
-    // Beat 1 — backdrop + envelope arrive together
+    if (skipEnvelope) {
+      // Quick reveal: backdrop fades + letter mounts and zooms in. Letter
+      // mount is deferred one frame so the first paint commits with the
+      // animated values at their starting state (no flash of full content).
+      requestAnimationFrame(() => {
+        setStage('letter');
+        requestAnimationFrame(() => {
+          Animated.parallel([
+            Animated.timing(wrapperOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+            Animated.timing(letterOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+            Animated.spring(letterScale, { toValue: 1, friction: 8, tension: 90, useNativeDriver: true }),
+          ]).start();
+        });
+      });
+      return;
+    }
+
+    // Full ceremony: envelope arrives → flap opens → letter rises out.
+    setStage('envelope');
     Animated.parallel([
       Animated.timing(wrapperOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
       Animated.spring(envelopeScale, { toValue: 1, friction: 7, tension: 80, useNativeDriver: true }),
     ]).start(() => {
-      // Beat 2 — flap rotates open
       Animated.timing(flapRotate, {
         toValue: 1,
         duration: 480,
         easing: Easing.bezier(0.4, 0.0, 0.2, 1),
         useNativeDriver: true,
       }).start(() => {
-        // Beat 3 — *now* mount the letter. The View is created with the
-        // animated values already at their starting state (opacity 0, scale
-        // 0.4, translateY 0), so the first paint shows nothing visible.
-        // requestAnimationFrame defers the start by exactly one frame to
-        // guarantee the mount paint commits before we begin moving values.
         setStage('letter');
         requestAnimationFrame(() => {
           Animated.parallel([
@@ -98,80 +109,97 @@ export default function EnvelopeOpenAnimation({
         });
       });
     });
-  }, [visible]);
+  }, [visible, skipEnvelope]);
 
   const flapRotateInterpolate = flapRotate.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '-175deg'],
   });
 
+  const renderLetterCard = () => (
+    <Pressable style={styles.letterPress} onPress={(e) => e.stopPropagation()}>
+      <View style={styles.letterHeader}>
+        {kindLabel ? <Text style={styles.kindLabel}>{kindLabel}</Text> : null}
+        {(from || to) ? (
+          <Text style={styles.fromToText}>
+            <Text style={styles.fromToLabel}>From </Text>
+            <Text style={styles.fromToName}>{from || '—'}</Text>
+            <Text style={styles.fromToLabel}>  →  To </Text>
+            <Text style={styles.fromToName}>{to || '—'}</Text>
+          </Text>
+        ) : null}
+        {date ? <Text style={styles.dateText}>{date}</Text> : null}
+      </View>
+      <View style={styles.divider} />
+      <ScrollView
+        style={styles.contentScroll}
+        contentContainerStyle={styles.contentScrollInner}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.letterContent}>{content}</Text>
+      </ScrollView>
+      <Text style={styles.tapHint}>轻点空白处收起</Text>
+    </Pressable>
+  );
+
   const body = (
     <Pressable style={styles.pressOut} onPress={onClose}>
       <View style={styles.center} pointerEvents="box-none">
-        <Animated.View
-          style={[
-            styles.envelopeWrap,
-            { transform: [{ scale: envelopeScale }] },
-          ]}
-          pointerEvents="none"
-        >
-          <View style={styles.envelopeBody} />
-
-          {stage === 'letter' && (
+        {skipEnvelope ? (
+          stage === 'letter' && (
             <Animated.View
               style={[
-                styles.letterContainer,
+                styles.letterCenter,
                 {
                   opacity: letterOpacity,
-                  transform: [
-                    { translateY: letterTranslateY },
-                    { scale: letterScale },
-                  ],
+                  transform: [{ scale: letterScale }],
                 },
               ]}
             >
-              <Pressable style={styles.letterPress} onPress={(e) => e.stopPropagation()}>
-                <View style={styles.letterHeader}>
-                  {kindLabel ? <Text style={styles.kindLabel}>{kindLabel}</Text> : null}
-                  {(from || to) ? (
-                    <Text style={styles.fromToText}>
-                      <Text style={styles.fromToLabel}>From </Text>
-                      <Text style={styles.fromToName}>{from || '—'}</Text>
-                      <Text style={styles.fromToLabel}>  →  To </Text>
-                      <Text style={styles.fromToName}>{to || '—'}</Text>
-                    </Text>
-                  ) : null}
-                  {date ? <Text style={styles.dateText}>{date}</Text> : null}
-                </View>
-                <View style={styles.divider} />
-                <ScrollView
-                  style={styles.contentScroll}
-                  contentContainerStyle={styles.contentScrollInner}
-                  showsVerticalScrollIndicator={false}
-                >
-                  <Text style={styles.letterContent}>{content}</Text>
-                </ScrollView>
-                <Text style={styles.tapHint}>轻点空白处收起</Text>
-              </Pressable>
+              {renderLetterCard()}
             </Animated.View>
-          )}
-
-          <View style={styles.envelopePocket} />
-
+          )
+        ) : (
           <Animated.View
             style={[
-              styles.flap,
-              { transform: [{ rotateX: flapRotateInterpolate }] },
+              styles.envelopeWrap,
+              { transform: [{ scale: envelopeScale }] },
             ]}
-          />
-        </Animated.View>
+            pointerEvents="none"
+          >
+            <View style={styles.envelopeBody} />
+
+            {stage === 'letter' && (
+              <Animated.View
+                style={[
+                  styles.letterContainer,
+                  {
+                    opacity: letterOpacity,
+                    transform: [
+                      { translateY: letterTranslateY },
+                      { scale: letterScale },
+                    ],
+                  },
+                ]}
+              >
+                {renderLetterCard()}
+              </Animated.View>
+            )}
+
+            <View style={styles.envelopePocket} />
+
+            <Animated.View
+              style={[
+                styles.flap,
+                { transform: [{ rotateX: flapRotateInterpolate }] },
+              ]}
+            />
+          </Animated.View>
+        )}
       </View>
     </Pressable>
   );
 
-  // Wrapper view has a fixed semi-transparent backdrop so the underlying
-  // screen is hidden the moment the overlay mounts (no flicker of the card
-  // list showing through). The Animated.opacity then fades that wrapper in.
   const wrapper = (
     <Animated.View
       style={[
@@ -236,6 +264,10 @@ const styles = StyleSheet.create({
   letterContainer: {
     position: 'absolute',
     bottom: ENV_H * 0.15,
+    width: LETTER_W,
+    maxHeight: LETTER_MAX_H,
+  },
+  letterCenter: {
     width: LETTER_W,
     maxHeight: LETTER_MAX_H,
   },
