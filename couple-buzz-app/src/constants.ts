@@ -16,7 +16,8 @@ export type ActionType =
   | 'haha' | 'hehe' | 'cry' | 'wuwu' | 'sad' | 'clown'
   | 'angry_silent' | 'angry_talk'
   | 'show_off'
-  | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'play' | 'clean' | 'poop' | 'pick_nose'
+  | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'clean' | 'poop' | 'pick_nose'
+  | 'phone' | 'tablet' | 'lazy'
   | 'slap' | 'gym' | 'milk_tea' | 'drink'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping'
   | 'call_wife' | 'call_husband' | 'call_baby'
@@ -74,7 +75,9 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'hungry', emoji: '🫠', label: '饿', color: '#FFEAA7' },
       { type: 'sleepy', emoji: '😴', label: '困', color: '#C3AED6' },
       { type: 'sleep', emoji: '🛌', label: '睡觉', color: '#C3AED6' },
-      { type: 'play', emoji: '🎮', label: '玩', color: '#A8D8EA' },
+      { type: 'lazy', emoji: '🛋️', label: '瘫着', color: '#C3AED6' },
+      { type: 'phone', emoji: '📱', label: '看手机', color: '#A8D8EA' },
+      { type: 'tablet', emoji: '📺', label: '看平板', color: '#B5D8CC' },
       { type: 'clean', emoji: '🧹', label: '打扫卫生', color: '#B8E6CF' },
       { type: 'poop', emoji: '💩', label: '晒特', color: '#C4A882' },
       { type: 'pick_nose', emoji: '🤏', label: '抠鼻屎', color: '#D4C5A9' },
@@ -104,7 +107,8 @@ export const ACTIONS: ActionConfig[] = ACTION_CATEGORIES.flatMap(c => c.actions)
 // even after we remove the type from the picker grid.
 export const ACTION_EMOJI: Record<string, string> = {
   ...Object.fromEntries(ACTIONS.map(a => [a.type, a.emoji])),
-  // Legacy: 'smug' (得意) was renamed/replaced by 'praise_you' — keep emoji
-  // mapping so historical messages don't show as "?".
-  smug: '🤩',
+  // Legacy types removed from the picker but kept in emoji map so historical
+  // history rows don't display as "?".
+  smug: '🤩',  // replaced by 'praise_you'
+  play: '🎮',  // replaced by 'phone'
 };

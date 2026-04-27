@@ -143,7 +143,7 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
                 <Text style={styles.reactedEmoji}>
                   {my_reaction_to_partner === 'up' ? '👍' : '👎'}
                 </Text>
-                <Text style={styles.reactedText}>已评价（不可修改）</Text>
+                <Text style={styles.reactedText}>已评价</Text>
               </View>
             ) : (
               <View style={styles.reactRow}>

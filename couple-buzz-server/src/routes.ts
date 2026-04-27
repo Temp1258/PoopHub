@@ -38,6 +38,7 @@ const VALID_ACTIONS: ReadonlySet<string> = new Set([
   'call_wife', 'call_husband', 'call_baby',
   'gym', 'milk_tea', 'drink',
   'show_off', 'smug', 'praise_me', 'praise_you',
+  'phone', 'tablet', 'lazy',
 ]);
 
 // Timezone helpers
