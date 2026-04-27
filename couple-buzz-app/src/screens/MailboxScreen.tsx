@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import MailboxCard from '../components/MailboxCard';
 import TimeCapsuleCard from '../components/TimeCapsuleCard';
-import InboxScreen from './InboxScreen';
+import InboxScreen, { InboxHandle } from './InboxScreen';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -14,13 +14,18 @@ export default function MailboxScreen() {
   const [inboxOpen, setInboxOpen] = useState(false);
   const mailboxRef = useRef<Reloadable>(null);
   const capsuleRef = useRef<Reloadable>(null);
+  const inboxRef = useRef<InboxHandle>(null);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
+      // Pull-to-refresh on the mailbox screen also reloads the inbox so the
+      // user only has one place to refresh from. The inbox itself has no
+      // RefreshControl on purpose.
       await Promise.all([
         mailboxRef.current?.reload(),
         capsuleRef.current?.reload(),
+        inboxRef.current?.reload(),
       ]);
     } finally {
       setRefreshing(false);
@@ -57,7 +62,7 @@ export default function MailboxScreen() {
         </TouchableOpacity>
       </ScrollView>
 
-      <InboxScreen visible={inboxOpen} onClose={() => setInboxOpen(false)} />
+      <InboxScreen ref={inboxRef} visible={inboxOpen} onClose={() => setInboxOpen(false)} />
     </View>
   );
 }

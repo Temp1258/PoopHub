@@ -11,9 +11,18 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, MailboxResponse } from '../services/api';
+import { storage } from '../utils/storage';
 import { useCountdown } from '../utils/countdown';
 import SealAnimation from './SealAnimation';
 import EnvelopeOpenAnimation from './EnvelopeOpenAnimation';
+
+interface RevealMeta {
+  from: string;
+  to: string;
+  date: string;
+  kindLabel: string;
+  content: string;
+}
 
 const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<MailboxResponse | null>(null);
@@ -28,7 +37,22 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
   // Track previous phase so we can play the open animation exactly once when
   // the round transitions writing → revealed in front of the user.
   const prevPhaseRef = useRef<MailboxResponse['phase'] | null>(null);
-  const [revealAnim, setRevealAnim] = useState<{ title: string; content: string } | null>(null);
+  const [revealAnim, setRevealAnim] = useState<RevealMeta | null>(null);
+  const [names, setNames] = useState<{ me: string; ta: string }>({ me: '我', ta: 'ta' });
+
+  useEffect(() => {
+    (async () => {
+      const [myName, remark, partnerName] = await Promise.all([
+        storage.getUserName(),
+        storage.getPartnerRemark(),
+        storage.getPartnerName(),
+      ]);
+      setNames({
+        me: myName || '我',
+        ta: (remark && remark.trim()) || partnerName || 'ta',
+      });
+    })();
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -66,10 +90,17 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
       // Show partner's message in the open animation; if partner skipped,
       // show our own as the headline letter.
       const text = data.partner_message ?? data.my_message ?? '';
-      const title = data.partner_message ? 'ta 写的' : '我写的';
-      if (text) setRevealAnim({ title, content: text });
+      if (!text) return;
+      const fromPartner = !!data.partner_message;
+      setRevealAnim({
+        from: fromPartner ? names.ta : names.me,
+        to: fromPartner ? names.me : names.ta,
+        date: formatWeekKey(data.week_key),
+        kindLabel: '次日达',
+        content: text,
+      });
     }
-  }, [data]);
+  }, [data, names.me, names.ta]);
 
   const cd = useCountdown(data?.reveal_at ?? null);
 
@@ -176,7 +207,10 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
 
       <EnvelopeOpenAnimation
         visible={!!revealAnim}
-        title={revealAnim?.title}
+        kindLabel={revealAnim?.kindLabel}
+        from={revealAnim?.from}
+        to={revealAnim?.to}
+        date={revealAnim?.date}
         content={revealAnim?.content ?? ''}
         onClose={() => setRevealAnim(null)}
       />
@@ -185,6 +219,12 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
 });
 
 export default MailboxCard;
+
+function formatWeekKey(weekKey: string): string {
+  const date = weekKey.slice(0, 10);
+  const phase = weekKey.slice(11);
+  return `${date} ${phase === 'AM' ? '上半场' : '下半场'}`;
+}
 
 const styles = StyleSheet.create({
   card: {

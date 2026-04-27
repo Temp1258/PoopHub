@@ -1,4 +1,4 @@
-import React, { useState, useCallback, forwardRef, useImperativeHandle, useEffect } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,6 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, BucketItemResponse } from '../services/api';
-import { storage } from '../utils/storage';
 
 // Brand colors per side: kiss-pink for the current user, soft blue for the
 // partner. Used as a 4px left bar + chip on each item so we can tell at a
@@ -40,11 +39,6 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onC
   const [newTitle, setNewTitle] = useState('');
   const [newCategory, setNewCategory] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
-  const [myUserId, setMyUserId] = useState<string | null>(null);
-
-  useEffect(() => {
-    storage.getUserId().then(setMyUserId);
-  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -144,7 +138,9 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onC
       </View>
 
       {filtered.map(item => {
-        const mine = !!myUserId && item.created_by === myUserId;
+        // Server normalizes the field to 'me' | 'partner' relative to the
+        // requester — don't compare against user_id, that won't match.
+        const mine = item.created_by === 'me';
         const accent = mine ? MINE_COLOR : PARTNER_COLOR;
         return (
           <TouchableOpacity

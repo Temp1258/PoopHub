@@ -1,4 +1,4 @@
-import React, { useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -13,10 +13,19 @@ import { useFocusEffect } from '@react-navigation/native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
+import { storage } from '../utils/storage';
 import SealAnimation from './SealAnimation';
 import EnvelopeOpenAnimation from './EnvelopeOpenAnimation';
 
 type Visibility = 'self' | 'partner';
+
+interface RevealMeta {
+  from: string;
+  to: string;
+  date: string;
+  kindLabel: string;
+  content: string;
+}
 
 const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [capsules, setCapsules] = useState<CapsuleItem[]>([]);
@@ -31,7 +40,22 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
   const [sealing, setSealing] = useState(false);
   const [sealedPreview, setSealedPreview] = useState('');
   // Open animation state — runs when an unlockable capsule is tapped.
-  const [revealAnim, setRevealAnim] = useState<{ title: string; content: string } | null>(null);
+  const [revealAnim, setRevealAnim] = useState<RevealMeta | null>(null);
+  const [names, setNames] = useState<{ me: string; ta: string }>({ me: '我', ta: 'ta' });
+
+  useEffect(() => {
+    (async () => {
+      const [myName, remark, partnerName] = await Promise.all([
+        storage.getUserName(),
+        storage.getPartnerRemark(),
+        storage.getPartnerName(),
+      ]);
+      setNames({
+        me: myName || '我',
+        ta: (remark && remark.trim()) || partnerName || 'ta',
+      });
+    })();
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -106,8 +130,28 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
   const handleOpen = async (capsule: CapsuleItem) => {
     try {
       const result = await api.openCapsule(capsule.id);
-      const title = capsule.author === 'me' ? '我写的' : 'ta 写的';
-      setRevealAnim({ title, content: result.content });
+      let from = names.me;
+      let to = names.ta;
+      let kindLabel = '择日达';
+      if (capsule.author === 'me') {
+        if (capsule.visibility === 'self') {
+          from = names.me; to = names.me;
+          kindLabel = '择日达 · 给自己';
+        } else {
+          from = names.me; to = names.ta;
+          kindLabel = '择日达 · 给 ta';
+        }
+      } else {
+        from = names.ta; to = names.me;
+        kindLabel = '择日达 · 来自 ta';
+      }
+      setRevealAnim({
+        from,
+        to,
+        date: capsule.unlock_date,
+        kindLabel,
+        content: result.content,
+      });
       // Refresh in background so the card moves out of "unlockable" state
       // once the open modal closes.
       load();
@@ -254,7 +298,10 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
 
       <EnvelopeOpenAnimation
         visible={!!revealAnim}
-        title={revealAnim?.title}
+        kindLabel={revealAnim?.kindLabel}
+        from={revealAnim?.from}
+        to={revealAnim?.to}
+        date={revealAnim?.date}
         content={revealAnim?.content ?? ''}
         onClose={() => setRevealAnim(null)}
       />

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   Modal,
   View,
@@ -7,11 +7,11 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
+import { storage } from '../utils/storage';
 import EnvelopeOpenAnimation from '../components/EnvelopeOpenAnimation';
 
 interface Props {
@@ -19,107 +19,140 @@ interface Props {
   onClose: () => void;
 }
 
+export interface InboxHandle {
+  reload: () => Promise<void>;
+}
+
 type LetterKind = 'mailbox' | 'capsule';
 
 interface LetterCard {
   key: string;
   kind: LetterKind;
-  // Sort key — ISO datetime string
+  // ISO-ish sort key, descending
   sortAt: string;
-  title: string;
-  subtitle: string;
-  // Either a single body (capsule) or two-side body (mailbox AM/PM session).
-  body?: string;
-  bothSides?: { mine: string | null; partner: string | null };
+  date: string;
+  from: string;
+  to: string;
+  body: string;
+  kindLabel: string;
   accent: string;
 }
 
-// Mailbox vs capsule color tokens — Wallet passes are visually distinct per
-// type, so the two letter sources read at a glance.
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
 
-// Stack metrics — each card peeks ~120pt above the next, mimicking Wallet.
-const CARD_HEIGHT = 220;
-const CARD_PEEK = 120;
+// Stack metrics — each card peeks ~120pt under the next, mimicking Wallet.
+const CARD_HEIGHT = 200;
+const CARD_PEEK = 110;
 
-export default function InboxScreen({ visible, onClose }: Props) {
+const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) => {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [cards, setCards] = useState<LetterCard[]>([]);
-  const [revealAnim, setRevealAnim] = useState<{ title: string; content: string } | null>(null);
+  const [revealAnim, setRevealAnim] = useState<LetterCard | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [mailbox, capsules] = await Promise.all([
+      // Names: partner remark (private nickname) wins over the partner's
+      // own profile name so the inbox feels personal.
+      const [myName, partnerRemark, partnerName, mailbox, capsules] = await Promise.all([
+        storage.getUserName(),
+        storage.getPartnerRemark(),
+        storage.getPartnerName(),
         api.getMailboxArchive(50).catch(() => ({ weeks: [] })),
         api.getCapsules().catch(() => ({ capsules: [] as CapsuleItem[] })),
       ]);
+      const me = myName || '我';
+      const ta = (partnerRemark && partnerRemark.trim()) || partnerName || 'ta';
 
-      const mailboxCards: LetterCard[] = (mailbox.weeks || [])
-        .filter(w => w.my_content || w.partner_content)
-        .map(w => ({
-          key: `m-${w.week_key}`,
-          kind: 'mailbox',
-          sortAt: w.week_key,
-          title: formatMailboxTitle(w.week_key),
-          subtitle: '次日达',
-          bothSides: { mine: w.my_content, partner: w.partner_content },
-          accent: MAILBOX_ACCENT,
-        }));
+      const out: LetterCard[] = [];
 
-      const capsuleCards: LetterCard[] = (capsules.capsules || [])
-        .filter(c => c.opened_at && c.content)
-        .map(c => ({
+      // Each mailbox round becomes up to two cards — one per side that wrote.
+      for (const w of mailbox.weeks || []) {
+        const date = formatMailboxDate(w.week_key);
+        if (w.partner_content) {
+          out.push({
+            key: `m-${w.week_key}-p`,
+            kind: 'mailbox',
+            sortAt: w.week_key + '-p',
+            date,
+            from: ta,
+            to: me,
+            body: w.partner_content,
+            kindLabel: '次日达',
+            accent: MAILBOX_ACCENT,
+          });
+        }
+        if (w.my_content) {
+          out.push({
+            key: `m-${w.week_key}-m`,
+            kind: 'mailbox',
+            sortAt: w.week_key + '-m',
+            date,
+            from: me,
+            to: ta,
+            body: w.my_content,
+            kindLabel: '次日达',
+            accent: MAILBOX_ACCENT,
+          });
+        }
+      }
+
+      // Capsules: one card per opened letter, with content non-null.
+      for (const c of capsules.capsules || []) {
+        if (!c.opened_at || !c.content) continue;
+        let from = me;
+        let to = ta;
+        let kindLabel = '择日达';
+        if (c.author === 'me') {
+          if (c.visibility === 'self') {
+            from = me; to = me;
+            kindLabel = '择日达 · 给自己';
+          } else {
+            from = me; to = ta;
+            kindLabel = '择日达 · 给 ta';
+          }
+        } else {
+          from = ta; to = me;
+          kindLabel = '择日达 · 来自 ta';
+        }
+        out.push({
           key: `c-${c.id}`,
           kind: 'capsule',
-          sortAt: c.opened_at || c.unlock_date,
-          title: c.unlock_date,
-          subtitle: c.author === 'me'
-            ? (c.visibility === 'self' ? '择日达 · 给自己' : '择日达 · 给 ta')
-            : '择日达 · 来自 ta',
-          body: c.content || '',
+          sortAt: c.opened_at,
+          date: c.unlock_date,
+          from,
+          to,
+          body: c.content,
+          kindLabel,
           accent: CAPSULE_ACCENT,
-        }));
+        });
+      }
 
-      const merged = [...mailboxCards, ...capsuleCards].sort((a, b) =>
-        a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0
-      );
-      setCards(merged);
+      out.sort((a, b) => (a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0));
+      setCards(out);
     } finally {
       setLoading(false);
     }
   }, []);
 
+  useImperativeHandle(ref, () => ({ reload: load }), [load]);
+
+  // Refresh on every modal open so the parent's pull-to-refresh seeds the
+  // freshest data; the inbox itself has no internal RefreshControl.
   useEffect(() => {
     if (!visible) return;
     setLoading(true);
     load();
   }, [visible, load]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try { await load(); } finally { setRefreshing(false); }
-  }, [load]);
-
-  const handleOpenCard = (card: LetterCard) => {
-    if (card.kind === 'capsule') {
-      setRevealAnim({ title: card.subtitle, content: card.body || '' });
-      return;
-    }
-    // Mailbox: prefer partner side as the "letter to me", but show both if
-    // partner skipped.
-    const both = card.bothSides!;
-    const content = both.partner
-      ? both.partner
-      : (both.mine || '这场没有内容');
-    const title = both.partner ? `${card.title} · ta 写的` : `${card.title} · 我写的`;
-    setRevealAnim({ title, content });
-  };
-
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={onClose}
+      presentationStyle="pageSheet"
+    >
       <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>📬 收件箱</Text>
@@ -136,40 +169,43 @@ export default function InboxScreen({ visible, onClose }: Props) {
           <View style={styles.centered}>
             <Text style={styles.emptyEmoji}>💌</Text>
             <Text style={styles.emptyTitle}>还没有收到信</Text>
-            <Text style={styles.emptySub}>已揭晓的次日达和已开启的择日达都会出现在这里</Text>
+            <Text style={styles.emptySub}>已送达的次日达和已开启的择日达都会出现在这里</Text>
           </View>
         ) : (
           <ScrollView
             contentContainerStyle={[styles.stackContainer, { paddingBottom: insets.bottom + 60 }]}
             showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.kiss} />
-            }
+            // No RefreshControl on purpose — the parent screen's pull-to-
+            // refresh seeds the data, and an empty top here lets the system
+            // sheet gesture handle "swipe down to dismiss" cleanly.
           >
             {cards.map((card, index) => (
               <TouchableOpacity
                 key={card.key}
                 activeOpacity={0.85}
-                onPress={() => handleOpenCard(card)}
+                onPress={() => setRevealAnim(card)}
                 style={[
                   styles.card,
                   {
                     backgroundColor: card.accent,
                     marginTop: index === 0 ? 0 : -CARD_PEEK,
-                    // Newest on top — invert z-stack so older cards peek
-                    // out from underneath instead of covering the newer.
                     zIndex: cards.length - index,
                     elevation: cards.length - index,
                   },
                 ]}
               >
                 <View style={styles.cardHeader}>
-                  <Text style={styles.cardKind}>{card.subtitle}</Text>
-                  <Text style={styles.cardDate}>{card.title}</Text>
+                  <Text style={styles.cardKind}>{card.kindLabel}</Text>
+                  <Text style={styles.cardDate}>{card.date}</Text>
+                </View>
+                <View style={styles.cardFromTo}>
+                  <Text style={styles.cardFromToText} numberOfLines={1}>
+                    {card.from} → {card.to}
+                  </Text>
                 </View>
                 <View style={styles.cardSnippetWrap}>
-                  <Text style={styles.cardSnippet} numberOfLines={3}>
-                    {previewOf(card)}
+                  <Text style={styles.cardSnippet} numberOfLines={2}>
+                    {card.body}
                   </Text>
                 </View>
                 <View style={styles.cardFooter}>
@@ -180,29 +216,30 @@ export default function InboxScreen({ visible, onClose }: Props) {
           </ScrollView>
         )}
 
+        {/* Inline overlay (not a Modal) — avoids the visible re-mount that
+            stacking two Modals causes when opening a letter from the inbox. */}
         <EnvelopeOpenAnimation
           visible={!!revealAnim}
-          title={revealAnim?.title}
-          content={revealAnim?.content ?? ''}
+          wrapInModal={false}
+          kindLabel={revealAnim?.kindLabel}
+          from={revealAnim?.from}
+          to={revealAnim?.to}
+          date={revealAnim?.date}
+          content={revealAnim?.body ?? ''}
           onClose={() => setRevealAnim(null)}
         />
       </View>
     </Modal>
   );
-}
+});
 
-function formatMailboxTitle(weekKey: string): string {
+export default InboxScreen;
+
+function formatMailboxDate(weekKey: string): string {
   // Format: YYYY-MM-DD-AM / -PM
   const date = weekKey.slice(0, 10);
   const phase = weekKey.slice(11);
   return `${date} ${phase === 'AM' ? '上半场' : '下半场'}`;
-}
-
-function previewOf(card: LetterCard): string {
-  if (card.kind === 'capsule') return card.body || '';
-  const both = card.bothSides!;
-  if (both.partner && both.mine) return `ta: ${both.partner}`;
-  return both.partner || both.mine || '这场没有内容';
 }
 
 const styles = StyleSheet.create({
@@ -257,32 +294,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cardKind: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: COLORS.white,
     letterSpacing: 0.5,
   },
   cardDate: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.85)',
+  },
+  cardFromTo: {
+    marginTop: 4,
+  },
+  cardFromToText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.white,
   },
   cardSnippetWrap: {
     flex: 1,
     justifyContent: 'center',
-    paddingVertical: 12,
+    paddingTop: 4,
   },
   cardSnippet: {
-    fontSize: 16,
-    lineHeight: 22,
-    color: COLORS.white,
-    fontWeight: '500',
+    fontSize: 14,
+    lineHeight: 20,
+    color: 'rgba(255,255,255,0.95)',
   },
   cardFooter: {
     alignItems: 'flex-end',
   },
   cardCta: {
-    fontSize: 12,
+    fontSize: 11,
     color: 'rgba(255,255,255,0.9)',
     fontWeight: '600',
   },
