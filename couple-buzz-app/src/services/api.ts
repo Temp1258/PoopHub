@@ -223,7 +223,25 @@ export interface MailboxResponse {
 }
 
 export interface MailboxArchiveResponse {
-  weeks: { week_key: string; my_content: string | null; partner_content: string | null }[];
+  weeks: {
+    week_key: string;
+    my_content: string | null;
+    partner_content: string | null;
+    // Server returns the partner mailbox row's PK so the inbox can reference
+    // a specific letter for trash / restore / purge actions. May be null when
+    // partner skipped the round or the message has been trashed/purged.
+    partner_message_id: number | null;
+  }[];
+}
+
+export interface TrashedInboxItem {
+  kind: 'mailbox' | 'capsule';
+  ref_id: number;
+  date: string;
+  content: string;
+  author: 'me' | 'partner';
+  visibility: 'self' | 'partner';
+  trashed_at: string;
 }
 
 export interface WeeklyReportResponse {
@@ -432,6 +450,19 @@ export const api = {
   },
   openCapsule(id: number): Promise<{ success: boolean; content: string }> {
     return request(`/api/capsules/${id}/open`, { method: 'POST' });
+  },
+
+  trashInboxItem(kind: 'mailbox' | 'capsule', refId: number): Promise<{ success: boolean }> {
+    return request('/api/inbox/trash', { method: 'POST', body: JSON.stringify({ kind, ref_id: refId }) });
+  },
+  restoreInboxItem(kind: 'mailbox' | 'capsule', refId: number): Promise<{ success: boolean }> {
+    return request('/api/inbox/restore', { method: 'POST', body: JSON.stringify({ kind, ref_id: refId }) });
+  },
+  purgeInboxItem(kind: 'mailbox' | 'capsule', refId: number): Promise<{ success: boolean }> {
+    return request('/api/inbox/purge', { method: 'POST', body: JSON.stringify({ kind, ref_id: refId }) });
+  },
+  getInboxTrash(): Promise<{ items: TrashedInboxItem[] }> {
+    return request('/api/inbox/trash');
   },
 
   getBucket(): Promise<{ items: BucketItemResponse[]; total: number; completed_count: number }> {

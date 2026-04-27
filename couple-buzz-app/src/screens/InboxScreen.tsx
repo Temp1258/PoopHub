@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   Modal,
   View,
@@ -10,12 +10,16 @@ import {
   Animated,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  PanResponder,
+  Dimensions,
+  Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 import { storage } from '../utils/storage';
 import EnvelopeOpenAnimation from '../components/EnvelopeOpenAnimation';
+import IslandToast, { IslandToastHandle } from '../components/IslandToast';
 
 interface Props {
   visible: boolean;
@@ -31,6 +35,7 @@ type LetterKind = 'mailbox' | 'capsule';
 interface LetterCard {
   key: string;
   kind: LetterKind;
+  refId: number;
   sortAt: string;
   date: string;
   from: string;
@@ -42,15 +47,19 @@ interface LetterCard {
 
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
+const SCREEN_W = Dimensions.get('window').width;
 
 // Layout interval — drives snapping. Cards lay out at i*SNAP_INTERVAL apart.
 const CARD_HEIGHT = 220;
 const CARD_GAP = 16;
 const SNAP_INTERVAL = CARD_HEIGHT + CARD_GAP;
 
-// Visual stacking offset — how much each peek card sticks out beyond the
-// centered card. Smaller = tighter stack (more Apple Wallet-like).
-const STACK_OFFSET = 40;
+// Visual stacking offset — peek cards expose 25% (55pt of CARD_HEIGHT 220pt),
+// so each card overlaps the previous by 75%.
+const STACK_OFFSET = 55;
+
+// Right-swipe threshold to trigger deletion (~38% of screen width).
+const SWIPE_THRESHOLD = SCREEN_W * 0.38;
 
 const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) => {
   const insets = useSafeAreaInsets();
@@ -61,6 +70,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
   const [centerIdx, setCenterIdx] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
+  const toastRef = useRef<IslandToastHandle>(null);
 
   const load = useCallback(async () => {
     try {
@@ -77,10 +87,11 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       const out: LetterCard[] = [];
 
       for (const w of mailbox.weeks || []) {
-        if (!w.partner_content) continue;
+        if (!w.partner_content || !w.partner_message_id) continue;
         out.push({
-          key: `m-${w.week_key}`,
+          key: `m-${w.partner_message_id}`,
           kind: 'mailbox',
+          refId: w.partner_message_id,
           sortAt: w.week_key,
           date: formatMailboxDate(w.week_key),
           from: ta,
@@ -108,6 +119,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
         out.push({
           key: `c-${c.id}`,
           kind: 'capsule',
+          refId: c.id,
           sortAt: c.opened_at,
           date: c.unlock_date,
           from,
@@ -136,8 +148,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
   const verticalPad = listHeight > 0 ? Math.max(0, (listHeight - CARD_HEIGHT) / 2) : 0;
 
-  // Native-driven scroll → drives transforms. JS listener also runs to update
-  // dynamic zIndex (which can't be animated by the native driver).
   const onScroll = Animated.event(
     [{ nativeEvent: { contentOffset: { y: scrollY } } }],
     {
@@ -154,10 +164,22 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
     if (index === centerIdx) {
       setRevealAnim(card);
     } else {
-      // Tapping a peek card brings it to center first; user taps again to open.
       scrollViewRef.current?.scrollTo({ y: index * SNAP_INTERVAL, animated: true });
     }
   };
+
+  const handleSwipeOut = useCallback(async (card: LetterCard) => {
+    // Optimistic removal — remove from local state immediately, fire API.
+    // If the API fails, reload from server to restore the truth.
+    setCards(prev => prev.filter(c => c.key !== card.key));
+    toastRef.current?.show('已移到垃圾篓 · 可在垃圾篓恢复');
+    try {
+      await api.trashInboxItem(card.kind, card.refId);
+    } catch {
+      toastRef.current?.show('移到垃圾篓失败');
+      load();
+    }
+  }, [load]);
 
   return (
     <Modal
@@ -203,10 +225,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
             >
               {cards.map((card, index) => {
                 const cardScrollAtCenter = index * SNAP_INTERVAL;
-                // translateY pulls the card from its natural paging position
-                // toward a tight stack around the centered card. relativeIndex
-                // ≈ +1 → card is one slot below; we shift it up by (SNAP -
-                // STACK) so it's only STACK_OFFSET below center.
                 const translateY = scrollY.interpolate({
                   inputRange: [
                     cardScrollAtCenter - SNAP_INTERVAL,
@@ -214,14 +232,12 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                     cardScrollAtCenter + SNAP_INTERVAL,
                   ],
                   outputRange: [
-                    STACK_OFFSET - SNAP_INTERVAL, // far-below relative slots: pulled up
-                    0,                             // centered: no shift
-                    SNAP_INTERVAL - STACK_OFFSET,  // far-above relative slots: pushed down
+                    STACK_OFFSET - SNAP_INTERVAL,
+                    0,
+                    SNAP_INTERVAL - STACK_OFFSET,
                   ],
                   extrapolate: 'extend',
                 });
-                // Scale alone carries the "depth" feel — far cards stay
-                // fully opaque so the whole stack remains visible.
                 const scale = scrollY.interpolate({
                   inputRange: [
                     cardScrollAtCenter - 2 * SNAP_INTERVAL,
@@ -234,7 +250,6 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                   extrapolate: 'clamp',
                 });
 
-                // Centered card on top, then nearest neighbors, etc.
                 const dist = Math.abs(index - centerIdx);
                 const zIdx = cards.length - dist;
 
@@ -251,31 +266,36 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                       },
                     ]}
                   >
-                    <TouchableOpacity
-                      activeOpacity={0.85}
-                      onPress={() => handleCardPress(index, card)}
-                      style={[styles.card, { backgroundColor: card.accent }]}
+                    <SwipeableCard
+                      enabled={index === centerIdx}
+                      onSwipeOut={() => handleSwipeOut(card)}
                     >
-                      <View style={styles.cardHeader}>
-                        <Text style={styles.cardKind}>{card.kindLabel}</Text>
-                        <Text style={styles.cardDate}>{card.date}</Text>
-                      </View>
-                      <View style={styles.cardFromTo}>
-                        <Text style={styles.cardFromToText} numberOfLines={1}>
-                          {card.from} → {card.to}
-                        </Text>
-                      </View>
-                      <View style={styles.cardSnippetWrap}>
-                        <Text style={styles.cardSnippet} numberOfLines={3}>
-                          {card.body}
-                        </Text>
-                      </View>
-                      <View style={styles.cardFooter}>
-                        <Text style={styles.cardCta}>
-                          {index === centerIdx ? '轻点开启 →' : '轻点居中'}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => handleCardPress(index, card)}
+                        style={[styles.card, { backgroundColor: card.accent }]}
+                      >
+                        <View style={styles.cardHeader}>
+                          <Text style={styles.cardKind}>{card.kindLabel}</Text>
+                          <Text style={styles.cardDate}>{card.date}</Text>
+                        </View>
+                        <View style={styles.cardFromTo}>
+                          <Text style={styles.cardFromToText} numberOfLines={1}>
+                            {card.from} → {card.to}
+                          </Text>
+                        </View>
+                        <View style={styles.cardSnippetWrap}>
+                          <Text style={styles.cardSnippet} numberOfLines={3}>
+                            {card.body}
+                          </Text>
+                        </View>
+                        <View style={styles.cardFooter}>
+                          <Text style={styles.cardCta}>
+                            {index === centerIdx ? '轻点开启 · 右划删除' : '轻点居中'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    </SwipeableCard>
                   </Animated.View>
                 );
               })}
@@ -294,12 +314,87 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           content={revealAnim?.body ?? ''}
           onClose={() => setRevealAnim(null)}
         />
+
+        <IslandToast ref={toastRef} top={insets.top + 8} />
       </View>
     </Modal>
   );
 });
 
 export default InboxScreen;
+
+// Wraps a card with a horizontal pan gesture that swipes the card off to the
+// right when released past SWIPE_THRESHOLD. Vertical motion is yielded to the
+// ScrollView. Only enabled for the centered card so peek cards can't be
+// accidentally dismissed.
+function SwipeableCard({
+  children,
+  onSwipeOut,
+  enabled,
+}: {
+  children: React.ReactNode;
+  onSwipeOut: () => void;
+  enabled: boolean;
+}) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, g) => {
+          if (!enabled) return false;
+          // Claim the gesture only when horizontal motion clearly dominates,
+          // so vertical scrolling stays with the parent ScrollView.
+          return Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy) * 1.6;
+        },
+        onMoveShouldSetPanResponderCapture: (_, g) => {
+          if (!enabled) return false;
+          return Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 2.2;
+        },
+        onPanResponderMove: (_, g) => {
+          // Only follow rightward swipes; clamp leftward motion at 0.
+          translateX.setValue(Math.max(0, g.dx));
+          // Slight opacity falloff as the card moves away.
+          opacity.setValue(Math.max(0.4, 1 - g.dx / SCREEN_W));
+        },
+        onPanResponderRelease: (_, g) => {
+          if (g.dx >= SWIPE_THRESHOLD) {
+            Animated.parallel([
+              Animated.timing(translateX, {
+                toValue: SCREEN_W * 1.1,
+                duration: 220,
+                easing: Easing.out(Easing.cubic),
+                useNativeDriver: true,
+              }),
+              Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+            ]).start(() => onSwipeOut());
+          } else {
+            Animated.parallel([
+              Animated.spring(translateX, { toValue: 0, friction: 7, tension: 70, useNativeDriver: true }),
+              Animated.spring(opacity, { toValue: 1, friction: 7, useNativeDriver: true }),
+            ]).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.parallel([
+            Animated.spring(translateX, { toValue: 0, friction: 7, tension: 70, useNativeDriver: true }),
+            Animated.spring(opacity, { toValue: 1, friction: 7, useNativeDriver: true }),
+          ]).start();
+        },
+      }),
+    [enabled, onSwipeOut, translateX, opacity]
+  );
+
+  return (
+    <Animated.View
+      {...panResponder.panHandlers}
+      style={[styles.swipeWrap, { transform: [{ translateX }], opacity }]}
+    >
+      {children}
+    </Animated.View>
+  );
+}
 
 function formatMailboxDate(weekKey: string): string {
   const date = weekKey.slice(0, 10);
@@ -346,6 +441,9 @@ const styles = StyleSheet.create({
   },
   cardSlot: {
     height: CARD_HEIGHT,
+  },
+  swipeWrap: {
+    flex: 1,
   },
   card: {
     flex: 1,

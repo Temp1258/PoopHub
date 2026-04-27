@@ -5,6 +5,7 @@ import { COLORS } from '../constants';
 import MailboxCard from '../components/MailboxCard';
 import TimeCapsuleCard from '../components/TimeCapsuleCard';
 import InboxScreen, { InboxHandle } from './InboxScreen';
+import TrashScreen, { TrashHandle } from './TrashScreen';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -12,20 +13,20 @@ export default function MailboxScreen() {
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   const mailboxRef = useRef<Reloadable>(null);
   const capsuleRef = useRef<Reloadable>(null);
   const inboxRef = useRef<InboxHandle>(null);
+  const trashRef = useRef<TrashHandle>(null);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      // Pull-to-refresh on the mailbox screen also reloads the inbox so the
-      // user only has one place to refresh from. The inbox itself has no
-      // RefreshControl on purpose.
       await Promise.all([
         mailboxRef.current?.reload(),
         capsuleRef.current?.reload(),
         inboxRef.current?.reload(),
+        trashRef.current?.reload(),
       ]);
     } finally {
       setRefreshing(false);
@@ -49,20 +50,39 @@ export default function MailboxScreen() {
         <TimeCapsuleCard ref={capsuleRef} />
 
         <TouchableOpacity
-          style={styles.inboxEntry}
+          style={styles.entry}
           onPress={() => setInboxOpen(true)}
           activeOpacity={0.85}
         >
-          <Text style={styles.inboxEmoji}>📬</Text>
+          <Text style={styles.entryEmoji}>📬</Text>
           <View style={{ flex: 1 }}>
-            <Text style={styles.inboxTitle}>收件箱</Text>
-            <Text style={styles.inboxSub}>已送达的次日达 · 已开启的择日达</Text>
+            <Text style={styles.entryTitle}>收件箱</Text>
+            <Text style={styles.entrySub}>已送达的次日达 · 已开启的择日达</Text>
           </View>
-          <Text style={styles.inboxArrow}>›</Text>
+          <Text style={styles.entryArrow}>›</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.entry}
+          onPress={() => setTrashOpen(true)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.entryEmoji}>🗑️</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.entryTitle}>垃圾篓</Text>
+            <Text style={styles.entrySub}>从收件箱删除的信件可以在这里恢复</Text>
+          </View>
+          <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
       </ScrollView>
 
       <InboxScreen ref={inboxRef} visible={inboxOpen} onClose={() => setInboxOpen(false)} />
+      <TrashScreen
+        ref={trashRef}
+        visible={trashOpen}
+        onClose={() => setTrashOpen(false)}
+        onAfterRestore={() => inboxRef.current?.reload()}
+      />
     </View>
   );
 }
@@ -77,7 +97,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 16,
   },
-  inboxEntry: {
+  entry: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: COLORS.white,
@@ -88,20 +108,20 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     gap: 14,
   },
-  inboxEmoji: {
+  entryEmoji: {
     fontSize: 28,
   },
-  inboxTitle: {
+  entryTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text,
   },
-  inboxSub: {
+  entrySub: {
     fontSize: 12,
     color: COLORS.textLight,
     marginTop: 2,
   },
-  inboxArrow: {
+  entryArrow: {
     fontSize: 22,
     color: COLORS.textLight,
     fontWeight: '300',

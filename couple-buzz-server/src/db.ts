@@ -115,6 +115,29 @@ export interface DailySnap {
   created_at: string;
 }
 
+export interface InboxAction {
+  id: number;
+  user_id: string;
+  kind: 'mailbox' | 'capsule';
+  ref_id: number;
+  status: 'trashed' | 'purged';
+  updated_at: string;
+}
+
+export interface TrashedInboxItem {
+  kind: 'mailbox' | 'capsule';
+  ref_id: number;
+  // For mailbox: week_key (e.g. "2026-04-27-AM"). For capsule: unlock_date.
+  date: string;
+  content: string;
+  // 'me' if recipient is also the author (only for self-capsule), 'partner'
+  // for normal received letters.
+  author: 'me' | 'partner';
+  // Capsule-only: 'self' | 'partner' visibility. Mailbox is always 'partner'.
+  visibility: 'self' | 'partner';
+  trashed_at: string;
+}
+
 export interface DailyReaction {
   id: number;
   reactor_id: string;
@@ -198,6 +221,13 @@ export interface DbOps {
   getSnaps(userId: string, partnerId: string, month: string): { snap_date: string; user_photo: string | null; partner_photo: string | null }[];
   // Daily Reactions (👍/👎 on partner's daily question answer or daily snap)
   setDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap', reaction: 'up' | 'down'): void;
+  // Inbox actions — per-recipient soft delete state for mailbox/capsule.
+  setInboxAction(userId: string, kind: 'mailbox' | 'capsule', refId: number, status: 'trashed' | 'purged'): void;
+  clearInboxAction(userId: string, kind: 'mailbox' | 'capsule', refId: number): void;
+  getInboxActionStatus(userId: string, kind: 'mailbox' | 'capsule', refId: number): 'trashed' | 'purged' | null;
+  getTrashedInboxItems(userId: string, partnerId: string): TrashedInboxItem[];
+  getMailboxMessageById(id: number): MailboxMessage | undefined;
+  getCapsuleById(id: number): TimeCapsule | undefined;
   getDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap'): 'up' | 'down' | null;
 }
 
@@ -350,6 +380,20 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       UNIQUE(reactor_id, target_user_id, target_date, target_type)
     );
 
+    -- inbox_actions: per-recipient soft delete state for mailbox/capsule
+    -- letters. status='trashed' (in trash, can restore) or 'purged' (forever
+    -- hidden from recipient — source row may still exist for the sender).
+    CREATE TABLE IF NOT EXISTS inbox_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('mailbox', 'capsule')),
+      ref_id INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('trashed', 'purged')),
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      UNIQUE(user_id, kind, ref_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
@@ -359,6 +403,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE INDEX IF NOT EXISTS idx_bucket_couple ON bucket_items(user_id, partner_id);
     CREATE INDEX IF NOT EXISTS idx_snaps_date ON daily_snaps(snap_date);
     CREATE INDEX IF NOT EXISTS idx_daily_reactions_lookup ON daily_reactions(reactor_id, target_user_id, target_date, target_type);
+    CREATE INDEX IF NOT EXISTS idx_inbox_actions_user ON inbox_actions(user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_inbox_actions_ref ON inbox_actions(kind, ref_id);
 
   `);
 
@@ -618,11 +664,18 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetMailboxMessages = db.prepare(
     'SELECT * FROM mailbox WHERE week_key = ? AND user_id IN (?, ?)'
   );
+  // LEFT JOIN inbox_actions on partner side so trashed/purged messages are
+  // hidden (content + id NULL) for the current user only — sender's archive
+  // view of their own outgoing content is unaffected.
   const stmtGetMailboxArchive = db.prepare(`
     SELECT m.week_key,
       MAX(CASE WHEN m.user_id = ? THEN m.content END) as my_content,
-      MAX(CASE WHEN m.user_id = ? THEN m.content END) as partner_content
+      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.content END) as partner_content,
+      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.id END) as partner_message_id
     FROM mailbox m
+    LEFT JOIN inbox_actions ia
+      ON ia.user_id = ? AND ia.kind = 'mailbox' AND ia.ref_id = m.id
+        AND ia.status IN ('trashed', 'purged')
     WHERE m.user_id IN (?, ?)
     GROUP BY m.week_key
     ORDER BY m.week_key DESC
@@ -697,6 +750,41 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetDailyReaction = db.prepare(
     'SELECT reaction FROM daily_reactions WHERE reactor_id = ? AND target_user_id = ? AND target_date = ? AND target_type = ?'
   );
+
+  const stmtGetMailboxMessageById = db.prepare('SELECT * FROM mailbox WHERE id = ?');
+
+  // Inbox action statements (soft delete / restore / purge per recipient)
+  const stmtSetInboxAction = db.prepare(`
+    INSERT INTO inbox_actions (user_id, kind, ref_id, status, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, kind, ref_id)
+    DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP
+  `);
+  const stmtClearInboxAction = db.prepare(
+    'DELETE FROM inbox_actions WHERE user_id = ? AND kind = ? AND ref_id = ?'
+  );
+  const stmtGetInboxActionStatus = db.prepare(
+    'SELECT status FROM inbox_actions WHERE user_id = ? AND kind = ? AND ref_id = ?'
+  );
+  // Trashed mailbox messages: only partner-authored ones (the recipient's
+  // inbox) joined with the author's name from users table.
+  const stmtGetTrashedMailbox = db.prepare(`
+    SELECT m.id as ref_id, m.week_key as date, m.content, ia.updated_at as trashed_at
+    FROM inbox_actions ia
+    JOIN mailbox m ON m.id = ia.ref_id
+    WHERE ia.user_id = ? AND ia.kind = 'mailbox' AND ia.status = 'trashed'
+      AND m.user_id = ?
+    ORDER BY ia.updated_at DESC
+  `);
+  const stmtGetTrashedCapsules = db.prepare(`
+    SELECT c.id as ref_id, c.unlock_date as date, c.content, c.user_id, c.visibility,
+           ia.updated_at as trashed_at
+    FROM inbox_actions ia
+    JOIN time_capsules c ON c.id = ia.ref_id
+    WHERE ia.user_id = ? AND ia.kind = 'capsule' AND ia.status = 'trashed'
+      AND c.opened_at IS NOT NULL
+    ORDER BY ia.updated_at DESC
+  `);
 
   // Daily snap statements
   const stmtInsertSnap = db.prepare(
@@ -965,7 +1053,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null }[] {
-      return stmtGetMailboxArchive.all(userId, partnerId, userId, partnerId, limit) as any[];
+      // Args ordered to match query: my_content user_id, partner_content user_id,
+      // partner_message_id user_id, ia.user_id (current viewer), then mailbox.user_id IN (?, ?), limit.
+      return stmtGetMailboxArchive.all(
+        userId,         // my_content branch
+        partnerId,      // partner_content branch
+        partnerId,      // partner_message_id branch
+        userId,         // ia.user_id (current viewer for trash filter)
+        userId,         // m.user_id IN (?,
+        partnerId,      //              ?)
+        limit
+      ) as any[];
     },
 
     getAllPairedUserTokens(): { device_token: string }[] {
@@ -1072,6 +1170,63 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     getDailyReaction(reactorId, targetUserId, targetDate, targetType): 'up' | 'down' | null {
       const row = stmtGetDailyReaction.get(reactorId, targetUserId, targetDate, targetType) as { reaction: 'up' | 'down' } | undefined;
       return row?.reaction ?? null;
+    },
+
+    setInboxAction(userId, kind, refId, status): void {
+      stmtSetInboxAction.run(userId, kind, refId, status);
+    },
+
+    clearInboxAction(userId, kind, refId): void {
+      stmtClearInboxAction.run(userId, kind, refId);
+    },
+
+    getInboxActionStatus(userId, kind, refId): 'trashed' | 'purged' | null {
+      const row = stmtGetInboxActionStatus.get(userId, kind, refId) as { status: 'trashed' | 'purged' } | undefined;
+      return row?.status ?? null;
+    },
+
+    getTrashedInboxItems(userId, partnerId): TrashedInboxItem[] {
+      const mailboxRows = stmtGetTrashedMailbox.all(userId, partnerId) as {
+        ref_id: number; date: string; content: string; trashed_at: string;
+      }[];
+      const capsuleRows = stmtGetTrashedCapsules.all(userId) as {
+        ref_id: number; date: string; content: string; user_id: string;
+        visibility: 'self' | 'partner'; trashed_at: string;
+      }[];
+
+      const out: TrashedInboxItem[] = [];
+      for (const r of mailboxRows) {
+        out.push({
+          kind: 'mailbox',
+          ref_id: r.ref_id,
+          date: r.date,
+          content: r.content,
+          author: 'partner',
+          visibility: 'partner',
+          trashed_at: r.trashed_at,
+        });
+      }
+      for (const r of capsuleRows) {
+        out.push({
+          kind: 'capsule',
+          ref_id: r.ref_id,
+          date: r.date,
+          content: r.content,
+          author: r.user_id === userId ? 'me' : 'partner',
+          visibility: r.visibility,
+          trashed_at: r.trashed_at,
+        });
+      }
+      out.sort((a, b) => (a.trashed_at < b.trashed_at ? 1 : a.trashed_at > b.trashed_at ? -1 : 0));
+      return out;
+    },
+
+    getMailboxMessageById(id): MailboxMessage | undefined {
+      return stmtGetMailboxMessageById.get(id) as MailboxMessage | undefined;
+    },
+
+    getCapsuleById(id): TimeCapsule | undefined {
+      return stmtGetCapsuleById.get(id) as TimeCapsule | undefined;
     },
   };
 

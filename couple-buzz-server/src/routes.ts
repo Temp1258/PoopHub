@@ -997,6 +997,95 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ weeks });
   });
 
+  // Inbox soft-delete endpoints — used by the inbox & trash views.
+  // Body: { kind: 'mailbox' | 'capsule', ref_id: number }
+
+  // Helper: validate kind + ref_id and resolve referenced row exists + is
+  // visible to this user as a recipient. Returns null on validation failure
+  // (and writes the error response); a parsed { kind, refId } on success.
+  function validateInboxRef(req: Request, res: Response): { kind: 'mailbox' | 'capsule'; refId: number; userId: string } | null {
+    const userId = req.userId!;
+    const { kind, ref_id } = req.body || {};
+    if (kind !== 'mailbox' && kind !== 'capsule') {
+      res.status(400).json({ error: 'Invalid kind' });
+      return null;
+    }
+    if (typeof ref_id !== 'number' || !Number.isInteger(ref_id) || ref_id <= 0) {
+      res.status(400).json({ error: 'Invalid ref_id' });
+      return null;
+    }
+    const user = dbOps.getUser(userId);
+    if (!user || !user.partner_id) {
+      res.status(400).json({ error: 'Not paired' });
+      return null;
+    }
+
+    // Authorization: user must be a recipient of the referenced item.
+    if (kind === 'mailbox') {
+      // The referenced mailbox row must be authored by the partner (user
+      // is the recipient).
+      const row = dbOps.getMailboxMessageById(ref_id);
+      if (!row || row.user_id !== user.partner_id) {
+        res.status(404).json({ error: 'Letter not found' });
+        return null;
+      }
+    } else {
+      const row = dbOps.getCapsuleById(ref_id);
+      if (!row) {
+        res.status(404).json({ error: 'Letter not found' });
+        return null;
+      }
+      // Outgoing (author=me, visibility=partner) is the user's sent-mail —
+      // not their inbox, so they can't trash it.
+      if (row.user_id === userId && row.visibility === 'partner') {
+        res.status(403).json({ error: 'Cannot trash outgoing letter' });
+        return null;
+      }
+      // Self capsules belong to the author only.
+      if (row.visibility === 'self' && row.user_id !== userId) {
+        res.status(404).json({ error: 'Letter not found' });
+        return null;
+      }
+    }
+
+    return { kind, refId: ref_id, userId };
+  }
+
+  // POST /api/inbox/trash — move letter to trash
+  router.post('/inbox/trash', (req: Request, res: Response) => {
+    const v = validateInboxRef(req, res);
+    if (!v) return;
+    dbOps.setInboxAction(v.userId, v.kind, v.refId, 'trashed');
+    res.json({ success: true });
+  });
+
+  // POST /api/inbox/restore — restore from trash to inbox
+  router.post('/inbox/restore', (req: Request, res: Response) => {
+    const v = validateInboxRef(req, res);
+    if (!v) return;
+    dbOps.clearInboxAction(v.userId, v.kind, v.refId);
+    res.json({ success: true });
+  });
+
+  // POST /api/inbox/purge — permanently hide from this recipient
+  router.post('/inbox/purge', (req: Request, res: Response) => {
+    const v = validateInboxRef(req, res);
+    if (!v) return;
+    dbOps.setInboxAction(v.userId, v.kind, v.refId, 'purged');
+    res.json({ success: true });
+  });
+
+  // GET /api/inbox/trash — list trashed inbox items for this user
+  router.get('/inbox/trash', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ items: [] });
+
+    const items = dbOps.getTrashedInboxItems(userId, user.partner_id);
+    res.json({ items });
+  });
+
   // GET /api/weekly-report
   router.get('/weekly-report', (req: Request, res: Response) => {
     const userId = req.userId!;
@@ -1107,8 +1196,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const userToday = getLocalDate(user.timezone);
     // 'self' capsules are private to the author. 'partner' (default) capsules
     // are visible to both — the recipient gets the surprise + countdown push.
+    // Recipient-side soft-deletes (trashed/purged) hide the capsule from the
+    // current user's listing, but only if they're a recipient (not the author
+    // of an outgoing partner-vis capsule — that's their sent-mail).
     const capsules = dbOps.getCapsules(userId, user.partner_id)
       .filter(c => c.visibility !== 'self' || c.user_id === userId)
+      .filter(c => {
+        // Outgoing (author=me, visibility=partner) is never affected by inbox
+        // soft delete — it's not in our inbox.
+        const isOutgoing = c.user_id === userId && c.visibility === 'partner';
+        if (isOutgoing) return true;
+        const status = dbOps.getInboxActionStatus(userId, 'capsule', c.id);
+        return status !== 'trashed' && status !== 'purged';
+      })
       .map(c => ({
         id: c.id,
         author: c.user_id === userId ? 'me' : 'partner',
