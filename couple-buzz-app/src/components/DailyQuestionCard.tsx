@@ -95,8 +95,10 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
 
   const handleReact = useCallback(async (reaction: 'up' | 'down') => {
     if (reacting) return;
+    // One-shot guard: if already reacted, no-op (UI also disables)
+    if (data?.my_reaction_to_partner) return;
     setReacting(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Optimistic update
     setData(prev => prev ? { ...prev, my_reaction_to_partner: reaction } : prev);
     try {
@@ -108,7 +110,7 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     } finally {
       setReacting(false);
     }
-  }, [reacting, load]);
+  }, [reacting, data?.my_reaction_to_partner, load]);
 
   if (loading) {
     return (
@@ -136,22 +138,31 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
           <View style={styles.answerBox}>
             <Text style={styles.answerLabel}>ta 的答案</Text>
             <Text style={styles.answerText}>{partner_answer}</Text>
-            <View style={styles.reactRow}>
-              <TouchableOpacity
-                style={[styles.reactBtn, styles.reactUp, my_reaction_to_partner === 'up' && styles.reactUpActive]}
-                onPress={() => handleReact('up')}
-                disabled={reacting}
-              >
-                <Text style={[styles.reactEmoji, my_reaction_to_partner === 'up' && styles.reactEmojiActive]}>👍</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.reactBtn, styles.reactDown, my_reaction_to_partner === 'down' && styles.reactDownActive]}
-                onPress={() => handleReact('down')}
-                disabled={reacting}
-              >
-                <Text style={[styles.reactEmoji, my_reaction_to_partner === 'down' && styles.reactEmojiActive]}>👎</Text>
-              </TouchableOpacity>
-            </View>
+            {my_reaction_to_partner ? (
+              <View style={styles.reactedBlock}>
+                <Text style={styles.reactedEmoji}>
+                  {my_reaction_to_partner === 'up' ? '👍' : '👎'}
+                </Text>
+                <Text style={styles.reactedText}>已评价（不可修改）</Text>
+              </View>
+            ) : (
+              <View style={styles.reactRow}>
+                <TouchableOpacity
+                  style={[styles.reactBtn, styles.reactUp]}
+                  onPress={() => handleReact('up')}
+                  disabled={reacting}
+                >
+                  <Text style={styles.reactEmoji}>👍</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.reactBtn, styles.reactDown]}
+                  onPress={() => handleReact('down')}
+                  disabled={reacting}
+                >
+                  <Text style={styles.reactEmoji}>👎</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         </View>
       ) : my_answer ? (
@@ -330,23 +341,30 @@ const styles = StyleSheet.create({
     borderColor: '#B8E6CF',
     backgroundColor: '#F0FBF5',
   },
-  reactUpActive: {
-    borderColor: '#4CD964',
-    backgroundColor: '#4CD964',
-  },
   reactDown: {
     borderColor: '#FFC2C2',
     backgroundColor: '#FFF0F0',
   },
-  reactDownActive: {
-    borderColor: '#FF6B6B',
-    backgroundColor: '#FF6B6B',
-  },
   reactEmoji: {
     fontSize: 20,
   },
-  reactEmojiActive: {
-    // Native emoji color stays — just for grouping any future tweaks
+  reactedBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 8,
+    backgroundColor: COLORS.background,
+    borderRadius: 10,
+  },
+  reactedEmoji: {
+    fontSize: 22,
+  },
+  reactedText: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    fontWeight: '500',
   },
   refreshHint: {
     fontSize: 12,

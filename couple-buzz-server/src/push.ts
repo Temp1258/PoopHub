@@ -50,8 +50,9 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   milk_tea: { title: '🧋 喝奶茶', body: '{name} 在喝奶茶，馋不馋？' },
   drink: { title: '🥤 喝饮料', body: '{name} 在喝饮料，要不要来一杯？' },
   show_off: { title: '😎 得瑟', body: '{name} 在得瑟，快瞧瞧！' },
-  smug: { title: '🤩 得意', body: '{name} 得意得不行～' },
+  smug: { title: '🤩 得意', body: '{name} 得意得不行～' },  // legacy, kept for old client compat
   praise_me: { title: '🌟 求夸夸', body: '{name} 想要被夸夸！' },
+  praise_you: { title: '🥰 夸你', body: '{name} 在夸你，你超棒！' },
   urge_question: { title: '⏰ 催答题', body: '{name} 催你回答今天的每日问答～' },
   urge_snap: { title: '⏰ 催拍照', body: '{name} 催你拍今天的快照～' },
   react_question_up: { title: '👍 收到点赞', body: '{name} 给你今天的答案点了赞' },

@@ -163,38 +163,47 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
       {data.my_snapped && data.partner_snapped && (
         <>
           <Text style={styles.both}>今天的快照已完成！</Text>
-          <View style={styles.reactRow}>
-            <TouchableOpacity
-              style={[styles.reactBtn, styles.reactUp, data.my_reaction_to_partner === 'up' && styles.reactUpActive]}
-              onPress={async () => {
-                if (reacting) return;
-                setReacting(true);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setData(prev => prev ? { ...prev, my_reaction_to_partner: 'up' } : prev);
-                try { await api.dailyReaction('snap', 'up'); }
-                catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
-                finally { setReacting(false); }
-              }}
-              disabled={reacting}
-            >
-              <Text style={styles.reactEmoji}>👍</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.reactBtn, styles.reactDown, data.my_reaction_to_partner === 'down' && styles.reactDownActive]}
-              onPress={async () => {
-                if (reacting) return;
-                setReacting(true);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setData(prev => prev ? { ...prev, my_reaction_to_partner: 'down' } : prev);
-                try { await api.dailyReaction('snap', 'down'); }
-                catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
-                finally { setReacting(false); }
-              }}
-              disabled={reacting}
-            >
-              <Text style={styles.reactEmoji}>👎</Text>
-            </TouchableOpacity>
-          </View>
+          {data.my_reaction_to_partner ? (
+            <View style={styles.reactedBlock}>
+              <Text style={styles.reactedEmoji}>
+                {data.my_reaction_to_partner === 'up' ? '👍' : '👎'}
+              </Text>
+              <Text style={styles.reactedText}>已评价（不可修改）</Text>
+            </View>
+          ) : (
+            <View style={styles.reactRow}>
+              <TouchableOpacity
+                style={[styles.reactBtn, styles.reactUp]}
+                onPress={async () => {
+                  if (reacting || data.my_reaction_to_partner) return;
+                  setReacting(true);
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setData(prev => prev ? { ...prev, my_reaction_to_partner: 'up' } : prev);
+                  try { await api.dailyReaction('snap', 'up'); }
+                  catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
+                  finally { setReacting(false); }
+                }}
+                disabled={reacting}
+              >
+                <Text style={styles.reactEmoji}>👍</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.reactBtn, styles.reactDown]}
+                onPress={async () => {
+                  if (reacting || data.my_reaction_to_partner) return;
+                  setReacting(true);
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setData(prev => prev ? { ...prev, my_reaction_to_partner: 'down' } : prev);
+                  try { await api.dailyReaction('snap', 'down'); }
+                  catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
+                  finally { setReacting(false); }
+                }}
+                disabled={reacting}
+              >
+                <Text style={styles.reactEmoji}>👎</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </>
       )}
 
@@ -228,8 +237,9 @@ const styles = StyleSheet.create({
   reactRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
   reactBtn: { flex: 1, height: 38, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1 },
   reactUp: { borderColor: '#B8E6CF', backgroundColor: '#F0FBF5' },
-  reactUpActive: { borderColor: '#4CD964', backgroundColor: '#4CD964' },
   reactDown: { borderColor: '#FFC2C2', backgroundColor: '#FFF0F0' },
-  reactDownActive: { borderColor: '#FF6B6B', backgroundColor: '#FF6B6B' },
   reactEmoji: { fontSize: 20 },
+  reactedBlock: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12, paddingVertical: 8, backgroundColor: COLORS.background, borderRadius: 10 },
+  reactedEmoji: { fontSize: 22 },
+  reactedText: { fontSize: 13, color: COLORS.textLight, fontWeight: '500' },
 });

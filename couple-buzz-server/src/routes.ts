@@ -37,7 +37,7 @@ const VALID_ACTIONS: ReadonlySet<string> = new Set([
   'slap', 'ping',
   'call_wife', 'call_husband', 'call_baby',
   'gym', 'milk_tea', 'drink',
-  'show_off', 'smug', 'praise_me',
+  'show_off', 'smug', 'praise_me', 'praise_you',
 ]);
 
 // Timezone helpers
@@ -1427,6 +1427,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       }
       // Reaction is keyed on the *target's* date (partner's snap date)
       targetDate = partnerToday;
+    }
+
+    // One-shot: a reaction, once made, cannot be changed. Client UI also
+    // disables the buttons, but server enforces the same so a misbehaving
+    // client can't flip it via direct API.
+    const existing = dbOps.getDailyReaction(userId, user.partner_id, targetDate, type);
+    if (existing) {
+      return res.status(400).json({ error: '已经评价过了，不能修改' });
     }
 
     dbOps.setDailyReaction(userId, user.partner_id, targetDate, type, reaction);

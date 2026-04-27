@@ -15,11 +15,12 @@ export type ActionType =
   | 'miss' | 'love' | 'kiss' | 'pat' | 'finger_heart' | 'shy' | 'rose' | 'hug'
   | 'haha' | 'hehe' | 'cry' | 'wuwu' | 'sad' | 'clown'
   | 'angry_silent' | 'angry_talk'
-  | 'show_off' | 'smug'
+  | 'show_off'
   | 'eat' | 'hungry' | 'sleepy' | 'sleep' | 'play' | 'clean' | 'poop' | 'pick_nose'
   | 'slap' | 'gym' | 'milk_tea' | 'drink'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping'
-  | 'call_wife' | 'call_husband' | 'call_baby' | 'praise_me';
+  | 'call_wife' | 'call_husband' | 'call_baby'
+  | 'praise_me' | 'praise_you';
 
 export interface ActionConfig {
   type: ActionType;
@@ -31,6 +32,8 @@ export interface ActionConfig {
 export interface ActionCategory {
   title: string;
   actions: ActionConfig[];
+  // When true, the last partial row is centered (left+right padded with empty cells)
+  centerLastRow?: boolean;
 }
 
 export const ACTION_CATEGORIES: ActionCategory[] = [
@@ -45,6 +48,8 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'rose', emoji: '🌹', label: '玫瑰', color: '#FF8FAB' },
       { type: 'hug', emoji: '🤗', label: '抱抱', color: '#FFCAD4' },
       { type: 'slap', emoji: '👋', label: '打你', color: '#FF9B9B' },
+      { type: 'praise_you', emoji: '🥰', label: '夸你', color: '#FFCAD4' },
+      { type: 'praise_me', emoji: '🌟', label: '夸我', color: '#FFEAA7' },
     ],
   },
   {
@@ -60,7 +65,6 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'angry_talk', emoji: '😤', label: '生气·说话', color: '#FFB088' },
       { type: 'clown', emoji: '🤡', label: '小丑', color: '#FFD699' },
       { type: 'show_off', emoji: '😎', label: '得瑟', color: '#A8D8EA' },
-      { type: 'smug', emoji: '🤩', label: '得意', color: '#FFEAA7' },
     ],
   },
   {
@@ -78,16 +82,17 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'gym', emoji: '🏋️', label: '健身', color: '#B5D8CC' },
       { type: 'milk_tea', emoji: '🧋', label: '喝奶茶', color: '#E3C9A8' },
       { type: 'drink', emoji: '🥤', label: '喝饮料', color: '#A8D8EA' },
+      { type: 'ping', emoji: '🛎️', label: 'Ping', color: '#FFD699' },
     ],
   },
   {
     title: '找你',
+    centerLastRow: true,
+    // Order matters: shown left → middle → right
     actions: [
-      { type: 'ping', emoji: '🛎️', label: 'Ping', color: '#FFD699' },
-      { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },
       { type: 'call_husband', emoji: '🤵', label: '召唤老公', color: '#A8D8EA' },
       { type: 'call_baby', emoji: '🍼', label: '召唤宝贝', color: '#FFCAD4' },
-      { type: 'praise_me', emoji: '🌟', label: '夸我', color: '#FFEAA7' },
+      { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },
     ],
   },
 ];
@@ -95,6 +100,11 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
 // Flat list for backward compatibility
 export const ACTIONS: ActionConfig[] = ACTION_CATEGORIES.flatMap(c => c.actions);
 
-export const ACTION_EMOJI: Record<string, string> = Object.fromEntries(
-  ACTIONS.map(a => [a.type, a.emoji])
-);
+// Emoji lookup includes legacy types so old history rows still render correctly
+// even after we remove the type from the picker grid.
+export const ACTION_EMOJI: Record<string, string> = {
+  ...Object.fromEntries(ACTIONS.map(a => [a.type, a.emoji])),
+  // Legacy: 'smug' (得意) was renamed/replaced by 'praise_you' — keep emoji
+  // mapping so historical messages don't show as "?".
+  smug: '🤩',
+};

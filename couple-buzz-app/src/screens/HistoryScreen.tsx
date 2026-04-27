@@ -498,27 +498,40 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
           contentContainerStyle={styles.panelContent}
           showsVerticalScrollIndicator={false}
         >
-          {ACTION_CATEGORIES.map((category) => (
-            <View key={category.title} style={styles.categoryBlock}>
-              <Text style={styles.categoryTitle}>{category.title}</Text>
-              {chunkArray(category.actions, COLUMNS).map((row, ri) => (
-                <View key={ri} style={styles.gridRow}>
-                  {row.map((action) => (
-                    <View key={action.type} style={styles.gridCell}>
-                      <CompactActionButton
-                        action={action}
-                        onPress={handleSendAction}
-                      />
+          {ACTION_CATEGORIES.map((category) => {
+            const rows = chunkArray(category.actions, COLUMNS);
+            return (
+              <View key={category.title} style={styles.categoryBlock}>
+                <Text style={styles.categoryTitle}>{category.title}</Text>
+                {rows.map((row, ri) => {
+                  const isLast = ri === rows.length - 1;
+                  const padTotal = COLUMNS - row.length;
+                  // Center the last partial row when category opts in (e.g. "找你"),
+                  // otherwise pad on the right so earlier rows stay left-aligned.
+                  const padLeft = isLast && category.centerLastRow ? Math.floor(padTotal / 2) : 0;
+                  const padRight = padTotal - padLeft;
+                  return (
+                    <View key={ri} style={styles.gridRow}>
+                      {Array.from({ length: padLeft }).map((_, i) => (
+                        <View key={`padL-${i}`} style={styles.gridCell} />
+                      ))}
+                      {row.map((action) => (
+                        <View key={action.type} style={styles.gridCell}>
+                          <CompactActionButton
+                            action={action}
+                            onPress={handleSendAction}
+                          />
+                        </View>
+                      ))}
+                      {Array.from({ length: padRight }).map((_, i) => (
+                        <View key={`padR-${i}`} style={styles.gridCell} />
+                      ))}
                     </View>
-                  ))}
-                  {row.length < COLUMNS &&
-                    Array.from({ length: COLUMNS - row.length }).map((_, i) => (
-                      <View key={`pad-${i}`} style={styles.gridCell} />
-                    ))}
-                </View>
-              ))}
-            </View>
-          ))}
+                  );
+                })}
+              </View>
+            );
+          })}
         </ScrollView>
       </Animated.View>
 

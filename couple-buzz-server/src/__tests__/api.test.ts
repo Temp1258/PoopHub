@@ -1507,16 +1507,20 @@ describe('POST /api/daily-reaction', () => {
     expect(get.body.my_reaction_to_partner).toBe('up');
   });
 
-  it('flips reaction up <-> down (INSERT OR REPLACE)', async () => {
+  it('reaction is one-shot — cannot be changed once made', async () => {
     const { app } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
     await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${alice.access_token}`).send({ answer: 'a' });
     await request(app).post('/api/daily-question/answer').set('Authorization', `Bearer ${bob.access_token}`).send({ answer: 'b' });
 
-    await request(app).post('/api/daily-reaction').set('Authorization', `Bearer ${alice.access_token}`).send({ type: 'question', reaction: 'up' });
-    await request(app).post('/api/daily-reaction').set('Authorization', `Bearer ${alice.access_token}`).send({ type: 'question', reaction: 'down' });
+    const first = await request(app).post('/api/daily-reaction').set('Authorization', `Bearer ${alice.access_token}`).send({ type: 'question', reaction: 'up' });
+    expect(first.status).toBe(200);
+
+    const second = await request(app).post('/api/daily-reaction').set('Authorization', `Bearer ${alice.access_token}`).send({ type: 'question', reaction: 'down' });
+    expect(second.status).toBe(400);
+    expect(second.body.error).toMatch(/评价过/);
 
     const get = await request(app).get('/api/daily-question').set('Authorization', `Bearer ${alice.access_token}`);
-    expect(get.body.my_reaction_to_partner).toBe('down');
+    expect(get.body.my_reaction_to_partner).toBe('up');  // unchanged
   });
 });
