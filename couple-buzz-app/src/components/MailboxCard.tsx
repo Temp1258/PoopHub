@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, forwardRef, useImperativeHandle, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useMemo, forwardRef, useImperativeHandle, useEffect } from 'react';
 import {
   View,
   Text,
@@ -102,7 +102,16 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
     }
   }, [data, names.me, names.ta]);
 
-  const cd = useCountdown(data?.reveal_at ?? null);
+  // The schedule banner always counts down to the NEXT delivery, regardless
+  // of phase. During `writing`, that's this session's reveal_at. After
+  // `revealed`, the current session's reveal_at is in the past — the next
+  // delivery is exactly 12h later (sessions are a fixed AM/PM 12h cycle).
+  const nextRevealAt = useMemo(() => {
+    if (!data?.reveal_at) return null;
+    const t = new Date(data.reveal_at).getTime();
+    return new Date(data.phase === 'revealed' ? t + 12 * 3600 * 1000 : t);
+  }, [data?.reveal_at, data?.phase]);
+  const cd = useCountdown(nextRevealAt);
 
   const handleSubmit = async () => {
     const text = content.trim();
@@ -138,15 +147,14 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
   if (!data) return null;
 
   const { phase, my_message, partner_message, partner_wrote, my_sealed } = data;
-  // Countdown banner — only shown when the user has already sent this round.
-  // Until then we don't pressure them with a ticking timer.
-  const countdownLabel = cd.done
-    ? '即将送达'
-    : `信件将在 ${cd.hh}:${cd.mm}:${cd.ss} 后送达`;
+  const scheduleLabel = cd.done
+    ? '即将派送'
+    : `下一批信将在 ${cd.hh}:${cd.mm}:${cd.ss} 后派送`;
 
   return (
     <View style={styles.card}>
       <Text style={styles.header}>次日达 📮</Text>
+      <Text style={styles.schedule}>{scheduleLabel}</Text>
 
       {phase === 'revealed' ? (
         <View style={styles.revealContainer}>
@@ -168,7 +176,6 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
             <Text style={styles.sealedEnvelopeIcon}>💌</Text>
           </View>
           <Text style={styles.sealedTitle}>这一场的信已封存</Text>
-          <Text style={styles.sealedSubtitle}>{countdownLabel}</Text>
         </View>
       ) : (
         <View>
@@ -237,6 +244,11 @@ const styles = StyleSheet.create({
   header: {
     fontSize: 13,
     fontWeight: '600',
+    color: COLORS.textLight,
+    marginBottom: 4,
+  },
+  schedule: {
+    fontSize: 12,
     color: COLORS.textLight,
     marginBottom: 12,
   },
@@ -310,11 +322,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text,
     marginTop: 12,
-  },
-  sealedSubtitle: {
-    fontSize: 13,
-    color: COLORS.textLight,
-    marginTop: 4,
   },
   revealContainer: {
     gap: 12,

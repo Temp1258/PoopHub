@@ -15,6 +15,7 @@ import {
   Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 import { storage } from '../utils/storage';
@@ -71,6 +72,10 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const toastRef = useRef<IslandToastHandle>(null);
+  // Track focused index in a ref so the per-card haptic tick is independent
+  // of React's state-update batching during fast scrolls (state can lag and
+  // miss transitions; the ref is updated synchronously inside the listener).
+  const lastTickedIdxRef = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -133,6 +138,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       out.sort((a, b) => (a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0));
       setCards(out);
       setCenterIdx(0);
+      lastTickedIdxRef.current = 0;
     } finally {
       setLoading(false);
     }
@@ -155,7 +161,12 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       listener: (e: NativeSyntheticEvent<NativeScrollEvent>) => {
         const idx = Math.round(e.nativeEvent.contentOffset.y / SNAP_INTERVAL);
         const clamped = Math.max(0, Math.min(cards.length - 1, idx));
-        if (clamped !== centerIdx) setCenterIdx(clamped);
+        if (clamped !== lastTickedIdxRef.current) {
+          // Picker-style click tick as each letter passes the focus position.
+          Haptics.selectionAsync();
+          lastTickedIdxRef.current = clamped;
+          setCenterIdx(clamped);
+        }
       },
     }
   );
@@ -219,7 +230,12 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
               ]}
               showsVerticalScrollIndicator={false}
               snapToInterval={SNAP_INTERVAL}
-              decelerationRate="fast"
+              // "normal" decel + snap = flicks travel further before snapping
+              // (was "fast", which braked too aggressively — light flicks
+              // could only cross 2-3 cards). With normal deceleration and
+              // snapToInterval still in place, the user can browse 5-10+
+              // cards per flick while still landing on a clean card boundary.
+              decelerationRate="normal"
               onScroll={onScroll}
               scrollEventThrottle={16}
             >
