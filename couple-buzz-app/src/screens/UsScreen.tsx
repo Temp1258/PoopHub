@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { View, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
 import RitualButton from '../components/RitualButton';
 import DailyQuestionCard from '../components/DailyQuestionCard';
 import DailySnapCard from '../components/DailySnapCard';
+import { useBeijing7amCountdown } from '../utils/countdown';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -14,6 +15,7 @@ export default function DailyScreen() {
   const ritualRef = useRef<Reloadable>(null);
   const questionRef = useRef<Reloadable>(null);
   const snapRef = useRef<Reloadable>(null);
+  const cd = useBeijing7amCountdown();
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -47,6 +49,9 @@ export default function DailyScreen() {
         <RitualButton ref={ritualRef} />
         <DailyQuestionCard ref={questionRef} />
         <DailySnapCard ref={snapRef} />
+        <Text style={styles.refreshHint}>
+          {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
+        </Text>
       </ScrollView>
     </View>
   );
@@ -61,5 +66,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 40,
     gap: 16,
+  },
+  refreshHint: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: 4,
   },
 });

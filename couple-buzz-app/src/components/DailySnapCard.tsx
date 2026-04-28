@@ -6,7 +6,6 @@ import * as Haptics from 'expo-haptics';
 import { COLORS, API_URL } from '../constants';
 import { api, SnapTodayResponse } from '../services/api';
 import { storage } from '../utils/storage';
-import { useBeijingMidnightCountdown } from '../utils/countdown';
 
 const URGE_COOLDOWN_MS = 30 * 1000;
 
@@ -17,7 +16,6 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
   const [urging, setUrging] = useState(false);
   const [reacting, setReacting] = useState(false);
   const lastUrgeRef = useRef(0);
-  const cd = useBeijingMidnightCountdown();
 
   // Tick every second so the cooldown countdown re-renders
   const [, forceTick] = useState(0);
@@ -220,10 +218,6 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
           )}
         </>
       )}
-
-      <Text style={styles.refreshHint}>
-        {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
-      </Text>
     </View>
   );
 });
@@ -244,7 +238,6 @@ const styles = StyleSheet.create({
   snapText: { fontSize: 16, fontWeight: '600', color: COLORS.white },
   waiting: { fontSize: 13, color: COLORS.textLight, textAlign: 'center' },
   both: { fontSize: 13, color: COLORS.kiss, textAlign: 'center', fontWeight: '500' },
-  refreshHint: { fontSize: 12, color: COLORS.textLight, textAlign: 'center', marginTop: 12 },
   urgeBtn: { height: 44, backgroundColor: COLORS.kiss, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginTop: 12 },
   urgeBtnDisabled: { opacity: 0.4 },
   urgeText: { fontSize: 16, fontWeight: '600', color: COLORS.white },

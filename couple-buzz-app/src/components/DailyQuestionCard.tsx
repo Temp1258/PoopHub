@@ -12,7 +12,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, DailyQuestionResponse } from '../services/api';
-import { useBeijingMidnightCountdown } from '../utils/countdown';
 
 const URGE_COOLDOWN_MS = 30 * 1000;
 
@@ -24,7 +23,6 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
   const [urging, setUrging] = useState(false);
   const [reacting, setReacting] = useState(false);
   const lastUrgeRef = useRef(0);
-  const cd = useBeijingMidnightCountdown();
 
   const load = useCallback(async () => {
     try {
@@ -214,10 +212,6 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
           </TouchableOpacity>
         </View>
       )}
-
-      <Text style={styles.refreshHint}>
-        {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
-      </Text>
     </View>
   );
 });
@@ -382,11 +376,5 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 10,
     fontStyle: 'italic',
-  },
-  refreshHint: {
-    fontSize: 12,
-    color: COLORS.textLight,
-    textAlign: 'center',
-    marginTop: 12,
   },
 });

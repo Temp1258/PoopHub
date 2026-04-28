@@ -42,8 +42,11 @@ export function useCountdown(target: Date | string | null): Countdown {
   return compute(targetMs, now);
 }
 
-// Counts down to the next Beijing-time (UTC+8) midnight, auto-rolling each day.
-export function useBeijingMidnightCountdown(): Countdown {
+// Counts down to the next 7am Beijing time (UTC+8), auto-rolling each day.
+// BJT 7am corresponds to UTC 23:00 of the prior day, i.e. midnight in a UTC+1
+// frame — so we anchor on a +1h shift and find the next midnight there.
+const BJT_7AM_SHIFT_MS = (BJT_OFFSET_MS - 7 * 3600 * 1000); // = +1h
+export function useBeijing7amCountdown(): Countdown {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -51,8 +54,8 @@ export function useBeijingMidnightCountdown(): Countdown {
     return () => clearInterval(id);
   }, []);
 
-  const bjtNow = now + BJT_OFFSET_MS;
-  let bjtMidnight = Math.ceil(bjtNow / DAY_MS) * DAY_MS;
-  if (bjtMidnight === bjtNow) bjtMidnight += DAY_MS;
-  return compute(bjtMidnight - BJT_OFFSET_MS, now);
+  const shifted = now + BJT_7AM_SHIFT_MS;
+  let nextMid = Math.ceil(shifted / DAY_MS) * DAY_MS;
+  if (nextMid === shifted) nextMid += DAY_MS;
+  return compute(nextMid - BJT_7AM_SHIFT_MS, now);
 }

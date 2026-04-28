@@ -70,6 +70,15 @@ function getLocalDate(timezone: string): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: safeTimezone(timezone) });
 }
 
+// Daily-question / daily-snap session key: rolls at 7am Beijing time.
+// Anything before 7am BJT belongs to the prior session date.
+// Implemented as a fixed UTC+1 frame (BJT 7am = UTC 23:00 prior day, so
+// shifting now by +1h aligns the frame's midnight with BJT 7am).
+function getBjt7amDate(): string {
+  const shifted = new Date(Date.now() + 3600 * 1000);
+  return shifted.toISOString().slice(0, 10);
+}
+
 function getLocalHour(timezone: string): number {
   const h = parseInt(new Date().toLocaleString('en-US', { timeZone: safeTimezone(timezone), hour: 'numeric', hour12: false }));
   return h === 24 ? 0 : h;
@@ -692,8 +701,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    // Daily question rolls at Beijing-time midnight (matches the client countdown).
-    const today = getLocalDate('Asia/Shanghai');
+    // Daily question rolls at 7am Beijing time (matches the client countdown).
+    const today = getBjt7amDate();
 
     // Get or assign today's question (avoid repeating completed ones)
     let index = dbOps.getQuestionAssignment(today);
@@ -753,7 +762,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const today = getLocalDate('Asia/Shanghai');
+    const today = getBjt7amDate();
 
     // Get today's assigned question index
     let index = dbOps.getQuestionAssignment(today);
@@ -1408,7 +1417,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) { cleanup(); return res.status(404).json({ error: 'User not found' }); }
     if (!user.partner_id) { cleanup(); return res.status(400).json({ error: 'Not paired' }); }
 
-    const snapDate = getLocalDate(user.timezone);
+    const snapDate = getBjt7amDate();
     if (dbOps.getSnap(userId, snapDate)) {
       cleanup();
       return res.status(400).json({ error: 'Already snapped today' });
@@ -1427,10 +1436,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const photoPath = `${userId}/${snapDate}.jpg`;
     dbOps.saveSnap(userId, snapDate, photoPath);
 
-    // Check if partner also snapped using partner's OWN timezone
+    // Both sides share the same BJT-7am session date.
     const partner = dbOps.getUser(user.partner_id);
-    const partnerSnapDate = getLocalDate(partner?.timezone || 'Asia/Shanghai');
-    const partnerSnap = dbOps.getSnap(user.partner_id, partnerSnapDate);
+    const partnerSnap = dbOps.getSnap(user.partner_id, snapDate);
     const bothSnapped = !!partnerSnap;
     if (partner?.device_token) {
       await pushFn(partner.device_token, bothSnapped ? 'snap_both' : 'snap_submitted', user.name);
@@ -1445,16 +1453,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const today = getLocalDate(user.timezone);
+    const today = getBjt7amDate();
     const mySnap = dbOps.getSnap(userId, today);
-    // Use partner's OWN timezone for their snap date
-    const partnerTz = user.partner_id ? (dbOps.getUser(user.partner_id)?.timezone || 'Asia/Shanghai') : 'Asia/Shanghai';
-    const partnerToday = user.partner_id ? getLocalDate(partnerTz) : today;
-    const partnerSnap = user.partner_id ? dbOps.getSnap(user.partner_id, partnerToday) : undefined;
+    const partnerSnap = user.partner_id ? dbOps.getSnap(user.partner_id, today) : undefined;
 
     const bothSnapped = !!mySnap && !!partnerSnap;
     const myReactionToPartner = (bothSnapped && user.partner_id)
-      ? dbOps.getDailyReaction(userId, user.partner_id, partnerToday, 'snap')
+      ? dbOps.getDailyReaction(userId, user.partner_id, today, 'snap')
       : null;
     const partnerReactionToMe = (bothSnapped && user.partner_id)
       ? dbOps.getDailyReaction(user.partner_id, userId, today, 'snap')
@@ -1508,17 +1513,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
+    const today = getBjt7amDate();
     if (type === 'question') {
-      const today = getLocalDate('Asia/Shanghai');
       const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
       if (!answers.mine) return res.status(400).json({ error: 'Answer your own first' });
       if (answers.partner) return res.status(400).json({ error: 'Partner already answered' });
     } else {
-      const myToday = getLocalDate(user.timezone);
-      const partnerTz = dbOps.getUser(user.partner_id)?.timezone || 'Asia/Shanghai';
-      const partnerToday = getLocalDate(partnerTz);
-      if (!dbOps.getSnap(userId, myToday)) return res.status(400).json({ error: 'Snap your own first' });
-      if (dbOps.getSnap(user.partner_id, partnerToday)) return res.status(400).json({ error: 'Partner already snapped' });
+      if (!dbOps.getSnap(userId, today)) return res.status(400).json({ error: 'Snap your own first' });
+      if (dbOps.getSnap(user.partner_id, today)) return res.status(400).json({ error: 'Partner already snapped' });
     }
 
     const partner = dbOps.getUser(user.partner_id);
@@ -1546,24 +1548,18 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    let targetDate: string;
+    const today = getBjt7amDate();
     if (type === 'question') {
-      const today = getLocalDate('Asia/Shanghai');
       const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
       if (!answers.mine || !answers.partner) {
         return res.status(400).json({ error: 'Both must answer before reacting' });
       }
-      targetDate = today;
     } else {
-      const myToday = getLocalDate(user.timezone);
-      const partnerTz = dbOps.getUser(user.partner_id)?.timezone || 'Asia/Shanghai';
-      const partnerToday = getLocalDate(partnerTz);
-      if (!dbOps.getSnap(userId, myToday) || !dbOps.getSnap(user.partner_id, partnerToday)) {
+      if (!dbOps.getSnap(userId, today) || !dbOps.getSnap(user.partner_id, today)) {
         return res.status(400).json({ error: 'Both must snap before reacting' });
       }
-      // Reaction is keyed on the *target's* date (partner's snap date)
-      targetDate = partnerToday;
     }
+    const targetDate = today;
 
     // One-shot: a reaction, once made, cannot be changed. Client UI also
     // disables the buttons, but server enforces the same so a misbehaving
