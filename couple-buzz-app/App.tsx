@@ -2,8 +2,8 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
-import { NavigationContainer } from '@react-navigation/native';
-import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-navigation/material-top-tabs';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
+import { createBottomTabNavigator, BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -24,7 +24,60 @@ import UsScreen from './src/screens/UsScreen';
 import MailboxScreen from './src/screens/MailboxScreen';
 import AnniversaryWishScreen from './src/screens/AnniversaryWishScreen';
 
-const Tab = createMaterialTopTabNavigator();
+const Tab = createBottomTabNavigator();
+
+// Single source of truth for app navigation: lets non-React code (e.g. push
+// notification handlers) jump to a tab without going through navigation props.
+const navigationRef = createNavigationContainerRef();
+
+// Maps push action types to the tab the user expects to land on when they
+// tap the notification. Anything not listed defaults to History (废话区) —
+// most emoji actions surface there as feed entries.
+const NOTIFICATION_TAB_ROUTES: Record<string, string> = {
+  // Daily content — answers, snaps, urges, reactions, ritual greetings.
+  daily_answer: 'Us', daily_both: 'Us',
+  snap_submitted: 'Us', snap_both: 'Us',
+  urge_question: 'Us', urge_snap: 'Us',
+  react_question_up: 'Us', react_question_down: 'Us',
+  react_snap_up: 'Us', react_snap_down: 'Us',
+  ritual_morning: 'Us', ritual_evening: 'Us',
+  ritual_both_morning: 'Us', ritual_both_evening: 'Us',
+
+  // Mailbox + capsules.
+  mailbox_open: 'Mailbox', mailbox_written: 'Mailbox',
+  mailbox_countdown_15min: 'Mailbox', mailbox_reveal: 'Mailbox',
+  capsule_unlock: 'Mailbox', capsule_buried: 'Mailbox',
+
+  // Promises (bucket list + important dates).
+  bucket_new: 'Promises', bucket_complete: 'Promises',
+  date_new: 'Promises',
+
+  // Weekly stats.
+  weekly_report: 'Settings',
+};
+
+const tabForActionType = (t?: string): string =>
+  (t && NOTIFICATION_TAB_ROUTES[t]) || 'History';
+
+// WeChat-style small red dot anchored to the icon's top-right corner.
+function TabIconWithDot({ emoji, color, dot }: { emoji: string; color: string; dot: boolean }) {
+  return (
+    <View>
+      <Text style={{ fontSize: 20, color }}>{emoji}</Text>
+      {dot && (
+        <View style={{
+          position: 'absolute',
+          top: -2,
+          right: -6,
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: COLORS.kiss,
+        }} />
+      )}
+    </View>
+  );
+}
 
 type AppState = 'loading' | 'setup' | 'waiting' | 'ready';
 
@@ -33,7 +86,7 @@ function PillTab({
 }: {
   isFocused: boolean;
   label: string;
-  renderIcon: ((props: { focused: boolean; color: string }) => React.ReactNode) | undefined;
+  renderIcon: ((props: { focused: boolean; color: string; size: number }) => React.ReactNode) | undefined;
   onPress: () => void;
   pillH: number;
   radius: number;
@@ -60,7 +113,7 @@ function PillTab({
         elevation: 2,
       }}
     >
-      {renderIcon && renderIcon({ focused: isFocused, color: tint })}
+      {renderIcon && renderIcon({ focused: isFocused, color: tint, size: 20 })}
       <Text style={{
         fontSize: labelSize,
         fontWeight: '600',
@@ -74,7 +127,7 @@ function PillTab({
 // Pill-shaped (灵动岛) bottom tab bar. All sizing is proportional to screen
 // width via useWindowDimensions, so the bar reflows on rotation / different
 // device widths instead of looking off on small/large screens.
-function PillTabBar({ state, descriptors, navigation }: MaterialTopTabBarProps) {
+function PillTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
@@ -146,17 +199,28 @@ function PillTabBar({ state, descriptors, navigation }: MaterialTopTabBarProps) 
   );
 }
 
-function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen }: { partnerName: string; streak: number; hasUnread: boolean; hasUnreadDaily: boolean; onLatestSeen: (id: number) => void }) {
+function MainTabs({
+  partnerName, streak, hasUnread, hasUnreadDaily, hasUnreadMail, hasUnreadPromises, onLatestSeen,
+}: {
+  partnerName: string;
+  streak: number;
+  hasUnread: boolean;
+  hasUnreadDaily: boolean;
+  hasUnreadMail: boolean;
+  hasUnreadPromises: boolean;
+  onLatestSeen: (id: number) => void;
+}) {
   return (
     <Tab.Navigator
-      tabBarPosition="bottom"
       tabBar={(props) => <PillTabBar {...props} />}
       screenOptions={{
-        swipeEnabled: true,
-        // Tap-driven switches use setPageWithoutAnimation; swipe gestures still
-        // animate via the native pager's physics. Without this, rapid taps
-        // queue up the pager's tween and the UI lags behind the user.
-        animationEnabled: false,
+        // We render our own bar; the default header isn't used by any screen.
+        headerShown: false,
+        // Mount all tabs eagerly so switching is instant — no first-mount lag.
+        lazy: false,
+        // Disable bottom-tabs' built-in screen transition animation so taps
+        // resolve instantly even when the user spam-taps between tabs.
+        animation: 'none',
       }}
     >
       <Tab.Screen
@@ -172,22 +236,7 @@ function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen
         name="History"
         options={{
           tabBarLabel: '废话区',
-          tabBarIcon: ({ color }) => (
-            <View>
-              <Text style={{ fontSize: 20, color }}>💬</Text>
-              {hasUnread && (
-                <View style={{
-                  position: 'absolute',
-                  top: -2,
-                  right: -6,
-                  width: 8,
-                  height: 8,
-                  borderRadius: 4,
-                  backgroundColor: COLORS.kiss,
-                }} />
-              )}
-            </View>
-          ),
+          tabBarIcon: ({ color }) => <TabIconWithDot emoji="💬" color={color} dot={hasUnread} />,
         }}
       >
         {() => <HistoryScreen partnerName={partnerName} onLatestSeen={onLatestSeen} />}
@@ -197,22 +246,7 @@ function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen
         component={UsScreen}
         options={{
           tabBarLabel: '每日',
-          tabBarIcon: ({ color }) => (
-            <View>
-              <Text style={{ fontSize: 20, color }}>📅</Text>
-              {hasUnreadDaily && (
-                <View style={{
-                  position: 'absolute',
-                  top: -2,
-                  right: -6,
-                  width: 8,
-                  height: 8,
-                  borderRadius: 4,
-                  backgroundColor: COLORS.kiss,
-                }} />
-              )}
-            </View>
-          ),
+          tabBarIcon: ({ color }) => <TabIconWithDot emoji="📅" color={color} dot={hasUnreadDaily} />,
         }}
       />
       <Tab.Screen
@@ -220,7 +254,7 @@ function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen
         component={MailboxScreen}
         options={{
           tabBarLabel: '信箱',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📮</Text>,
+          tabBarIcon: ({ color }) => <TabIconWithDot emoji="📮" color={color} dot={hasUnreadMail} />,
         }}
       />
       <Tab.Screen
@@ -228,7 +262,7 @@ function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen
         component={AnniversaryWishScreen}
         options={{
           tabBarLabel: '约定',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🎀</Text>,
+          tabBarIcon: ({ color }) => <TabIconWithDot emoji="🎀" color={color} dot={hasUnreadPromises} />,
         }}
       />
       <Tab.Screen
@@ -251,6 +285,8 @@ export default function App() {
   const lastSeenIdRef = useRef(0);
   const [hasUnread, setHasUnread] = useState(false);
   const [hasUnreadDaily, setHasUnreadDaily] = useState(false);
+  const [hasUnreadMail, setHasUnreadMail] = useState(false);
+  const [hasUnreadPromises, setHasUnreadPromises] = useState(false);
   const activeTabRef = useRef('Home');
   const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
@@ -405,18 +441,45 @@ export default function App() {
     return () => sub.remove();
   }, [appState]);
 
-  // Listen for foreground push notifications and flag relevant ones.
+  // Listen for foreground push notifications and flag the corresponding tab
+  // (red dot). Same routing table is reused for tap-to-navigate below, so
+  // adding a new push action type only needs an entry in NOTIFICATION_TAB_ROUTES.
   useEffect(() => {
     const sub = Notifications.addNotificationReceivedListener((notification) => {
       const data = notification.request.content.data as { actionType?: string };
-      if (!data?.actionType) return;
-      const dailyTypes = ['daily_answer', 'daily_both', 'snap_submitted', 'snap_both'];
-      if (dailyTypes.includes(data.actionType) && activeTabRef.current !== 'Us') {
-        setHasUnreadDaily(true);
-      }
+      const target = tabForActionType(data?.actionType);
+      if (target === activeTabRef.current) return;
+      if (target === 'Us') setHasUnreadDaily(true);
+      else if (target === 'Mailbox') setHasUnreadMail(true);
+      else if (target === 'Promises') setHasUnreadPromises(true);
+      else if (target === 'History') setHasUnread(true);
     });
     return () => sub.remove();
   }, []);
+
+  // Tap-to-navigate: when the user taps a delivered notification, jump to the
+  // tab that shows that content. Handles both background-tap (listener fires
+  // on relaunch) and cold-launch via getLastNotificationResponseAsync.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+
+    const navigateToTabFor = (actionType?: string) => {
+      const target = tabForActionType(actionType);
+      if (navigationRef.isReady()) navigationRef.navigate(target as never);
+    };
+
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) return;
+      const data = response.notification.request.content.data as { actionType?: string };
+      navigateToTabFor(data?.actionType);
+    });
+
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data as { actionType?: string };
+      navigateToTabFor(data?.actionType);
+    });
+    return () => sub.remove();
+  }, [appState]);
 
   const handleDailyTabFocus = useCallback(async () => {
     setHasUnreadDaily(false);
@@ -510,19 +573,26 @@ export default function App() {
       <ToolbarSlotContext.Provider value={toolbarSlot}>
         <View style={styles.appRoot}>
           <NavigationContainer
+            ref={navigationRef}
             onStateChange={(state) => {
               if (!state) return;
               const route = state.routes[state.index];
               activeTabRef.current = route.name;
-              if (route.name === 'History') {
-                setHasUnread(false);
-              }
-              if (route.name === 'Us') {
-                handleDailyTabFocus();
-              }
+              if (route.name === 'History') setHasUnread(false);
+              if (route.name === 'Us') handleDailyTabFocus();
+              if (route.name === 'Mailbox') setHasUnreadMail(false);
+              if (route.name === 'Promises') setHasUnreadPromises(false);
             }}
           >
-            <MainTabs partnerName={partnerName} streak={streak} hasUnread={hasUnread} hasUnreadDaily={hasUnreadDaily} onLatestSeen={handleLatestSeen} />
+            <MainTabs
+              partnerName={partnerName}
+              streak={streak}
+              hasUnread={hasUnread}
+              hasUnreadDaily={hasUnreadDaily}
+              hasUnreadMail={hasUnreadMail}
+              hasUnreadPromises={hasUnreadPromises}
+              onLatestSeen={handleLatestSeen}
+            />
           </NavigationContainer>
           {overlay && (
             <View style={StyleSheet.absoluteFill} pointerEvents="box-none">

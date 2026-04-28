@@ -252,9 +252,8 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
             scaleTo={1.08}
             style={styles.toolbar}
           >
-            <Text style={styles.toolbarIcon}>{panelOpen ? '▾' : '💌'}</Text>
             <Text style={styles.toolbarHint}>
-              {panelOpen ? '先停停' : '甩表情'}
+              {panelOpen ? '先停停 🥱' : '💌 甩表情'}
             </Text>
           </SpringPressable>
         </View>
@@ -708,9 +707,8 @@ const styles = StyleSheet.create({
     zIndex: 70,
   },
   toolbar: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
     paddingHorizontal: 28,
     paddingVertical: 12,
     borderRadius: 26,
@@ -720,9 +718,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 14,
     elevation: 8,
-  },
-  toolbarIcon: {
-    fontSize: 18,
   },
   toolbarHint: {
     color: COLORS.white,
