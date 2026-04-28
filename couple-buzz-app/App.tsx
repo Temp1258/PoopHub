@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
-import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef, LinkingOptions } from '@react-navigation/native';
 import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-navigation/material-top-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -61,6 +61,54 @@ const NOTIFICATION_TAB_ROUTES: Record<string, string> = {
 
 const tabForActionType = (t?: string): string =>
   (t && NOTIFICATION_TAB_ROUTES[t]) || 'History';
+
+// react-navigation linking config — the canonical pattern for routing a
+// tapped notification to its corresponding tab. Solves cold-launch race
+// (getInitialURL is consulted before any screen renders) and warm-tap
+// (subscribe pipes future taps to the navigator). Replaces the prior
+// useLastNotificationResponse + manual nav-queue dance, which lost taps
+// on iOS in some lifecycle paths.
+const TAB_PATHS: Record<string, string> = {
+  Home: 'home',
+  History: 'history',
+  Us: 'us',
+  Mailbox: 'mailbox',
+  Promises: 'promises',
+  Settings: 'settings',
+};
+const targetToUrl = (target: string) => `couplebuzz://${TAB_PATHS[target] ?? 'home'}`;
+const urlForResponse = (response: Notifications.NotificationResponse): string => {
+  const data = response.notification.request.content.data as { actionType?: string };
+  return targetToUrl(tabForActionType(data?.actionType));
+};
+
+const notificationLinking: LinkingOptions<Record<string, undefined>> = {
+  prefixes: ['couplebuzz://'],
+  config: {
+    screens: {
+      Home: 'home',
+      History: 'history',
+      Us: 'us',
+      Mailbox: 'mailbox',
+      Promises: 'promises',
+      Settings: 'settings',
+    },
+  },
+  async getInitialURL() {
+    const response = await Notifications.getLastNotificationResponseAsync();
+    if (!response) return null;
+    // Consume — otherwise the next icon-launch keeps re-routing to the same
+    // stale notification's tab (cache persists until cleared).
+    Notifications.clearLastNotificationResponseAsync();
+    return urlForResponse(response);
+  },
+  subscribe(listener) {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      listener(urlForResponse(response));
+    });
+    return () => sub.remove();
+  },
+};
 
 // WeChat-style small red dot anchored to the icon's top-right corner.
 function TabIconWithDot({ emoji, color, dot }: { emoji: string; color: string; dot: boolean }) {
@@ -293,10 +341,6 @@ export default function App() {
   const [hasUnreadPromises, setHasUnreadPromises] = useState(false);
   const [hasUnreadHome, setHasUnreadHome] = useState(false);
   const activeTabRef = useRef('Home');
-  // Notification taps that arrive before the navigation tree has finished
-  // bootstrapping (cold launch race) get parked here and replayed by the
-  // NavigationContainer's onReady callback.
-  const queuedNavTargetRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
   const [overlay, setOverlay] = useState<React.ReactNode>(null);
@@ -480,30 +524,20 @@ export default function App() {
     return subscribe('touch_start', () => setUnreadForTab('Home'));
   }, [appState, setUnreadForTab]);
 
-  // Tap-to-navigate. Uses the hook form so cold-launch taps (response queued
-  // before our effect runs) and warm taps (response arrives after register)
-  // both get picked up — addNotificationResponseReceivedListener was missing
-  // the cold-launch case in practice. Track handled identifiers so the hook
-  // re-rendering doesn't re-fire navigation on subsequent renders.
-  const lastResponse = Notifications.useLastNotificationResponse();
-  const handledResponseIdRef = useRef<string | null>(null);
+  // Tap fallback: navigation itself is handled by NavigationContainer's
+  // `linking` prop, which is the canonical react-navigation pattern. This
+  // listener exists purely to mark the target tab unread so a red dot still
+  // appears as a fallback. When linking succeeds, the immediate navigation
+  // triggers onStateChange, which clears the dot — the user only ever sees
+  // it if linking somehow didn't navigate.
   useEffect(() => {
-    if (appState !== 'ready' || !lastResponse) return;
-    const id = lastResponse.notification.request.identifier;
-    if (id === handledResponseIdRef.current) return;
-    handledResponseIdRef.current = id;
-
-    const data = lastResponse.notification.request.content.data as { actionType?: string };
-    const target = tabForActionType(data?.actionType);
-    // Always set unread first — if nav is queued or fails, the dot still
-    // shows the user where the new content is.
-    setUnreadForTab(target);
-    if (navigationRef.isReady()) {
-      navigationRef.navigate(target as never);
-    } else {
-      queuedNavTargetRef.current = target;
-    }
-  }, [lastResponse, appState, setUnreadForTab]);
+    if (appState !== 'ready') return;
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data as { actionType?: string };
+      setUnreadForTab(tabForActionType(data?.actionType));
+    });
+    return () => sub.remove();
+  }, [appState, setUnreadForTab]);
 
   const handleDailyTabFocus = useCallback(async () => {
     setHasUnreadDaily(false);
@@ -598,15 +632,7 @@ export default function App() {
         <View style={styles.appRoot}>
           <NavigationContainer
             ref={navigationRef}
-            onReady={() => {
-              // Flush a notification-tap target that arrived before the nav
-              // tree was ready — typical on cold launch from a notification.
-              const queued = queuedNavTargetRef.current;
-              if (queued) {
-                queuedNavTargetRef.current = null;
-                navigationRef.navigate(queued as never);
-              }
-            }}
+            linking={notificationLinking}
             onStateChange={(state) => {
               if (!state) return;
               const route = state.routes[state.index];
