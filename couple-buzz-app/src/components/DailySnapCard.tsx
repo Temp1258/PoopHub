@@ -7,7 +7,7 @@ import { COLORS, API_URL } from '../constants';
 import { api, SnapTodayResponse } from '../services/api';
 import { storage } from '../utils/storage';
 
-const URGE_COOLDOWN_MS = 30 * 1000;
+const URGE_COOLDOWN_MS = 5 * 1000;
 
 const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) => {
   const [data, setData] = useState<SnapTodayResponse | null>(null);

@@ -480,35 +480,30 @@ export default function App() {
     return subscribe('touch_start', () => setUnreadForTab('Home'));
   }, [appState, setUnreadForTab]);
 
-  // Tap-to-navigate: when the user taps a delivered notification, jump to
-  // the tab that surfaces that content. Set unread first as a fallback —
-  // if navigation is delayed/queued, the dot still tells the user where to
-  // look. onStateChange clears it once they actually arrive.
+  // Tap-to-navigate. Uses the hook form so cold-launch taps (response queued
+  // before our effect runs) and warm taps (response arrives after register)
+  // both get picked up — addNotificationResponseReceivedListener was missing
+  // the cold-launch case in practice. Track handled identifiers so the hook
+  // re-rendering doesn't re-fire navigation on subsequent renders.
+  const lastResponse = Notifications.useLastNotificationResponse();
+  const handledResponseIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (appState !== 'ready') return;
+    if (appState !== 'ready' || !lastResponse) return;
+    const id = lastResponse.notification.request.identifier;
+    if (id === handledResponseIdRef.current) return;
+    handledResponseIdRef.current = id;
 
-    const handleTap = (actionType?: string) => {
-      const target = tabForActionType(actionType);
-      setUnreadForTab(target);
-      if (navigationRef.isReady()) {
-        navigationRef.navigate(target as never);
-      } else {
-        queuedNavTargetRef.current = target;
-      }
-    };
-
-    Notifications.getLastNotificationResponseAsync().then((response) => {
-      if (!response) return;
-      const data = response.notification.request.content.data as { actionType?: string };
-      handleTap(data?.actionType);
-    });
-
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data as { actionType?: string };
-      handleTap(data?.actionType);
-    });
-    return () => sub.remove();
-  }, [appState, setUnreadForTab]);
+    const data = lastResponse.notification.request.content.data as { actionType?: string };
+    const target = tabForActionType(data?.actionType);
+    // Always set unread first — if nav is queued or fails, the dot still
+    // shows the user where the new content is.
+    setUnreadForTab(target);
+    if (navigationRef.isReady()) {
+      navigationRef.navigate(target as never);
+    } else {
+      queuedNavTargetRef.current = target;
+    }
+  }, [lastResponse, appState, setUnreadForTab]);
 
   const handleDailyTabFocus = useCallback(async () => {
     setHasUnreadDaily(false);
