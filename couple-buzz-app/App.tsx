@@ -7,6 +7,7 @@ import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-na
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 
 import { COLORS } from './src/constants';
@@ -82,7 +83,7 @@ const urlForResponse = (response: Notifications.NotificationResponse): string =>
   return targetToUrl(tabForActionType(data?.actionType));
 };
 
-const notificationLinking: LinkingOptions<Record<string, undefined>> = {
+const notificationLinking: LinkingOptions<ReactNavigation.RootParamList> = {
   prefixes: ['couplebuzz://'],
   config: {
     screens: {
@@ -523,6 +524,17 @@ export default function App() {
     if (appState !== 'ready') return;
     return subscribe('touch_start', () => setUnreadForTab('Home'));
   }, [appState, setUnreadForTab]);
+
+  // Live haptic tick when the partner posts a new emoji/reaction in 废话区.
+  // The server emits this only when both sides are online (no push needed).
+  // Sender's own client receives the same event but filters via `from`.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    return subscribe('action_new', (data: { from?: string }) => {
+      if (!data?.from || data.from === myUserIdRef.current) return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    });
+  }, [appState]);
 
   // Tap fallback: navigation itself is handled by NavigationContainer's
   // `linking` prop, which is the canonical react-navigation pattern. This

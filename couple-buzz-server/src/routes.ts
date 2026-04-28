@@ -5,7 +5,7 @@ import fs from 'fs';
 import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
-import { createWsTicket } from './socket';
+import { createWsTicket, emitToCouple } from './socket';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -424,6 +424,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
       await pushFn(partner.device_token, action_type, user.name, undefined, unread);
     }
+    // Live ping for the partner's app to haptic-tick if they're foregrounded.
+    // Includes `from` so the sender's own client filters it out.
+    emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type });
 
     res.json({ success: true });
   });
@@ -459,6 +462,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
       await pushFn(partner.device_token, 'reaction', user.name, undefined, unread);
     }
+    emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type, reply_to: actionId });
 
     res.json({ success: true, reaction_id: reactionId });
   });

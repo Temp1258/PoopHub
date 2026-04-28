@@ -31,6 +31,22 @@ interface CouplePresence {
 
 const tickets = new Map<string, Ticket>();
 const presenceMap = new Map<string, CouplePresence>();
+// Captured at setupSocket time so other modules (e.g. routes.ts) can broadcast
+// to a couple's room without a circular import or full DI plumbing.
+let ioRef: Server | null = null;
+
+// Broadcast an event into the room shared by `userIdA` and `userIdB`. Both
+// sides receive it — recipients should filter via the `from` field in the
+// payload to avoid haptic-feedback'ing the sender.
+export function emitToCouple(
+  userIdA: string,
+  userIdB: string,
+  event: string,
+  data?: Record<string, unknown>,
+): void {
+  if (!ioRef) return;
+  ioRef.to(coupleKey(userIdA, userIdB)).emit(event, data ?? {});
+}
 
 function coupleKey(a: string, b: string): string {
   return [a, b].sort().join(':');
@@ -55,6 +71,7 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     pingTimeout: 30000,
     pingInterval: 15000,
   });
+  ioRef = io;
 
   // Auth middleware: validate ticket
   io.use((socket, next) => {

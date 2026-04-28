@@ -74,27 +74,21 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 }
 
 function CompactActionButton({ action, onPress }: { action: ActionConfig; onPress: (t: string) => void }) {
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const handle = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Animated.sequence([
-      Animated.timing(scaleAnim, { toValue: 0.85, duration: 100, useNativeDriver: true }),
-      Animated.timing(scaleAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-    ]).start();
-    onPress(action.type);
-  }, [action.type, onPress, scaleAnim]);
-
+  // Spring "card pickup" motion (same primitive as the bottom tab pills) —
+  // scales UP on press-in with a bouncy overshoot, springs back on release.
+  // Replaces the old shrink-then-return tween, which felt flat by comparison.
   return (
-    <Animated.View style={[styles.compactWrapper, { transform: [{ scale: scaleAnim }] }]}>
-      <TouchableOpacity
-        style={[styles.compactButton, { backgroundColor: action.color }]}
-        onPress={handle}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.compactEmoji}>{action.emoji}</Text>
-        <Text style={styles.compactLabel} numberOfLines={1}>{action.label}</Text>
-      </TouchableOpacity>
-    </Animated.View>
+    <SpringPressable
+      onPress={() => onPress(action.type)}
+      onPressIn={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
+      haptic={false}
+      scaleTo={1.2}
+      wrapperStyle={styles.compactWrapper}
+      style={[styles.compactButton, { backgroundColor: action.color }]}
+    >
+      <Text style={styles.compactEmoji}>{action.emoji}</Text>
+      <Text style={styles.compactLabel} numberOfLines={1}>{action.label}</Text>
+    </SpringPressable>
   );
 }
 
@@ -645,13 +639,22 @@ const styles = StyleSheet.create({
   },
   panel: {
     position: 'absolute',
-    left: 0,
-    right: 0,
+    // Float-with-margins so the panel reads as a single rounded "island"
+    // hovering over the chat list rather than a full-width drawer.
+    left: 12,
+    right: 12,
     bottom: TOOLBAR_HEIGHT,
     height: PANEL_HEIGHT,
-    backgroundColor: COLORS.white,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.6)',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+    overflow: 'hidden',
     zIndex: 60,
   },
   dragHandleArea: {

@@ -48,6 +48,7 @@ export async function connectSocket(): Promise<void> {
     socket.on('partner_online', (data) => emit('partner_online', data));
     socket.on('presence_both', () => emit('presence_both'));
     socket.on('presence_single', () => emit('presence_single'));
+    socket.on('action_new', (data) => emit('action_new', data));
 
     socket.on('connect', () => {
       ticketRetries = 0;

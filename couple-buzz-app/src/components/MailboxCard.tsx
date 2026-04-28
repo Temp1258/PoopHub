@@ -147,9 +147,12 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
   if (!data) return null;
 
   const { phase, my_message, partner_message, partner_wrote, my_sealed } = data;
-  const scheduleLabel = cd.done
-    ? '即将派送'
-    : `下一批信将在 ${cd.hh}:${cd.mm}:${cd.ss} 后派送`;
+  // Wording flips on whether the user has already submitted this round:
+  //   sealed → personal: "这封信将在 X 后送达"
+  //   not sealed (or revealed phase) → next batch: "下一封信将在 X 后派送"
+  const scheduleLabel = my_sealed
+    ? (cd.done ? '即将送达' : `这封信将在 ${cd.hh}:${cd.mm}:${cd.ss} 后送达`)
+    : (cd.done ? '即将派送' : `下一封信将在 ${cd.hh}:${cd.mm}:${cd.ss} 后派送`);
 
   return (
     <View style={styles.card}>
@@ -175,7 +178,7 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
           <View style={styles.sealedEnvelope}>
             <Text style={styles.sealedEnvelopeIcon}>💌</Text>
           </View>
-          <Text style={styles.sealedTitle}>这一场的信已封存</Text>
+          <Text style={styles.sealedTitle}>已封存</Text>
         </View>
       ) : (
         <View>
