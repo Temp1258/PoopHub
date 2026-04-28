@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, TouchableOpacity, useWindowDimensions } from 'react-native';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, Pressable, useWindowDimensions, Animated } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
 import { NavigationContainer } from '@react-navigation/native';
 import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-navigation/material-top-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 
 import { COLORS } from './src/constants';
@@ -25,6 +27,75 @@ const Tab = createMaterialTopTabNavigator();
 
 type AppState = 'loading' | 'setup' | 'waiting' | 'ready';
 
+// One pill button. Owns a single Animated.Value driving a scale spring —
+// press-in pops to ~1.18 with bounce, press-out springs back. Mimics the
+// "card pickup" feel where a tap feels alive and tactile.
+function PillTab({
+  isFocused, label, renderIcon, onPress, pillH, radius, labelSize,
+}: {
+  isFocused: boolean;
+  label: string;
+  renderIcon: ((props: { focused: boolean; color: string }) => React.ReactNode) | undefined;
+  onPress: () => void;
+  pillH: number;
+  radius: number;
+  labelSize: number;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const tint = isFocused ? COLORS.white : COLORS.textLight;
+
+  const handlePressIn = () => {
+    Haptics.selectionAsync();
+    Animated.spring(scale, {
+      toValue: 1.18,
+      useNativeDriver: true,
+      tension: 260,
+      friction: 5,
+    }).start();
+  };
+  const handlePressOut = () => {
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 200,
+      friction: 6,
+    }).start();
+  };
+
+  return (
+    <Animated.View style={{ flex: 1, transform: [{ scale }] }}>
+      <Pressable
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        style={{
+          height: pillH,
+          borderRadius: radius,
+          backgroundColor: isFocused ? COLORS.kiss : COLORS.white,
+          borderWidth: isFocused ? 0 : 1,
+          borderColor: COLORS.border,
+          alignItems: 'center',
+          justifyContent: 'center',
+          // Subtle elevation so pills float above the gradient backdrop
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 6,
+          elevation: 2,
+        }}
+      >
+        {renderIcon && renderIcon({ focused: isFocused, color: tint })}
+        <Text style={{
+          fontSize: labelSize,
+          fontWeight: '600',
+          color: tint,
+          marginTop: 2,
+        }}>{label}</Text>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
 // Pill-shaped (灵动岛) bottom tab bar. All sizing is proportional to screen
 // width via useWindowDimensions, so the bar reflows on rotation / different
 // device widths instead of looking off on small/large screens.
@@ -38,55 +109,64 @@ function PillTabBar({ state, descriptors, navigation }: MaterialTopTabBarProps) 
   const radius = pillH * 0.36;
   const labelSize = width * 0.028;
 
+  // Fade-up overlay floats ABOVE the solid bar slot so screen content visibly
+  // fades into the bar instead of the "transparent" top just revealing the
+  // same flat tint. Height ~16% of screen width gives a soft 60-70pt ramp.
+  const fadeH = width * 0.16;
+  const fadeColors = useMemo(
+    () => ['rgba(255,245,245,0)', COLORS.background] as [string, string],
+    []
+  );
+
   return (
-    <View style={{
-      flexDirection: 'row',
-      gap,
-      paddingHorizontal: sidePad,
-      paddingTop: width * 0.02,
-      paddingBottom: insets.bottom + width * 0.015,
-      backgroundColor: COLORS.background,
-    }}>
-      {state.routes.map((route, index) => {
-        const isFocused = state.index === index;
-        const { options } = descriptors[route.key];
-        const label = options.tabBarLabel as string;
-        const renderIcon = options.tabBarIcon;
-        const tint = isFocused ? COLORS.white : COLORS.textLight;
+    <View>
+      <LinearGradient
+        colors={fadeColors}
+        locations={[0, 1]}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: -fadeH,
+          height: fadeH,
+        }}
+        pointerEvents="none"
+      />
+      <View style={{
+        flexDirection: 'row',
+        gap,
+        paddingHorizontal: sidePad,
+        paddingTop: width * 0.02,
+        paddingBottom: insets.bottom + width * 0.015,
+        backgroundColor: COLORS.background,
+      }}>
+        {state.routes.map((route, index) => {
+          const isFocused = state.index === index;
+          const { options } = descriptors[route.key];
+          const label = options.tabBarLabel as string;
+          const renderIcon = options.tabBarIcon;
 
-        const onPress = () => {
-          const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-          if (!isFocused && !event.defaultPrevented) {
-            navigation.navigate(route.name);
-          }
-        };
+          const onPress = () => {
+            const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+            if (!isFocused && !event.defaultPrevented) {
+              navigation.navigate(route.name);
+            }
+          };
 
-        return (
-          <TouchableOpacity
-            key={route.key}
-            activeOpacity={0.75}
-            onPress={onPress}
-            style={{
-              flex: 1,
-              height: pillH,
-              borderRadius: radius,
-              backgroundColor: isFocused ? COLORS.kiss : COLORS.white,
-              borderWidth: isFocused ? 0 : 1,
-              borderColor: COLORS.border,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            {renderIcon && renderIcon({ focused: isFocused, color: tint })}
-            <Text style={{
-              fontSize: labelSize,
-              fontWeight: '600',
-              color: tint,
-              marginTop: 2,
-            }}>{label}</Text>
-          </TouchableOpacity>
-        );
-      })}
+          return (
+            <PillTab
+              key={route.key}
+              isFocused={isFocused}
+              label={label}
+              renderIcon={renderIcon}
+              onPress={onPress}
+              pillH={pillH}
+              radius={radius}
+              labelSize={labelSize}
+            />
+          );
+        })}
+      </View>
     </View>
   );
 }
