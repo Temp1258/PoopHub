@@ -173,7 +173,11 @@ export async function sendPush(
     notification.collapseId = collapseId;
   }
   notification.topic = process.env.APN_BUNDLE_ID || 'com.couplebuzz.app';
-  notification.payload = { actionType, senderName, ...(extra || {}) };
+  // expo-notifications iOS reads remote-push `data` from userInfo["body"],
+  // not the userInfo top level (see EXNotificationSerializer.m). Wrap the
+  // custom keys under "body" so the client receives them as `data.*`. Without
+  // this, `data` is null on the client and every tap falls back to History.
+  notification.payload = { body: { actionType, senderName, ...(extra || {}) } };
 
   try {
     const result = await provider.send(notification, deviceToken);
