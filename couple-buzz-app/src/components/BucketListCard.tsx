@@ -172,7 +172,6 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onC
             placeholder="心愿名称"
             placeholderTextColor={COLORS.textLight}
             maxLength={50}
-            autoFocus
           />
           <View style={styles.catRow}>
             {CATEGORIES.slice(1).map(c => (

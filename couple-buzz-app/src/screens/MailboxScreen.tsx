@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl } from 'react-native';
+import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
@@ -19,6 +19,13 @@ export default function MailboxScreen() {
   const capsuleRef = useRef<Reloadable>(null);
   const inboxRef = useRef<InboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
+  // Scroll-bound fade — see UsScreen for the same pattern + rationale.
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const fadeOpacity = scrollY.interpolate({
+    inputRange: [0, 12],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -36,7 +43,7 @@ export default function MailboxScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-      <ScrollView
+      <Animated.ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -46,6 +53,11 @@ export default function MailboxScreen() {
             tintColor={COLORS.kiss}
           />
         }
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true }
+        )}
+        scrollEventThrottle={16}
       >
         <MailboxCard ref={mailboxRef} />
         <TimeCapsuleCard ref={capsuleRef} />
@@ -75,19 +87,24 @@ export default function MailboxScreen() {
           </View>
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
-      </ScrollView>
-      {/* Soft top fade — see UsScreen for rationale. */}
-      <LinearGradient
-        colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+      </Animated.ScrollView>
+      {/* Scroll-bound top fade — see UsScreen for rationale. */}
+      <Animated.View
+        pointerEvents="none"
         style={{
           position: 'absolute',
           left: 0,
           right: 0,
           top: insets.top + 12,
           height: 24,
+          opacity: fadeOpacity,
         }}
-        pointerEvents="none"
-      />
+      >
+        <LinearGradient
+          colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+          style={{ flex: 1 }}
+        />
+      </Animated.View>
 
       <InboxScreen ref={inboxRef} visible={inboxOpen} onClose={() => setInboxOpen(false)} />
       <TrashScreen

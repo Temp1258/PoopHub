@@ -10,6 +10,7 @@ import {
   Modal,
   FlatList,
   RefreshControl,
+  Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -52,6 +53,13 @@ export default function AnniversaryWishScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const bucketRef = useRef<Reloadable>(null);
   const fireworksRef = useRef<FireworksHandle>(null);
+  // Scroll-bound fade — see UsScreen.
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const fadeOpacity = scrollY.interpolate({
+    inputRange: [0, 12],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -110,7 +118,7 @@ export default function AnniversaryWishScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-      <ScrollView
+      <Animated.ScrollView
         contentContainerStyle={styles.content}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.kiss} />
@@ -118,6 +126,11 @@ export default function AnniversaryWishScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true }
+        )}
+        scrollEventThrottle={16}
       >
         <Text style={styles.sectionTitle}>纪念日</Text>
         {dates.map((d) => (
@@ -198,19 +211,24 @@ export default function AnniversaryWishScreen() {
 
         <View style={{ height: 24 }} />
         <BucketListCard ref={bucketRef} onCelebrate={handleCelebrate} />
-      </ScrollView>
-      {/* Soft top fade — see UsScreen for rationale. */}
-      <LinearGradient
-        colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+      </Animated.ScrollView>
+      {/* Scroll-bound top fade — see UsScreen for rationale. */}
+      <Animated.View
+        pointerEvents="none"
         style={{
           position: 'absolute',
           left: 0,
           right: 0,
           top: insets.top + 12,
           height: 24,
+          opacity: fadeOpacity,
         }}
-        pointerEvents="none"
-      />
+      >
+        <LinearGradient
+          colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+          style={{ flex: 1 }}
+        />
+      </Animated.View>
 
       <Modal visible={datePart !== null} animationType="slide" transparent>
         <View style={styles.modalOverlay}>

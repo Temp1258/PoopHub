@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, RefreshControl, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
@@ -17,6 +17,14 @@ export default function DailyScreen() {
   const questionRef = useRef<Reloadable>(null);
   const snapRef = useRef<Reloadable>(null);
   const cd = useBeijing7amCountdown();
+  // Scroll-bound fade: invisible at rest (so the topmost card's edge is
+  // fully visible), fades in to mask content as the user scrolls up.
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const fadeOpacity = scrollY.interpolate({
+    inputRange: [0, 12],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -36,7 +44,7 @@ export default function DailyScreen() {
   // first card. Cards no longer need their own paddingTop.
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-      <ScrollView
+      <Animated.ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -46,6 +54,11 @@ export default function DailyScreen() {
             tintColor={COLORS.kiss}
           />
         }
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true }
+        )}
+        scrollEventThrottle={16}
       >
         <RitualButton ref={ritualRef} />
         <DailyQuestionCard ref={questionRef} />
@@ -53,21 +66,26 @@ export default function DailyScreen() {
         <Text style={styles.refreshHint}>
           {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
         </Text>
-      </ScrollView>
-      {/* Soft fade at the top of the scroll area: bg-opaque at the top of
-          the safe area, transparent ~24pt down. Lets content scroll into
-          the header zone smoothly instead of meeting a hard horizontal cut. */}
-      <LinearGradient
-        colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+      </Animated.ScrollView>
+      {/* Scroll-bound fade: invisible at rest, fades in once the user
+          scrolls so content sliding up under the safe area dissolves
+          smoothly into the bg instead of meeting a hard cut. */}
+      <Animated.View
+        pointerEvents="none"
         style={{
           position: 'absolute',
           left: 0,
           right: 0,
           top: insets.top + 12,
           height: 24,
+          opacity: fadeOpacity,
         }}
-        pointerEvents="none"
-      />
+      >
+        <LinearGradient
+          colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+          style={{ flex: 1 }}
+        />
+      </Animated.View>
     </View>
   );
 }
