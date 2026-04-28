@@ -11,6 +11,7 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
 import { api, BucketItemResponse } from '../services/api';
+import { SpringPressable } from './SpringPressable';
 
 // Brand colors per side: kiss-pink for the current user, soft blue for the
 // partner. Used as a 4px left bar + chip on each item so we can tell at a
@@ -198,9 +199,15 @@ const BucketListCard = forwardRef<{ reload: () => Promise<void> }, Props>(({ onC
           </View>
         </View>
       ) : (
-        <TouchableOpacity style={styles.addLink} onPress={() => setShowAdd(true)}>
-          <Text style={styles.addLinkText}>+ 添加心愿</Text>
-        </TouchableOpacity>
+        <View style={styles.addPillContainer}>
+          <SpringPressable
+            onPress={() => setShowAdd(true)}
+            scaleTo={1.08}
+            style={styles.addPill}
+          >
+            <Text style={styles.addPillText}>添加心愿</Text>
+          </SpringPressable>
+        </View>
       )}
     </View>
   );
@@ -245,6 +252,27 @@ const styles = StyleSheet.create({
   submitBtn: { flex: 1, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.kiss },
   submitDisabled: { opacity: 0.4 },
   submitText: { fontSize: 14, fontWeight: '600', color: COLORS.white },
-  addLink: { height: 40, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed', borderRadius: 10, marginTop: 8 },
-  addLinkText: { fontSize: 13, color: COLORS.textLight },
+  addPillContainer: {
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  addPill: {
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  addPillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
 });

@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import MailboxCard from '../components/MailboxCard';
 import TimeCapsuleCard from '../components/TimeCapsuleCard';
@@ -75,6 +76,18 @@ export default function MailboxScreen() {
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
       </ScrollView>
+      {/* Soft top fade — see UsScreen for rationale. */}
+      <LinearGradient
+        colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: insets.top + 12,
+          height: 24,
+        }}
+        pointerEvents="none"
+      />
 
       <InboxScreen ref={inboxRef} visible={inboxOpen} onClose={() => setInboxOpen(false)} />
       <TrashScreen

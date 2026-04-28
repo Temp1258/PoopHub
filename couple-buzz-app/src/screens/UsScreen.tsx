@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import RitualButton from '../components/RitualButton';
 import DailyQuestionCard from '../components/DailyQuestionCard';
@@ -53,6 +54,20 @@ export default function DailyScreen() {
           {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
         </Text>
       </ScrollView>
+      {/* Soft fade at the top of the scroll area: bg-opaque at the top of
+          the safe area, transparent ~24pt down. Lets content scroll into
+          the header zone smoothly instead of meeting a hard horizontal cut. */}
+      <LinearGradient
+        colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: insets.top + 12,
+          height: 24,
+        }}
+        pointerEvents="none"
+      />
     </View>
   );
 }

@@ -14,10 +14,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import { api, ImportantDate } from '../services/api';
 import BucketListCard from '../components/BucketListCard';
 import FireworksOverlay, { FireworksHandle } from '../components/FireworksOverlay';
+import { SpringPressable } from '../components/SpringPressable';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -183,14 +185,32 @@ export default function AnniversaryWishScreen() {
             </View>
           </View>
         ) : (
-          <TouchableOpacity style={styles.addDateButton} onPress={() => setShowAddDate(true)}>
-            <Text style={styles.addDateButtonText}>+ 添加纪念日</Text>
-          </TouchableOpacity>
+          <View style={styles.addPillContainer}>
+            <SpringPressable
+              onPress={() => setShowAddDate(true)}
+              scaleTo={1.08}
+              style={styles.addPill}
+            >
+              <Text style={styles.addPillText}>添加纪念日</Text>
+            </SpringPressable>
+          </View>
         )}
 
         <View style={{ height: 24 }} />
         <BucketListCard ref={bucketRef} onCelebrate={handleCelebrate} />
       </ScrollView>
+      {/* Soft top fade — see UsScreen for rationale. */}
+      <LinearGradient
+        colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: insets.top + 12,
+          height: 24,
+        }}
+        pointerEvents="none"
+      />
 
       <Modal visible={datePart !== null} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
@@ -376,15 +396,27 @@ const styles = StyleSheet.create({
   },
   addDateConfirmText: { fontSize: 15, fontWeight: '600', color: COLORS.white },
   calSelected: { fontSize: 13, color: COLORS.kiss, textAlign: 'center', marginTop: 8, fontWeight: '500' },
-  addDateButton: {
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
+  addPillContainer: {
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderStyle: 'dashed',
-    marginTop: 4,
+    marginTop: 8,
   },
-  addDateButtonText: { fontSize: 15, color: COLORS.textLight },
+  addPill: {
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  addPillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
 });

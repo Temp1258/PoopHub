@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import { api } from '../services/api';
 import { storage } from '../utils/storage';
@@ -307,6 +308,18 @@ export default function SettingsScreen() {
       </Modal>
 
     </ScrollView>
+    {/* Soft top fade — see UsScreen for rationale. */}
+    <LinearGradient
+      colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: insets.top + 12,
+        height: 24,
+      }}
+      pointerEvents="none"
+    />
     </View>
   );
 }
