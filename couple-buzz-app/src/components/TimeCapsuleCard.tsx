@@ -55,15 +55,13 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
       tension: 80,
       friction: 9,
     }).start();
-    if (showCreate) {
-      // Defer focus until the spring has space to render the input — popping
-      // the keyboard mid-spring looks janky.
-      const t = setTimeout(() => inputRef.current?.focus(), 250);
-      return () => clearTimeout(t);
+    // Don't auto-focus on expand — keyboard should pop only when the user
+    // taps into the input. On collapse, blur (in case user had typed) and
+    // also tear down the date picker so reopening starts fresh.
+    if (!showCreate) {
+      inputRef.current?.blur();
+      setShowDatePicker(false);
     }
-    // Collapse: also clear ephemeral pieces so reopening starts fresh.
-    inputRef.current?.blur();
-    setShowDatePicker(false);
   }, [showCreate, expandAnim]);
 
   useEffect(() => {
@@ -231,7 +229,7 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
                             : 'ta 埋下的信'}
                         </Text>
                         <Text style={styles.waitingItemSub}>
-                          信件将在 {formatCountdown(c.unlock_date)}后送达
+                          将于 {formatCountdown(c.unlock_date)}后寄达
                         </Text>
                       </View>
                     </View>
@@ -272,27 +270,31 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
                 multiline
               />
               <View style={styles.visRow}>
-                <TouchableOpacity
-                  style={[styles.visChip, visibility === 'self' && styles.visChipActive]}
+                <SpringPressable
+                  wrapperStyle={styles.visPillWrap}
+                  style={[styles.visPill, visibility === 'self' && styles.visPillActive]}
                   onPress={() => setVisibility('self')}
+                  scaleTo={1.05}
                 >
-                  <Text style={[styles.visEmoji]}>🔒</Text>
-                  <Text style={[styles.visLabel, visibility === 'self' && styles.visLabelActive]}>给自己看</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.visChip, visibility === 'partner' && styles.visChipActive]}
+                  <Text style={styles.visEmoji}>🔒</Text>
+                  <Text style={[styles.visLabel, visibility === 'self' && styles.visLabelActive]}>给自己</Text>
+                </SpringPressable>
+                <SpringPressable
+                  wrapperStyle={styles.visPillWrap}
+                  style={[styles.visPill, visibility === 'partner' && styles.visPillActive]}
                   onPress={() => setVisibility('partner')}
+                  scaleTo={1.05}
                 >
-                  <Text style={[styles.visEmoji]}>💌</Text>
-                  <Text style={[styles.visLabel, visibility === 'partner' && styles.visLabelActive]}>给对方看</Text>
-                </TouchableOpacity>
+                  <Text style={styles.visEmoji}>💌</Text>
+                  <Text style={[styles.visLabel, visibility === 'partner' && styles.visLabelActive]}>给对方</Text>
+                </SpringPressable>
               </View>
               <TouchableOpacity
                 style={styles.dateButton}
                 onPress={() => setShowDatePicker(true)}
               >
                 <Text style={[styles.dateButtonText, !unlockDate && styles.dateButtonPlaceholder]}>
-                  {unlockDate ? `开启日期: ${formatDate(unlockDate)}` : '选择开启日期'}
+                  {unlockDate ? `寄达: ${formatDate(unlockDate)}` : '寄达时间'}
                 </Text>
                 <Text style={styles.dateButtonArrow}>📅</Text>
               </TouchableOpacity>
@@ -388,20 +390,30 @@ const styles = StyleSheet.create({
   waitingItemBody: { flex: 1 },
   waitingItemTitle: { fontSize: 14, color: COLORS.text, fontWeight: '500' },
   waitingItemSub: { fontSize: 12, color: COLORS.textLight, marginTop: 2 },
-  visRow: { flexDirection: 'row', gap: 8 },
-  visChip: {
-    flex: 1,
+  visRow: { flexDirection: 'row', gap: 10 },
+  // Outer wrapper takes the flex slot; inner Pressable owns the pill style
+  // (so the spring scale doesn't disturb sibling layout).
+  visPillWrap: { flex: 1 },
+  visPill: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.background,
+    // Same elevation language as 收起/寄出 pills, so the row reads as a
+    // single 灵动岛 family.
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 4,
   },
-  visChipActive: {
+  visPillActive: {
     borderColor: COLORS.kiss,
     backgroundColor: '#FFF0F3',
   },

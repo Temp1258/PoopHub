@@ -45,11 +45,12 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
       tension: 80,
       friction: 9,
     }).start();
-    if (composeOpen) {
-      const t = setTimeout(() => inputRef.current?.focus(), 250);
-      return () => clearTimeout(t);
+    // Don't auto-focus on expand — let the user tap into the input
+    // themselves so the keyboard doesn't pop up uninvited. Still blur on
+    // collapse to dismiss the keyboard if the user had typed.
+    if (!composeOpen) {
+      inputRef.current?.blur();
     }
-    inputRef.current?.blur();
   }, [composeOpen, expandAnim]);
   // Snapshot of the typed letter while the seal animation runs — used as the
   // preview shown in the animation. After it's posted, content state itself
