@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  Animated,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
@@ -43,6 +44,27 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
   // Open animation state — runs when an unlockable capsule is tapped.
   const [revealAnim, setRevealAnim] = useState<RevealMeta | null>(null);
   const [names, setNames] = useState<{ me: string; ta: string }>({ me: '我', ta: 'ta' });
+  // Spring-driven expand/collapse for the compose form. JS-driven (maxHeight
+  // is a layout prop). Mirrors the 甩表情 panel feel — bouncy slide-down.
+  const expandAnim = useRef(new Animated.Value(0)).current;
+  const inputRef = useRef<TextInput>(null);
+  useEffect(() => {
+    Animated.spring(expandAnim, {
+      toValue: showCreate ? 1 : 0,
+      useNativeDriver: false,
+      tension: 80,
+      friction: 9,
+    }).start();
+    if (showCreate) {
+      // Defer focus until the spring has space to render the input — popping
+      // the keyboard mid-spring looks janky.
+      const t = setTimeout(() => inputRef.current?.focus(), 250);
+      return () => clearTimeout(t);
+    }
+    // Collapse: also clear ephemeral pieces so reopening starts fresh.
+    inputRef.current?.blur();
+    setShowDatePicker(false);
+  }, [showCreate, expandAnim]);
 
   useEffect(() => {
     (async () => {
@@ -219,9 +241,28 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
             </View>
           )}
 
-          {showCreate ? (
+          <View style={styles.composePillContainer}>
+            <SpringPressable
+              onPress={() => setShowCreate(o => !o)}
+              scaleTo={1.08}
+              style={styles.composePill}
+            >
+              <Text style={styles.composePillText}>{showCreate ? '收起' : '写信'}</Text>
+            </SpringPressable>
+          </View>
+          {/* Always rendered, animated maxHeight + opacity. Spring physics
+              mirror the 甩表情 panel feel — slides open below the pill. */}
+          <Animated.View
+            style={{
+              maxHeight: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 700] }),
+              opacity: expandAnim,
+              overflow: 'hidden',
+            }}
+            pointerEvents={showCreate ? 'auto' : 'none'}
+          >
             <View style={styles.createForm}>
               <TextInput
+                ref={inputRef}
                 style={styles.input}
                 value={content}
                 onChangeText={setContent}
@@ -246,11 +287,6 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
                   <Text style={[styles.visLabel, visibility === 'partner' && styles.visLabelActive]}>给对方看</Text>
                 </TouchableOpacity>
               </View>
-              {visibility === 'partner' && (
-                <Text style={styles.visHint}>
-                  ta 会立刻收到提醒：你埋下了一个胶囊 + 开启倒计时
-                </Text>
-              )}
               <TouchableOpacity
                 style={styles.dateButton}
                 onPress={() => setShowDatePicker(true)}
@@ -270,36 +306,21 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
                   locale="zh-CN"
                 />
               )}
-              <View style={styles.createActions}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => {
-                  setShowCreate(false);
-                  setShowDatePicker(false);
-                  setUnlockDate(null);
-                  setContent('');
-                  setVisibility('partner');
-                }}>
-                  <Text style={styles.cancelText}>取消</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.submitBtn, (!content.trim() || !unlockDate || submitting) && styles.submitDisabled]}
+              <View style={styles.submitPillContainer}>
+                <SpringPressable
                   onPress={handleCreate}
                   disabled={!content.trim() || !unlockDate || submitting}
+                  scaleTo={1.08}
+                  style={[
+                    styles.submitPill,
+                    (!content.trim() || !unlockDate || submitting) && styles.submitPillDisabled,
+                  ]}
                 >
-                  <Text style={styles.submitText}>{submitting ? '...' : '封存 🔒'}</Text>
-                </TouchableOpacity>
+                  <Text style={styles.submitPillText}>{submitting ? '...' : '寄出'}</Text>
+                </SpringPressable>
               </View>
             </View>
-          ) : (
-            <View style={styles.composePillContainer}>
-              <SpringPressable
-                onPress={() => setShowCreate(true)}
-                scaleTo={1.08}
-                style={styles.composePill}
-              >
-                <Text style={styles.composePillText}>写信</Text>
-              </SpringPressable>
-            </View>
-          )}
+          </Animated.View>
         </>
       )}
 
@@ -387,12 +408,6 @@ const styles = StyleSheet.create({
   visEmoji: { fontSize: 16 },
   visLabel: { fontSize: 14, color: COLORS.textLight, fontWeight: '500' },
   visLabelActive: { color: COLORS.kiss, fontWeight: '600' },
-  visHint: {
-    fontSize: 12,
-    color: COLORS.kiss,
-    textAlign: 'center',
-    marginTop: -4,
-  },
   createForm: { marginTop: 8, gap: 10 },
   input: {
     backgroundColor: COLORS.background,
@@ -427,27 +442,30 @@ const styles = StyleSheet.create({
   dateButtonArrow: {
     fontSize: 18,
   },
-  createActions: { flexDirection: 'row', gap: 10 },
-  cancelBtn: {
-    flex: 1,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
+  submitPillContainer: {
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    marginTop: 4,
   },
-  cancelText: { fontSize: 15, color: COLORS.textLight },
-  submitBtn: {
-    flex: 1,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+  submitPill: {
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
     backgroundColor: COLORS.kiss,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
   },
-  submitDisabled: { opacity: 0.4 },
-  submitText: { fontSize: 15, fontWeight: '600', color: COLORS.white },
+  submitPillDisabled: { opacity: 0.4 },
+  submitPillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
   composePillContainer: {
     alignItems: 'center',
     paddingVertical: 8,

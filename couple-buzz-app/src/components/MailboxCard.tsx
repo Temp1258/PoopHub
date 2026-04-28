@@ -3,10 +3,10 @@ import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Animated,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
@@ -32,8 +32,25 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
   const [submitting, setSubmitting] = useState(false);
   const [sealing, setSealing] = useState(false);
   // Compose form is hidden by default; revealed when the user taps the
-  // "写信 ✉️" pill. Keeps the card visually clean (matches 择日达 pattern).
+  // "写信" pill. Keeps the card visually clean (matches 择日达 pattern).
   const [composeOpen, setComposeOpen] = useState(false);
+  // Spring-driven expand for the compose form. Mirrors the 甩表情 panel —
+  // bouncy slide-down beneath the pill. JS-driven (maxHeight is layout).
+  const expandAnim = useRef(new Animated.Value(0)).current;
+  const inputRef = useRef<TextInput>(null);
+  useEffect(() => {
+    Animated.spring(expandAnim, {
+      toValue: composeOpen ? 1 : 0,
+      useNativeDriver: false,
+      tension: 80,
+      friction: 9,
+    }).start();
+    if (composeOpen) {
+      const t = setTimeout(() => inputRef.current?.focus(), 250);
+      return () => clearTimeout(t);
+    }
+    inputRef.current?.blur();
+  }, [composeOpen, expandAnim]);
   // Snapshot of the typed letter while the seal animation runs — used as the
   // preview shown in the animation. After it's posted, content state itself
   // is cleared so it can't be peeked from local state either.
@@ -187,55 +204,57 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
         </View>
       ) : sealing ? (
         <SealAnimation preview={sealedPreview} onComplete={handleSealComplete} />
-      ) : !composeOpen ? (
-        <View style={styles.pillContainer}>
-          <SpringPressable
-            onPress={() => setComposeOpen(true)}
-            scaleTo={1.08}
-            style={styles.composePill}
-          >
-            <Text style={styles.composePillText}>写信</Text>
-          </SpringPressable>
-        </View>
       ) : (
         <View>
-          <Text style={styles.prompt}>写一句想说但没说出口的话吧～</Text>
-          <TextInput
-            style={styles.input}
-            value={content}
-            onChangeText={setContent}
-            placeholder="写点什么给 ta..."
-            placeholderTextColor={COLORS.textLight}
-            maxLength={500}
-            multiline
-            editable={!submitting}
-            autoFocus
-          />
-          <View style={styles.charCount}>
-            <Text style={styles.charCountText}>{content.length}/500</Text>
-          </View>
-          <View style={styles.actionsRow}>
-            <TouchableOpacity
-              style={styles.cancelBtn}
-              onPress={() => {
-                setComposeOpen(false);
-                setContent('');
-              }}
-              disabled={submitting}
-              activeOpacity={0.8}
+          <View style={styles.pillContainer}>
+            <SpringPressable
+              onPress={() => setComposeOpen(o => !o)}
+              scaleTo={1.08}
+              style={styles.composePill}
             >
-              <Text style={styles.cancelText}>收起</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.submitButton, (!content.trim() || submitting) && styles.submitDisabled]}
-              onPress={handleSubmit}
-              disabled={!content.trim() || submitting}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
-            </TouchableOpacity>
+              <Text style={styles.composePillText}>{composeOpen ? '收起' : '写信'}</Text>
+            </SpringPressable>
           </View>
-          <Text style={styles.hint}>提交后不能修改 · 双方都看不到内容直到送达</Text>
+          {/* Always rendered, animated maxHeight + opacity. Spring physics
+              mirror the 甩表情 panel — slides open below the pill. */}
+          <Animated.View
+            style={{
+              maxHeight: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 500] }),
+              opacity: expandAnim,
+              overflow: 'hidden',
+            }}
+            pointerEvents={composeOpen ? 'auto' : 'none'}
+          >
+            <Text style={styles.prompt}>写一句想说但没说出口的话吧～</Text>
+            <TextInput
+              ref={inputRef}
+              style={styles.input}
+              value={content}
+              onChangeText={setContent}
+              placeholder="写点什么给 ta..."
+              placeholderTextColor={COLORS.textLight}
+              maxLength={500}
+              multiline
+              editable={!submitting}
+            />
+            <View style={styles.charCount}>
+              <Text style={styles.charCountText}>{content.length}/500</Text>
+            </View>
+            <View style={styles.submitPillContainer}>
+              <SpringPressable
+                onPress={handleSubmit}
+                disabled={!content.trim() || submitting}
+                scaleTo={1.08}
+                style={[
+                  styles.submitPill,
+                  (!content.trim() || submitting) && styles.submitPillDisabled,
+                ]}
+              >
+                <Text style={styles.submitPillText}>{submitting ? '投递中...' : '寄出'}</Text>
+              </SpringPressable>
+            </View>
+            <Text style={styles.hint}>提交后不能修改 · 双方都看不到内容直到送达</Text>
+          </Animated.View>
         </View>
       )}
 
@@ -328,41 +347,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textLight,
   },
-  actionsRow: {
-    flexDirection: 'row',
-    gap: 10,
+  submitPillContainer: {
+    alignItems: 'center',
     marginTop: 12,
   },
-  cancelBtn: {
-    height: 44,
-    paddingHorizontal: 18,
-    backgroundColor: COLORS.background,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cancelText: {
-    fontSize: 15,
-    color: COLORS.textLight,
-    fontWeight: '500',
-  },
-  submitButton: {
-    flex: 1,
-    height: 44,
+  submitPill: {
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
     backgroundColor: COLORS.kiss,
-    borderRadius: 12,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
   },
-  submitDisabled: {
+  submitPillDisabled: {
     opacity: 0.4,
   },
-  submitText: {
-    fontSize: 16,
-    fontWeight: '600',
+  submitPillText: {
     color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   hint: {
     fontSize: 12,
