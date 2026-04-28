@@ -1109,7 +1109,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // GET /api/weekly-report
   router.get('/weekly-report', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const week = req.query.week as string;
+    const week = req.query.week as string | undefined;
+    // Validate user-supplied week — without this, `new Date('foo')` is
+    // Invalid Date and the subsequent toISOString() throws → 500.
+    if (week && !isValidDateString(week)) {
+      return res.status(400).json({ error: 'week must be YYYY-MM-DD' });
+    }
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });

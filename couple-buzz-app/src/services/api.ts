@@ -12,33 +12,40 @@ export class AuthError extends Error {
   }
 }
 
-let isRefreshing = false;
+// Singleton-promise lock: when several requests hit a 401 in parallel, they
+// all `await` the same in-flight refresh instead of the second-onward giving
+// up immediately and bubbling the original 401 into an AuthError (which
+// would falsely log the user out).
+let refreshPromise: Promise<boolean> | null = null;
 
 async function refreshAccessToken(): Promise<boolean> {
-  if (isRefreshing) return false;
-  isRefreshing = true;
+  if (refreshPromise) return refreshPromise;
 
-  try {
-    const refreshToken = await storage.getRefreshToken();
-    if (!refreshToken) return false;
+  refreshPromise = (async () => {
+    try {
+      const refreshToken = await storage.getRefreshToken();
+      if (!refreshToken) return false;
 
-    const res = await fetch(`${API_URL}/api/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
+      const res = await fetch(`${API_URL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
 
-    if (!res.ok) return false;
+      if (!res.ok) return false;
 
-    const data = await res.json();
-    await storage.setAccessToken(data.access_token);
-    await storage.setRefreshToken(data.refresh_token);
-    return true;
-  } catch {
-    return false;
-  } finally {
-    isRefreshing = false;
-  }
+      const data = await res.json();
+      await storage.setAccessToken(data.access_token);
+      await storage.setRefreshToken(data.refresh_token);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 async function request<T>(path: string, options: RequestInit = {}, requiresAuth = true): Promise<T> {

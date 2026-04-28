@@ -179,20 +179,28 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
         socket.to(key).emit('touch_end', { from: userId });
       }
 
+      // Only delete the entry if THIS socket is the one currently registered.
+      // A multi-device login replaces the socket id on connect, so an older
+      // socket disconnecting must not trample the newer registration.
       if (presence.sockets.get(userId) === socket.id) {
         presence.sockets.delete(userId);
       }
 
-      if (presence.bothOnlineTimer) {
-        clearTimeout(presence.bothOnlineTimer);
-        presence.bothOnlineTimer = undefined;
-      }
-
-      socket.to(key).emit('partner_online', { online: false });
-
-      if (presence.bothEmitted) {
-        io.to(key).emit('presence_single');
-        presence.bothEmitted = false;
+      // Gate offline-side-effects on whether the user actually has zero
+      // remaining sockets. Without this gate, an old phone disconnecting
+      // while a newer one stays connected falsely flips partner-online to
+      // false and tears down the both-online presence indicator.
+      const userStillOnline = presence.sockets.has(userId);
+      if (!userStillOnline) {
+        if (presence.bothOnlineTimer) {
+          clearTimeout(presence.bothOnlineTimer);
+          presence.bothOnlineTimer = undefined;
+        }
+        socket.to(key).emit('partner_online', { online: false });
+        if (presence.bothEmitted) {
+          io.to(key).emit('presence_single');
+          presence.bothEmitted = false;
+        }
       }
 
       if (presence.sockets.size === 0) {
