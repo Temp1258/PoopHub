@@ -148,7 +148,11 @@ function PillTab({
 
   return (
     <SpringPressable
-      onPress={onPress}
+      // Switch on touch-down (onPressIn) instead of touch-up (onPress) so the
+      // screen flips the moment the finger lands, not after release. Saves
+      // the finger-hold window (~80-150ms) — perceptually "instant". The
+      // spring + haptic still play in parallel as visual feedback.
+      onPressIn={onPress}
       wrapperStyle={{ flex: 1 }}
       style={{
         height: pillH,
