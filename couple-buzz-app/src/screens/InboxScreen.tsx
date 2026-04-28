@@ -108,7 +108,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
         const arrivedAt = mailboxRevealTime(w.week_key);
         // Server returns ISO of when the partner submitted; fall back to
         // reveal time if missing (e.g. legacy rows without created_at).
-        const writtenAt = w.partner_created_at || arrivedAt;
+        const writtenAt = normalizeIso(w.partner_created_at) || arrivedAt;
         out.push({
           key: `m-${w.partner_message_id}`,
           kind: 'mailbox',
@@ -142,13 +142,14 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           kindLabel = '择日达 · 来自 ta';
           writerZone = partnerZone;
         }
+        const capsuleArrived = normalizeIso(c.opened_at);
         out.push({
           key: `c-${c.id}`,
           kind: 'capsule',
           refId: c.id,
-          arrivedAt: c.opened_at,
-          sortAt: c.opened_at,
-          date: formatPostmark(c.created_at, writerZone),
+          arrivedAt: capsuleArrived,
+          sortAt: capsuleArrived,
+          date: formatPostmark(normalizeIso(c.created_at), writerZone),
           from,
           to,
           body: c.content,
@@ -464,6 +465,16 @@ function SwipeableCard({
   );
 }
 
+// SQLite's CURRENT_TIMESTAMP serializes as "YYYY-MM-DD HH:MM:SS" — no T, no
+// timezone. Date parsing of this format is implementation-defined (works in
+// Node, brittle in Hermes / older Safari). Normalize to proper ISO-Z so
+// downstream Date operations and lexicographic comparisons are stable.
+function normalizeIso(s: string | null | undefined): string {
+  if (!s) return '';
+  if (s.includes('T') && (/Z$/.test(s) || /[+-]\d\d:?\d\d$/.test(s))) return s;
+  return `${s.replace(' ', 'T')}Z`;
+}
+
 // Mailbox letter "arrived" at the session reveal time. AM session reveals at
 // 12:00 UTC of the date; PM at next-day 0:00 UTC. Mirrors server's
 // getRevealTime() so the client can compute without a round-trip.
@@ -476,20 +487,39 @@ function mailboxRevealTime(weekKey: string): string {
   return next.toISOString();
 }
 
-// "GMT+8 04-27 20:00" — postmark for the inbox card. Format the moment in
-// the writer's timezone so the recipient sees the same wall-clock time the
-// writer saw when sending.
+// Friendly Chinese names for the timezones a user can pick in Settings.
+// Falls back to GMT±N for any tz not in this list (e.g. an auto-detected
+// device timezone that doesn't match the picker presets).
+const TZ_FRIENDLY: Record<string, string> = {
+  'Asia/Shanghai': '北京时间',
+  'Asia/Hong_Kong': '香港时间',
+  'Asia/Taipei': '台北时间',
+  'Asia/Tokyo': '东京时间',
+  'Asia/Seoul': '首尔时间',
+  'Asia/Singapore': '新加坡时间',
+  'America/New_York': '纽约时间',
+  'America/Los_Angeles': '洛杉矶时间',
+  'America/Chicago': '芝加哥时间',
+  'Europe/London': '伦敦时间',
+  'Europe/Paris': '巴黎时间',
+  'Europe/Berlin': '柏林时间',
+  'Australia/Sydney': '悉尼时间',
+};
+
+// "纽约时间 04-27 20:34" — postmark for the inbox card. Format the moment
+// in the writer's timezone so the recipient sees the same wall-clock time
+// the writer saw when sending.
 function formatPostmark(iso: string, tz: string): string {
   try {
     const date = new Date(iso);
     const md = date.toLocaleDateString('en-CA', { timeZone: tz, month: '2-digit', day: '2-digit' });
-    const hourStr = date.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false });
-    const hour = parseInt(hourStr, 10);
-    const offset = (() => {
+    // hour must be 24h, minute 2-digit. en-GB gives "HH:mm" reliably.
+    const hm = date.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+    const tzLabel = TZ_FRIENDLY[tz] ?? (() => {
       const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date);
-      return parts.find(p => p.type === 'timeZoneName')?.value || '';
+      return parts.find(p => p.type === 'timeZoneName')?.value || tz;
     })();
-    return `${offset} ${md} ${String(Number.isFinite(hour) ? hour : 0).padStart(2, '0')}:00`;
+    return `${tzLabel} ${md} ${hm}`;
   } catch {
     return iso.slice(0, 10);
   }

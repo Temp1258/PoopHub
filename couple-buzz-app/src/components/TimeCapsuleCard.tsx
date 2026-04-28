@@ -296,7 +296,7 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
                 scaleTo={1.08}
                 style={styles.composePill}
               >
-                <Text style={styles.composePillText}>写信 ✉️</Text>
+                <Text style={styles.composePillText}>写信</Text>
               </SpringPressable>
             </View>
           )}

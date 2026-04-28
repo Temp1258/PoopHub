@@ -194,7 +194,7 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
             scaleTo={1.08}
             style={styles.composePill}
           >
-            <Text style={styles.composePillText}>写信 ✉️</Text>
+            <Text style={styles.composePillText}>写信</Text>
           </SpringPressable>
         </View>
       ) : (
@@ -214,14 +214,27 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
           <View style={styles.charCount}>
             <Text style={styles.charCountText}>{content.length}/500</Text>
           </View>
-          <TouchableOpacity
-            style={[styles.submitButton, (!content.trim() || submitting) && styles.submitDisabled]}
-            onPress={handleSubmit}
-            disabled={!content.trim() || submitting}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
-          </TouchableOpacity>
+          <View style={styles.actionsRow}>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => {
+                setComposeOpen(false);
+                setContent('');
+              }}
+              disabled={submitting}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.cancelText}>收起</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.submitButton, (!content.trim() || submitting) && styles.submitDisabled]}
+              onPress={handleSubmit}
+              disabled={!content.trim() || submitting}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={styles.hint}>提交后不能修改 · 双方都看不到内容直到送达</Text>
         </View>
       )}
@@ -315,13 +328,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textLight,
   },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  cancelBtn: {
+    height: 44,
+    paddingHorizontal: 18,
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cancelText: {
+    fontSize: 15,
+    color: COLORS.textLight,
+    fontWeight: '500',
+  },
   submitButton: {
+    flex: 1,
     height: 44,
     backgroundColor: COLORS.kiss,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 12,
   },
   submitDisabled: {
     opacity: 0.4,
