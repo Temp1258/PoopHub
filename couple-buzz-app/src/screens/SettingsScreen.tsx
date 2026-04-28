@@ -18,6 +18,7 @@ import { api } from '../services/api';
 import { storage } from '../utils/storage';
 import WeeklyReportCard from '../components/WeeklyReportCard';
 import StatsCard from '../components/StatsCard';
+import { SpringPressable } from '../components/SpringPressable';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -50,7 +51,6 @@ export default function SettingsScreen() {
   const [originalTimezone, setOriginalTimezone] = useState('');
   const [originalPartnerTz, setOriginalPartnerTz] = useState('');
   const [originalPartnerRemark, setOriginalPartnerRemark] = useState('');
-  const [savingRemark, setSavingRemark] = useState(false);
   const [saving, setSaving] = useState(false);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
   const [userId, setUserId] = useState('');
@@ -110,7 +110,14 @@ export default function SettingsScreen() {
     }, [loadStatus])
   );
 
-  const hasNameChange = name.trim() !== originalName && name.trim().length > 0;
+  const trimmedName = name.trim();
+  const trimmedRemark = partnerRemark.trim();
+  const hasNameChange = trimmedName !== originalName;
+  const hasRemarkChange = trimmedRemark !== originalPartnerRemark.trim();
+  // Save enabled iff the user actually changed something AND the nickname
+  // isn't blank (server rejects empty name; we mirror that as an inline
+  // disabled state so the user gets immediate signal rather than an alert).
+  const canSave = (hasNameChange || hasRemarkChange) && trimmedName.length > 0;
 
   const persistProfile = async (next: { name?: string; timezone?: string; partnerTimezone?: string; partnerRemark?: string }): Promise<void> => {
     const result = await api.updateProfile(
@@ -135,16 +142,15 @@ export default function SettingsScreen() {
     setOriginalPartnerRemark(result.partner_remark);
   };
 
-  const handleSaveName = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      Alert.alert('', '昵称不能为空');
-      return;
-    }
+  // Single save — pushes both nickname and partner-remark in one API call.
+  // persistProfile already accepts both; passing them together avoids two
+  // round-trips and keeps the UI gesture (one tap) atomic.
+  const handleSave = async () => {
+    if (!canSave) return;
     setSaving(true);
     try {
-      await persistProfile({ name: trimmed });
-      Alert.alert('', '昵称已保存');
+      await persistProfile({ name: trimmedName, partnerRemark: trimmedRemark });
+      Alert.alert('', '已保存');
     } catch (error: any) {
       Alert.alert('保存失败', error.message);
     } finally {
@@ -164,18 +170,6 @@ export default function SettingsScreen() {
       }
     } catch (error: any) {
       Alert.alert('保存失败', error.message);
-    }
-  };
-
-  const handleSaveRemark = async () => {
-    setSavingRemark(true);
-    try {
-      await persistProfile({ partnerRemark: partnerRemark.trim() });
-      Alert.alert('', '备注已保存');
-    } catch (error: any) {
-      Alert.alert('保存失败', error.message);
-    } finally {
-      setSavingRemark(false);
     }
   };
 
@@ -220,50 +214,52 @@ export default function SettingsScreen() {
       <WeeklyReportCard ref={weeklyRef} />
       <StatsCard ref={statsRef} />
 
-      <Text style={styles.sectionTitle}>昵称</Text>
-      <TextInput
-        style={styles.input}
-        value={name}
-        onChangeText={setName}
-        maxLength={20}
-        placeholder="输入昵称"
-        placeholderTextColor={COLORS.textLight}
-      />
-      <TouchableOpacity
-        style={[styles.saveButton, (!hasNameChange || saving) && styles.saveButtonDisabled]}
-        onPress={handleSaveName}
-        disabled={!hasNameChange || saving}
-      >
-        <Text style={styles.saveButtonText}>
-          {saving ? '保存中...' : '保存昵称'}
-        </Text>
-      </TouchableOpacity>
-
-      {partnerId ? (
-        <>
-          <Text style={[styles.sectionTitle, { marginTop: 40 }]}>对 ta 的备注</Text>
+      {/* Paired row mirroring the ID / timezone pattern. Internal labels
+          ("昵称" / "ta 的备注") replace the standalone section titles, and
+          a single 灵动岛 "保存" pill below saves both fields atomically. */}
+      <View style={styles.namePairRow}>
+        <View style={styles.nameCard}>
+          <Text style={styles.nameCardLabel}>昵称</Text>
           <TextInput
-            style={styles.input}
-            value={partnerRemark}
-            onChangeText={setPartnerRemark}
-            placeholder="给 ta 起个昵称（仅自己可见）"
-            placeholderTextColor={COLORS.textLight}
+            style={styles.nameCardInput}
+            value={name}
+            onChangeText={setName}
             maxLength={20}
+            placeholder="输入昵称"
+            placeholderTextColor={COLORS.textLight}
+            textAlign="center"
           />
-          <TouchableOpacity
-            style={[
-              styles.remarkSaveBtn,
-              (partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark) && styles.saveButtonDisabled,
-            ]}
-            onPress={handleSaveRemark}
-            disabled={partnerRemark.trim() === originalPartnerRemark.trim() || savingRemark}
-          >
-            <Text style={styles.remarkSaveText}>
-              {savingRemark ? '保存中...' : '保存备注'}
-            </Text>
-          </TouchableOpacity>
-        </>
-      ) : null}
+        </View>
+        {partnerId ? (
+          <>
+            <View style={styles.namePairLink}>
+              <Text style={styles.namePairLinkIcon}>💕</Text>
+            </View>
+            <View style={styles.nameCard}>
+              <Text style={styles.nameCardLabel}>ta 的备注</Text>
+              <TextInput
+                style={styles.nameCardInput}
+                value={partnerRemark}
+                onChangeText={setPartnerRemark}
+                maxLength={20}
+                placeholder="给 ta 起个昵称"
+                placeholderTextColor={COLORS.textLight}
+                textAlign="center"
+              />
+            </View>
+          </>
+        ) : null}
+      </View>
+      <View style={styles.savePillContainer}>
+        <SpringPressable
+          onPress={handleSave}
+          disabled={!canSave || saving}
+          scaleTo={1.08}
+          style={[styles.savePill, (!canSave || saving) && styles.savePillDisabled]}
+        >
+          <Text style={styles.savePillText}>{saving ? '保存中...' : '保存'}</Text>
+        </SpringPressable>
+      </View>
 
       <Text style={[styles.sectionTitle, { marginTop: 40 }]}>时区</Text>
       <View style={styles.tzPairRow}>
@@ -375,15 +371,68 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 20,
   },
-  input: {
-    height: 52,
+  namePairRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 20,
+    gap: 8,
+  },
+  nameCard: {
+    flex: 1,
     backgroundColor: COLORS.white,
-    borderRadius: 16,
-    paddingHorizontal: 20,
-    fontSize: 18,
-    color: COLORS.text,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
+    alignItems: 'center',
+  },
+  nameCardLabel: {
+    fontSize: 12,
+    color: COLORS.textLight,
+  },
+  nameCardInput: {
+    width: '100%',
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginTop: 4,
+    // Let platform-default vertical metrics take over so the text sits at
+    // the natural baseline; center-aligned via textAlign on the JSX side.
+    paddingVertical: 2,
+    paddingHorizontal: 0,
+  },
+  namePairLink: {
+    paddingHorizontal: 4,
+  },
+  namePairLinkIcon: {
+    fontSize: 18,
+  },
+  savePillContainer: {
+    alignItems: 'center',
+    marginTop: 18,
+  },
+  savePill: {
+    paddingHorizontal: 36,
+    paddingVertical: 12,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  savePillDisabled: {
+    opacity: 0.4,
+  },
+  savePillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   tzPairRow: {
     flexDirection: 'row',
@@ -415,22 +464,6 @@ const styles = StyleSheet.create({
   },
   tzPairLinkIcon: {
     fontSize: 18,
-  },
-  saveButton: {
-    height: 52,
-    backgroundColor: COLORS.kiss,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 32,
-  },
-  saveButtonDisabled: {
-    opacity: 0.4,
-  },
-  saveButtonText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: COLORS.white,
   },
   modalOverlay: {
     flex: 1,
@@ -485,18 +518,5 @@ const styles = StyleSheet.create({
   tzOffset: {
     fontSize: 14,
     color: COLORS.textLight,
-  },
-  remarkSaveBtn: {
-    height: 44,
-    backgroundColor: COLORS.kiss,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  remarkSaveText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: COLORS.white,
   },
 });
