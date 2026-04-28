@@ -34,7 +34,7 @@ export default function MailboxScreen() {
   }, []);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
+    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}

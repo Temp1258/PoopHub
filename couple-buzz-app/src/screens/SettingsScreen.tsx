@@ -187,7 +187,7 @@ export default function SettingsScreen() {
   const activeValue = modalTarget === 'my' ? timezone : partnerTimezone;
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
+    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
     <ScrollView
       contentContainerStyle={styles.content}
       refreshControl={

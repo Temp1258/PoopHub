@@ -34,7 +34,7 @@ export default function DailyScreen() {
   // below the safe area; spinner ends up roughly between screen top and the
   // first card. Cards no longer need their own paddingTop.
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
+    <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState } from 'react-native';
+import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, TouchableOpacity, useWindowDimensions } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
 import { NavigationContainer } from '@react-navigation/native';
-import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
+import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-navigation/material-top-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
@@ -25,39 +25,79 @@ const Tab = createMaterialTopTabNavigator();
 
 type AppState = 'loading' | 'setup' | 'waiting' | 'ready';
 
-function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen }: { partnerName: string; streak: number; hasUnread: boolean; hasUnreadDaily: boolean; onLatestSeen: (id: number) => void }) {
+// Pill-shaped (灵动岛) bottom tab bar. All sizing is proportional to screen
+// width via useWindowDimensions, so the bar reflows on rotation / different
+// device widths instead of looking off on small/large screens.
+function PillTabBar({ state, descriptors, navigation }: MaterialTopTabBarProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
 
+  const sidePad = width * 0.03;
+  const gap = width * 0.012;
+  const pillH = width * 0.14;
+  const radius = pillH * 0.36;
+  const labelSize = width * 0.028;
+
+  return (
+    <View style={{
+      flexDirection: 'row',
+      gap,
+      paddingHorizontal: sidePad,
+      paddingTop: width * 0.02,
+      paddingBottom: insets.bottom + width * 0.015,
+      backgroundColor: COLORS.background,
+    }}>
+      {state.routes.map((route, index) => {
+        const isFocused = state.index === index;
+        const { options } = descriptors[route.key];
+        const label = options.tabBarLabel as string;
+        const renderIcon = options.tabBarIcon;
+        const tint = isFocused ? COLORS.white : COLORS.textLight;
+
+        const onPress = () => {
+          const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+          if (!isFocused && !event.defaultPrevented) {
+            navigation.navigate(route.name);
+          }
+        };
+
+        return (
+          <TouchableOpacity
+            key={route.key}
+            activeOpacity={0.75}
+            onPress={onPress}
+            style={{
+              flex: 1,
+              height: pillH,
+              borderRadius: radius,
+              backgroundColor: isFocused ? COLORS.kiss : COLORS.white,
+              borderWidth: isFocused ? 0 : 1,
+              borderColor: COLORS.border,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {renderIcon && renderIcon({ focused: isFocused, color: tint })}
+            <Text style={{
+              fontSize: labelSize,
+              fontWeight: '600',
+              color: tint,
+              marginTop: 2,
+            }}>{label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen }: { partnerName: string; streak: number; hasUnread: boolean; hasUnreadDaily: boolean; onLatestSeen: (id: number) => void }) {
   return (
     <Tab.Navigator
       tabBarPosition="bottom"
+      tabBar={(props) => <PillTabBar {...props} />}
       screenOptions={{
         swipeEnabled: true,
-        tabBarScrollEnabled: false,
-        tabBarStyle: {
-          backgroundColor: COLORS.white,
-          borderTopWidth: 1,
-          borderTopColor: COLORS.border,
-          height: 64 + insets.bottom,
-          paddingBottom: insets.bottom,
-        },
-        tabBarActiveTintColor: COLORS.kiss,
-        tabBarInactiveTintColor: COLORS.textLight,
-        tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
-          textTransform: 'none',
-        },
-        tabBarItemStyle: {
-          height: 64,
-          justifyContent: 'center',
-        },
-        tabBarIndicatorStyle: {
-          backgroundColor: COLORS.kiss,
-          height: 2,
-          top: 0,
-        },
-        tabBarShowIcon: true,
       }}
     >
       <Tab.Screen
