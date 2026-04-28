@@ -56,7 +56,12 @@ export default function EnvelopeOpenAnimation({
       return;
     }
 
-    // Reset for a clean replay every time the modal opens.
+    // Cancellation flag — every chained .start callback reads this before
+    // doing anything. Without it, a quick open/close/open toggle leaves
+    // dangling callbacks from the prior run that flip stage / restart
+    // animations on the new run, causing visible flicker.
+    let cancelled = false;
+
     setStage('idle');
     wrapperOpacity.setValue(0);
     envelopeScale.setValue(0.6);
@@ -66,12 +71,11 @@ export default function EnvelopeOpenAnimation({
     letterScale.setValue(skipEnvelope ? 0.92 : 0.4);
 
     if (skipEnvelope) {
-      // Quick reveal: backdrop fades + letter mounts and zooms in. Letter
-      // mount is deferred one frame so the first paint commits with the
-      // animated values at their starting state (no flash of full content).
       requestAnimationFrame(() => {
+        if (cancelled) return;
         setStage('letter');
         requestAnimationFrame(() => {
+          if (cancelled) return;
           Animated.parallel([
             Animated.timing(wrapperOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
             Animated.timing(letterOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
@@ -79,23 +83,25 @@ export default function EnvelopeOpenAnimation({
           ]).start();
         });
       });
-      return;
+      return () => { cancelled = true; };
     }
 
-    // Full ceremony: envelope arrives → flap opens → letter rises out.
     setStage('envelope');
     Animated.parallel([
       Animated.timing(wrapperOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
       Animated.spring(envelopeScale, { toValue: 1, friction: 7, tension: 80, useNativeDriver: true }),
     ]).start(() => {
+      if (cancelled) return;
       Animated.timing(flapRotate, {
         toValue: 1,
         duration: 480,
         easing: Easing.bezier(0.4, 0.0, 0.2, 1),
         useNativeDriver: true,
       }).start(() => {
+        if (cancelled) return;
         setStage('letter');
         requestAnimationFrame(() => {
+          if (cancelled) return;
           Animated.parallel([
             Animated.timing(letterOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
             Animated.timing(letterTranslateY, {
@@ -109,6 +115,8 @@ export default function EnvelopeOpenAnimation({
         });
       });
     });
+
+    return () => { cancelled = true; };
   }, [visible, skipEnvelope]);
 
   const flapRotateInterpolate = flapRotate.interpolate({

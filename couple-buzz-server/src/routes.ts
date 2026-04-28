@@ -1243,6 +1243,18 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(404).json({ error: 'Capsule not found' });
     }
 
+    // Recipient-side soft delete: if this user has trashed or purged the
+    // capsule, treat it as gone — even direct id access via this endpoint
+    // must not return content. Outgoing partner-vis is exempt; it's the
+    // user's sent-mail, never tracked in inbox_actions.
+    const isOutgoing = capsule.user_id === userId && capsule.visibility === 'partner';
+    if (!isOutgoing) {
+      const status = dbOps.getInboxActionStatus(userId, 'capsule', id);
+      if (status === 'trashed' || status === 'purged') {
+        return res.status(404).json({ error: 'Capsule not found' });
+      }
+    }
+
     const userToday = getLocalDate(user.timezone);
     if (capsule.unlock_date > userToday) {
       return res.status(400).json({ error: 'Capsule is not yet unlockable' });

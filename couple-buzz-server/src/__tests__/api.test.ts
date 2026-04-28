@@ -1150,6 +1150,85 @@ describe('Inbox trash / restore / purge', () => {
     expect(res.body.items.length).toBe(0);
   });
 
+  it('open capsule respects trash/purge — trashed/purged returns 404', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    // Bob writes a capsule for alice with a past unlock_date so it's
+    // immediately openable. Direct DB insert bypasses the API's future-date
+    // guard (which is correct for normal flows but blocks this test setup).
+    const cap = dbOps.createCapsule(bob.user_id, alice.user_id, 'a letter from the past', '2020-01-01', 'partner');
+
+    // First open succeeds (sanity check).
+    const open1 = await request(app)
+      .post(`/api/capsules/${cap.id}/open`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(open1.status).toBe(200);
+    expect(open1.body.content).toBe('a letter from the past');
+
+    // Alice trashes it.
+    const trash = await request(app)
+      .post('/api/inbox/trash')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ kind: 'capsule', ref_id: cap.id });
+    expect(trash.status).toBe(200);
+
+    // Re-opening must now 404 — the recipient soft-deleted it.
+    const open2 = await request(app)
+      .post(`/api/capsules/${cap.id}/open`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(open2.status).toBe(404);
+
+    // Restore brings it back.
+    const restore = await request(app)
+      .post('/api/inbox/restore')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ kind: 'capsule', ref_id: cap.id });
+    expect(restore.status).toBe(200);
+
+    const open3 = await request(app)
+      .post(`/api/capsules/${cap.id}/open`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(open3.status).toBe(200);
+
+    // Purge — permanently hidden, even direct-id access returns 404.
+    const purge = await request(app)
+      .post('/api/inbox/purge')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ kind: 'capsule', ref_id: cap.id });
+    expect(purge.status).toBe(200);
+
+    const open4 = await request(app)
+      .post(`/api/capsules/${cap.id}/open`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(open4.status).toBe(404);
+  });
+
+  it('outgoing partner-vis capsule open is unaffected by other users\' trash actions', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    // Alice writes for bob (partner-vis).
+    const cap = dbOps.createCapsule(alice.user_id, bob.user_id, 'for bob', '2020-01-01', 'partner');
+
+    // Bob trashes it after first open.
+    await request(app)
+      .post(`/api/capsules/${cap.id}/open`)
+      .set('Authorization', `Bearer ${bob.access_token}`);
+    await request(app)
+      .post('/api/inbox/trash')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ kind: 'capsule', ref_id: cap.id });
+
+    // Alice (the author / outgoing) is *not* affected by bob's trash —
+    // her open still works (she sent it; this is her sent-mail).
+    const aliceOpen = await request(app)
+      .post(`/api/capsules/${cap.id}/open`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(aliceOpen.status).toBe(200);
+    expect(aliceOpen.body.content).toBe('for bob');
+  });
+
   it('partner sends mailbox letter; alice can trash it, restore it, purge it', async () => {
     const { app } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);

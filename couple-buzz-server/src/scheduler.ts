@@ -76,6 +76,10 @@ async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<vo
 
   for (const capsule of capsules) {
     for (const uid of [capsule.user_id, capsule.partner_id]) {
+      // Self-vis capsules are private to the author — never notify the
+      // partner about them or we leak their existence (and send a fake
+      // notification the partner can never act on).
+      if (capsule.visibility === 'self' && uid !== capsule.user_id) continue;
       if (notified.has(uid)) continue;
       notified.add(uid);
       const user = dbOps.getUser(uid);

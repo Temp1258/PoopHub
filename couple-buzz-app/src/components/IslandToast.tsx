@@ -1,4 +1,4 @@
-import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text, View, Easing } from 'react-native';
 
 export interface IslandToastHandle {
@@ -65,6 +65,16 @@ const IslandToast = forwardRef<IslandToastHandle, Props>(({ top = 8 }, ref) => {
       animateOut();
     },
   }), []);
+
+  // On unmount: clear any pending timer so its callback doesn't fire after
+  // the component is gone, which would warn about setState on an unmounted
+  // component (the parent modal may close mid-toast).
+  useEffect(() => () => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
 
   if (!message) return null;
 
