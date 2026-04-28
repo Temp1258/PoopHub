@@ -156,6 +156,14 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
           break;
         }
       }
+    } else {
+      // Partner is offline — push an authoritative "alone" snapshot to this
+      // socket. Without it, a stale `presence_both` from a prior session
+      // (e.g. user backgrounded the app while both were online, then
+      // reconnects after partner has gone offline) would keep the
+      // "同时想着对方" badge lit forever, since presence_single was only
+      // ever sent to the *other* side at the moment of disconnect.
+      socket.emit('presence_single');
     }
 
     // Touch relay
