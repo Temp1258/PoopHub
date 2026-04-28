@@ -20,6 +20,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useTabAnimation } from '@react-navigation/material-top-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, ACTION_EMOJI, ACTION_CATEGORIES, ActionConfig } from '../constants';
 import { api, HistoryAction } from '../services/api';
 import { subscribe } from '../services/socket';
@@ -265,6 +266,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   onLatestSeenRef.current = onLatestSeen;
   const prevLatestIdRef = useRef(0);
   const myUserIdRef = useRef('');
+  // Header height (measured via onLayout) drives the gradient fade strip
+  // that sits right below the title — gives a soft blur edge as list items
+  // scroll up into the header area instead of a hard cut.
+  const [headerHeight, setHeaderHeight] = useState(0);
   // Pinned at the user's last_read_action_id when they (re)focus 废话区,
   // so the unread divider stays put even as poll updates land. Cleared by
   // useFocusEffect on each refocus → fresh divider per viewing session.
@@ -587,7 +592,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+      <View
+        style={[styles.header, { paddingTop: insets.top + 12 }]}
+        onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
+      >
         <Text style={styles.headerTitle}>香宝聚集地 💕</Text>
         <Text style={styles.headerSubtitle}>与 {partnerName} 已连接</Text>
       </View>
@@ -641,6 +649,23 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         }
         stickySectionHeadersEnabled={false}
       />
+
+      {/* Soft fade between title bar and feed: from solid bg at the title
+          edge to fully transparent below. Items scrolling up into this strip
+          fade out into the header instead of meeting a hard cut. */}
+      {headerHeight > 0 && (
+        <LinearGradient
+          colors={[COLORS.background, 'rgba(255, 245, 245, 0)']}
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            top: headerHeight,
+            height: 24,
+          }}
+          pointerEvents="none"
+        />
+      )}
 
       {panelOpen && (
         <Pressable

@@ -239,6 +239,10 @@ export interface MailboxArchiveResponse {
     // a specific letter for trash / restore / purge actions. May be null when
     // partner skipped the round or the message has been trashed/purged.
     partner_message_id: number | null;
+    // ISO timestamp of when the partner submitted their letter — drives the
+    // "GMT+8 04-27 20:00" stamp shown in the inbox card. Null = partner
+    // skipped the round (or message trashed).
+    partner_created_at: string | null;
   }[];
 }
 

@@ -196,7 +196,7 @@ export interface DbOps {
   // Mailbox
   submitMailboxMessage(userId: string, weekKey: string, content: string): boolean;
   getMailboxMessages(weekKey: string, userId: string, partnerId: string): { mine?: MailboxMessage; partner?: MailboxMessage };
-  getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null }[];
+  getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[];
   getAllPairedUserTokens(): { device_token: string }[];
   // Weekly Report
   getWeeklyReportData(userId: string, partnerId: string, weekStart: string, weekEnd: string): {
@@ -666,12 +666,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   // LEFT JOIN inbox_actions on partner side so trashed/purged messages are
   // hidden (content + id NULL) for the current user only — sender's archive
-  // view of their own outgoing content is unaffected.
+  // view of their own outgoing content is unaffected. partner_created_at is
+  // surfaced so the inbox can show the actual time the partner submitted.
   const stmtGetMailboxArchive = db.prepare(`
     SELECT m.week_key,
       MAX(CASE WHEN m.user_id = ? THEN m.content END) as my_content,
       MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.content END) as partner_content,
-      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.id END) as partner_message_id
+      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.id END) as partner_message_id,
+      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.created_at END) as partner_created_at
     FROM mailbox m
     LEFT JOIN inbox_actions ia
       ON ia.user_id = ? AND ia.kind = 'mailbox' AND ia.ref_id = m.id
@@ -1052,13 +1054,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return { mine, partner };
     },
 
-    getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null }[] {
+    getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[] {
       // Args ordered to match query: my_content user_id, partner_content user_id,
-      // partner_message_id user_id, ia.user_id (current viewer), then mailbox.user_id IN (?, ?), limit.
+      // partner_message_id user_id, partner_created_at user_id, ia.user_id (viewer),
+      // then mailbox.user_id IN (?, ?), limit.
       return stmtGetMailboxArchive.all(
         userId,         // my_content branch
         partnerId,      // partner_content branch
         partnerId,      // partner_message_id branch
+        partnerId,      // partner_created_at branch
         userId,         // ia.user_id (current viewer for trash filter)
         userId,         // m.user_id IN (?,
         partnerId,      //              ?)

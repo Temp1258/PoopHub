@@ -15,6 +15,7 @@ import { storage } from '../utils/storage';
 import { useCountdown } from '../utils/countdown';
 import SealAnimation from './SealAnimation';
 import EnvelopeOpenAnimation from './EnvelopeOpenAnimation';
+import { SpringPressable } from './SpringPressable';
 
 interface RevealMeta {
   from: string;
@@ -30,6 +31,9 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
   const [content, setContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sealing, setSealing] = useState(false);
+  // Compose form is hidden by default; revealed when the user taps the
+  // "写信 ✉️" pill. Keeps the card visually clean (matches 择日达 pattern).
+  const [composeOpen, setComposeOpen] = useState(false);
   // Snapshot of the typed letter while the seal animation runs — used as the
   // preview shown in the animation. After it's posted, content state itself
   // is cleared so it can't be peeked from local state either.
@@ -62,11 +66,12 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
       // it locally — that's the whole point of "sealed in transit".
       if (result.phase === 'revealed' && result.my_message) {
         setContent(result.my_message);
-      } else if (!result.my_sealed) {
-        // Pre-write: keep whatever the user is currently drafting.
-      } else {
+        setComposeOpen(false);
+      } else if (result.my_sealed) {
         setContent('');
+        setComposeOpen(false);
       }
+      // Pre-write & still draftable: keep whatever the user is composing.
     } catch {}
     setLoading(false);
   }, []);
@@ -180,38 +185,44 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
           </View>
           <Text style={styles.sealedTitle}>已封存</Text>
         </View>
+      ) : sealing ? (
+        <SealAnimation preview={sealedPreview} onComplete={handleSealComplete} />
+      ) : !composeOpen ? (
+        <View style={styles.pillContainer}>
+          <SpringPressable
+            onPress={() => setComposeOpen(true)}
+            scaleTo={1.08}
+            style={styles.composePill}
+          >
+            <Text style={styles.composePillText}>写信 ✉️</Text>
+          </SpringPressable>
+        </View>
       ) : (
         <View>
           <Text style={styles.prompt}>写一句想说但没说出口的话吧～</Text>
-
-          {sealing ? (
-            <SealAnimation preview={sealedPreview} onComplete={handleSealComplete} />
-          ) : (
-            <>
-              <TextInput
-                style={styles.input}
-                value={content}
-                onChangeText={setContent}
-                placeholder="写点什么给 ta..."
-                placeholderTextColor={COLORS.textLight}
-                maxLength={500}
-                multiline
-                editable={!submitting}
-              />
-              <View style={styles.charCount}>
-                <Text style={styles.charCountText}>{content.length}/500</Text>
-              </View>
-              <TouchableOpacity
-                style={[styles.submitButton, (!content.trim() || submitting) && styles.submitDisabled]}
-                onPress={handleSubmit}
-                disabled={!content.trim() || submitting}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
-              </TouchableOpacity>
-              <Text style={styles.hint}>提交后不能修改 · 双方都看不到内容直到送达</Text>
-            </>
-          )}
+          <TextInput
+            style={styles.input}
+            value={content}
+            onChangeText={setContent}
+            placeholder="写点什么给 ta..."
+            placeholderTextColor={COLORS.textLight}
+            maxLength={500}
+            multiline
+            editable={!submitting}
+            autoFocus
+          />
+          <View style={styles.charCount}>
+            <Text style={styles.charCountText}>{content.length}/500</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.submitButton, (!content.trim() || submitting) && styles.submitDisabled]}
+            onPress={handleSubmit}
+            disabled={!content.trim() || submitting}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.submitText}>{submitting ? '投递中...' : '封好信 ✉️'}</Text>
+          </TouchableOpacity>
+          <Text style={styles.hint}>提交后不能修改 · 双方都看不到内容直到送达</Text>
         </View>
       )}
 
@@ -254,6 +265,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textLight,
     marginBottom: 12,
+  },
+  pillContainer: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  composePill: {
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  composePillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   prompt: {
     fontSize: 15,

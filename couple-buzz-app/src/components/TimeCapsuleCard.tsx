@@ -16,6 +16,7 @@ import { api, CapsuleItem } from '../services/api';
 import { storage } from '../utils/storage';
 import SealAnimation from './SealAnimation';
 import EnvelopeOpenAnimation from './EnvelopeOpenAnimation';
+import { SpringPressable } from './SpringPressable';
 
 type Visibility = 'self' | 'partner';
 
@@ -289,9 +290,15 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
               </View>
             </View>
           ) : (
-            <TouchableOpacity style={styles.addBtn} onPress={() => setShowCreate(true)}>
-              <Text style={styles.addText}>+ 写一封新信</Text>
-            </TouchableOpacity>
+            <View style={styles.composePillContainer}>
+              <SpringPressable
+                onPress={() => setShowCreate(true)}
+                scaleTo={1.08}
+                style={styles.composePill}
+              >
+                <Text style={styles.composePillText}>写信 ✉️</Text>
+              </SpringPressable>
+            </View>
           )}
         </>
       )}
@@ -441,15 +448,27 @@ const styles = StyleSheet.create({
   },
   submitDisabled: { opacity: 0.4 },
   submitText: { fontSize: 15, fontWeight: '600', color: COLORS.white },
-  addBtn: {
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
+  composePillContainer: {
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderStyle: 'dashed',
-    marginTop: 8,
+    paddingVertical: 8,
   },
-  addText: { fontSize: 14, color: COLORS.textLight },
+  composePill: {
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  composePillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
 });

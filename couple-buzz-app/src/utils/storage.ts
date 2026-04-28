@@ -13,6 +13,7 @@ const KEYS = {
   DAILY_SEEN_DATE: 'couple_buzz_daily_seen_date',
   DAILY_SEEN_PA: 'couple_buzz_daily_seen_pa',
   DAILY_SEEN_PS: 'couple_buzz_daily_seen_ps',
+  INBOX_LAST_SEEN: 'couple_buzz_inbox_last_seen',
 };
 
 export const storage = {
@@ -103,6 +104,14 @@ export const storage = {
       AsyncStorage.setItem(KEYS.DAILY_SEEN_PA, partnerAnswered ? '1' : '0'),
       AsyncStorage.setItem(KEYS.DAILY_SEEN_PS, partnerSnapped ? '1' : '0'),
     ]);
+  },
+
+  async getInboxLastSeen(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.INBOX_LAST_SEEN);
+  },
+
+  async setInboxLastSeen(iso: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.INBOX_LAST_SEEN, iso);
   },
 
   async clearAll(): Promise<void> {

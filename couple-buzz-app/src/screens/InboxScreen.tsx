@@ -37,6 +37,12 @@ interface LetterCard {
   key: string;
   kind: LetterKind;
   refId: number;
+  // ISO timestamp the letter "arrived" (mailbox: reveal time of the session;
+  // capsule: opened_at). Used both for sort and for unread comparison
+  // against the user's last inbox-open marker.
+  arrivedAt: string;
+  // Free-form display string (was used for sort previously, kept for the
+  // sort comparison so capsule and mailbox can co-mingle in one list).
   sortAt: string;
   date: string;
   from: string;
@@ -44,6 +50,8 @@ interface LetterCard {
   body: string;
   kindLabel: string;
   accent: string;
+  // Partner-side timezone — formats the postmark in the writer's frame.
+  fromTz: string;
 }
 
 const MAILBOX_ACCENT = '#FFB5C2';
@@ -79,31 +87,41 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
   const load = useCallback(async () => {
     try {
-      const [myName, partnerRemark, partnerName, mailbox, capsules] = await Promise.all([
+      const [myName, partnerRemark, partnerName, myTz, partnerTz, mailbox, capsules] = await Promise.all([
         storage.getUserName(),
         storage.getPartnerRemark(),
         storage.getPartnerName(),
+        storage.getTimezone(),
+        storage.getPartnerTimezone(),
         api.getMailboxArchive(50).catch(() => ({ weeks: [] })),
         api.getCapsules().catch(() => ({ capsules: [] as CapsuleItem[] })),
       ]);
       const me = myName || '我';
       const ta = (partnerRemark && partnerRemark.trim()) || partnerName || 'ta';
+      const myZone = myTz || 'Asia/Shanghai';
+      const partnerZone = partnerTz || 'Asia/Shanghai';
 
       const out: LetterCard[] = [];
 
       for (const w of mailbox.weeks || []) {
         if (!w.partner_content || !w.partner_message_id) continue;
+        const arrivedAt = mailboxRevealTime(w.week_key);
+        // Server returns ISO of when the partner submitted; fall back to
+        // reveal time if missing (e.g. legacy rows without created_at).
+        const writtenAt = w.partner_created_at || arrivedAt;
         out.push({
           key: `m-${w.partner_message_id}`,
           kind: 'mailbox',
           refId: w.partner_message_id,
-          sortAt: w.week_key,
-          date: formatMailboxDate(w.week_key),
+          arrivedAt,
+          sortAt: arrivedAt,
+          date: formatPostmark(writtenAt, partnerZone),
           from: ta,
           to: me,
           body: w.partner_content,
           kindLabel: '次日达 · 来自 ta',
           accent: MAILBOX_ACCENT,
+          fromTz: partnerZone,
         });
       }
 
@@ -114,31 +132,36 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
         let from = me;
         let to = ta;
         let kindLabel = '择日达';
+        let writerZone = myZone;
         if (c.author === 'me' && c.visibility === 'self') {
           from = me; to = me;
           kindLabel = '择日达 · 给自己';
+          writerZone = myZone;
         } else if (c.author === 'partner') {
           from = ta; to = me;
           kindLabel = '择日达 · 来自 ta';
+          writerZone = partnerZone;
         }
         out.push({
           key: `c-${c.id}`,
           kind: 'capsule',
           refId: c.id,
+          arrivedAt: c.opened_at,
           sortAt: c.opened_at,
-          date: c.unlock_date,
+          date: formatPostmark(c.created_at, writerZone),
           from,
           to,
           body: c.content,
           kindLabel,
           accent: CAPSULE_ACCENT,
+          fromTz: writerZone,
         });
       }
 
       out.sort((a, b) => (a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0));
       setCards(out);
-      setCenterIdx(0);
-      lastTickedIdxRef.current = 0;
+      // Don't reset centerIdx on background refreshes — user may have
+      // scrolled. Only reset when list shape clearly changed.
     } finally {
       setLoading(false);
     }
@@ -146,9 +169,30 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
 
   useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
+  // Captured-then-advanced inbox-last-seen marker. Comparing each card's
+  // arrivedAt against the captured (pre-open) value tells us which letters
+  // arrived since the last visit. We advance the stored marker to "now"
+  // immediately on open, so re-opening within the same session shows fewer
+  // unread (i.e. once you've seen them, they're seen).
+  const seenBeforeOpenRef = useRef<string>('');
+  // Read cards.length via ref so the open effect doesn't re-fire on every
+  // background reload (which would defeat the stale-while-revalidate cache).
+  const cardsLengthRef = useRef(0);
+  cardsLengthRef.current = cards.length;
   useEffect(() => {
     if (!visible) return;
-    setLoading(true);
+    // Only show spinner if we have nothing cached. Re-opens with stale
+    // cards in memory render instantly + refresh in the background. Drops
+    // the previously-noticeable open delay.
+    if (cardsLengthRef.current === 0) setLoading(true);
+    (async () => {
+      const seen = await storage.getInboxLastSeen();
+      // First-ever open: anchor at "now" so we don't flag every historical
+      // letter as unread on first launch. After this call, only NEW arrivals
+      // (between visits) get the badge.
+      seenBeforeOpenRef.current = seen ?? new Date().toISOString();
+      await storage.setInboxLastSeen(new Date().toISOString());
+    })();
     load();
   }, [visible, load]);
 
@@ -292,9 +336,17 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                         style={[styles.card, { backgroundColor: card.accent }]}
                       >
                         <View style={styles.cardHeader}>
-                          <Text style={styles.cardKind}>{card.kindLabel}</Text>
+                          <View style={styles.cardKindRow}>
+                            <Text style={styles.cardKind}>{card.kindLabel}</Text>
+                            {card.arrivedAt > seenBeforeOpenRef.current && (
+                              <View style={styles.unreadPill}>
+                                <Text style={styles.unreadPillText}>未读</Text>
+                              </View>
+                            )}
+                          </View>
                           <Text style={styles.cardDate}>{card.date}</Text>
                         </View>
+                        <View style={styles.cardDivider} />
                         <View style={styles.cardFromTo}>
                           <Text style={styles.cardFromToText} numberOfLines={1}>
                             {card.from} → {card.to}
@@ -412,10 +464,35 @@ function SwipeableCard({
   );
 }
 
-function formatMailboxDate(weekKey: string): string {
+// Mailbox letter "arrived" at the session reveal time. AM session reveals at
+// 12:00 UTC of the date; PM at next-day 0:00 UTC. Mirrors server's
+// getRevealTime() so the client can compute without a round-trip.
+function mailboxRevealTime(weekKey: string): string {
   const date = weekKey.slice(0, 10);
   const phase = weekKey.slice(11);
-  return `${date} ${phase === 'AM' ? '上半场' : '下半场'}`;
+  if (phase === 'AM') return `${date}T12:00:00Z`;
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString();
+}
+
+// "GMT+8 04-27 20:00" — postmark for the inbox card. Format the moment in
+// the writer's timezone so the recipient sees the same wall-clock time the
+// writer saw when sending.
+function formatPostmark(iso: string, tz: string): string {
+  try {
+    const date = new Date(iso);
+    const md = date.toLocaleDateString('en-CA', { timeZone: tz, month: '2-digit', day: '2-digit' });
+    const hourStr = date.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false });
+    const hour = parseInt(hourStr, 10);
+    const offset = (() => {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date);
+      return parts.find(p => p.type === 'timeZoneName')?.value || '';
+    })();
+    return `${offset} ${md} ${String(Number.isFinite(hour) ? hour : 0).padStart(2, '0')}:00`;
+  } catch {
+    return iso.slice(0, 10);
+  }
 }
 
 const styles = StyleSheet.create({
@@ -464,29 +541,58 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     borderRadius: 18,
-    paddingHorizontal: 18,
-    paddingVertical: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 18,
     shadowColor: '#000',
     shadowOpacity: 0.18,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     justifyContent: 'space-between',
+    // Subtle inner stroke gives the card the feel of an actual letter card
+    // — quiet but a touch more "formal" without overhauling the look.
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
   },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  cardKindRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   cardKind: {
     fontSize: 11,
     fontWeight: '700',
     color: COLORS.white,
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  unreadPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+  },
+  unreadPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.kiss,
+    letterSpacing: 0.4,
   },
   cardDate: {
     fontSize: 11,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.85)',
+    fontVariant: ['tabular-nums'],
+  },
+  cardDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    marginTop: 10,
+    marginBottom: 6,
   },
   cardFromTo: {
     marginTop: 4,
@@ -503,8 +609,8 @@ const styles = StyleSheet.create({
   },
   cardSnippet: {
     fontSize: 14,
-    lineHeight: 20,
-    color: 'rgba(255,255,255,0.95)',
+    lineHeight: 21,
+    color: 'rgba(255,255,255,0.97)',
   },
   cardFooter: {
     alignItems: 'flex-end',
@@ -513,5 +619,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255,255,255,0.9)',
     fontWeight: '600',
+    letterSpacing: 0.3,
   },
 });
