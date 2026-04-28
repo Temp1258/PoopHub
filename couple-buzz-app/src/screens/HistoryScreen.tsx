@@ -25,7 +25,6 @@ import { api, HistoryAction } from '../services/api';
 import { subscribe } from '../services/socket';
 import { storage } from '../utils/storage';
 import ActionRecord from '../components/ActionRecord';
-import ReactionPicker from '../components/ReactionPicker';
 import { SpringPressable } from '../components/SpringPressable';
 import { useToolbarSlot } from '../utils/toolbarSlot';
 
@@ -125,18 +124,22 @@ function getDeviceTimezone(): string {
   }
 }
 
-// Insert the unread-divider into the section that contains the first action
-// with id > boundaryId. Sections are oldest-first; once inserted, downstream
-// sections stay untouched.
-function injectUnreadDivider(sections: Section[], boundaryId: number): Section[] {
-  if (boundaryId <= 0) return sections;
+// Insert the unread-divider into the section that contains the first PARTNER
+// action with id > boundaryId. Self-sent messages don't count as "unread" —
+// they're visible in the recipient's feed but the recipient never had to be
+// notified about them. Sections are oldest-first.
+function injectUnreadDivider(sections: Section[], boundaryId: number, myUserId: string): Section[] {
+  if (boundaryId <= 0 || !myUserId) return sections;
   let inserted = false;
   return sections.map((s) => {
     if (inserted) return s;
     let insertIdx = -1;
     for (let i = 0; i < s.data.length; i++) {
       const it = s.data[i];
-      if (!isDivider(it) && it.id > boundaryId) { insertIdx = i; break; }
+      if (!isDivider(it) && it.id > boundaryId && it.user_id !== myUserId) {
+        insertIdx = i;
+        break;
+      }
     }
     if (insertIdx < 0) return s;
     inserted = true;
@@ -148,15 +151,42 @@ function injectUnreadDivider(sections: Section[], boundaryId: number): Section[]
   });
 }
 
-function UnreadDivider() {
+function UnreadDivider({
+  dismissed,
+  onFadeComplete,
+}: {
+  dismissed: boolean;
+  onFadeComplete: () => void;
+}) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  const calledRef = useRef(false);
+  useEffect(() => {
+    if (!dismissed) {
+      // Coming back to "visible" (e.g. focus reset after a previous fade) —
+      // snap fully opaque so the next dismiss fades from a clean state.
+      opacity.setValue(1);
+      calledRef.current = false;
+      return;
+    }
+    Animated.timing(opacity, {
+      toValue: 0,
+      duration: 400,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished || calledRef.current) return;
+      calledRef.current = true;
+      onFadeComplete();
+    });
+  }, [dismissed, opacity, onFadeComplete]);
+
   return (
-    <View style={dividerStyles.row}>
+    <Animated.View style={[dividerStyles.row, { opacity }]}>
       <View style={dividerStyles.line} />
       <View style={dividerStyles.pill}>
         <Text style={dividerStyles.label}>以下为新消息</Text>
       </View>
       <View style={dividerStyles.line} />
-    </View>
+    </Animated.View>
   );
 }
 
@@ -230,7 +260,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const [editingRemark, setEditingRemark] = useState('');
   const [savingRemark, setSavingRemark] = useState(false);
   const [reactions, setReactions] = useState<Record<number, HistoryAction[]>>({});
-  const [reactionTarget, setReactionTarget] = useState<HistoryAction | null>(null);
   const listRef = useRef<SectionList>(null);
   const onLatestSeenRef = useRef(onLatestSeen);
   onLatestSeenRef.current = onLatestSeen;
@@ -249,13 +278,35 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       initialRenderDoneRef.current = true;
     }
   }, [sections]);
-  // Sections + divider derived once per (sections, boundary) change. Polling
-  // updates `sections` but keeps `boundaryId` stable, so the divider position
-  // stays anchored to the original first-unread message.
-  const visibleSections = useMemo(
-    () => injectUnreadDivider(sections, boundaryId),
-    [sections, boundaryId]
-  );
+  // Two-stage divider lifecycle:
+  //   dismissing  → divider still in sections, fading opacity to 0.
+  //   hardHidden  → divider removed from sections entirely.
+  // Reply triggers dismissing; the divider's fade callback flips hardHidden
+  // afterward. Both are reset on focus to give a clean state next session.
+  const [dividerDismissing, setDividerDismissing] = useState(false);
+  const [dividerHardHidden, setDividerHardHidden] = useState(false);
+  const visibleSections = useMemo(() => {
+    if (dividerHardHidden) return sections;
+    return injectUnreadDivider(sections, boundaryId, myUserId);
+  }, [sections, boundaryId, myUserId, dividerHardHidden]);
+  // Whether a divider is actually present in the rendered list right now —
+  // used to route reply-dismiss between fade vs instant-hide. Without this,
+  // setDismissing(true) when no divider is mounted would leave the flag
+  // dangling, causing a future-injected divider (e.g. partner sends after
+  // self reply) to mount already-fading.
+  const dividerVisible = useMemo(() => {
+    if (dividerHardHidden || boundaryId <= 0 || !myUserId) return false;
+    for (const s of sections) {
+      for (const it of s.data) {
+        if (!isDivider(it) && it.id > boundaryId && it.user_id !== myUserId) return true;
+      }
+    }
+    return false;
+  }, [sections, boundaryId, myUserId, dividerHardHidden]);
+  const onDividerFadeComplete = useCallback(() => {
+    setDividerHardHidden(true);
+    setDividerDismissing(false);
+  }, []);
 
   // For saving remark we need current profile values
   const [myName, setMyName] = useState('');
@@ -434,6 +485,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
     useCallback(() => {
       // Each refocus is a new viewing session — pull fresh boundary so the
       // divider lands where the user left off, not where it sat last visit.
+      // Also reset divider visibility so a previously-dismissed divider can
+      // appear again if there are now (newer) unread partner messages.
+      setDividerDismissing(false);
+      setDividerHardHidden(false);
       loadHistory(true);
       const interval = setInterval(async () => {
         try {
@@ -461,8 +516,13 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       return () => {
         clearInterval(interval);
         unsubAction();
+        // Reset panel state so re-entering 废话区 always starts collapsed —
+        // setValue (no animation) avoids playing a closing tween while the
+        // pager is mid-transition to another tab.
+        setPanelOpen(false);
+        panY.setValue(PANEL_HIDDEN);
       };
-    }, [loadHistory])
+    }, [loadHistory, panY])
   );
 
   const onRefresh = useCallback(() => {
@@ -473,6 +533,15 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const handleSendAction = useCallback(async (actionType: string) => {
     try {
       await api.sendAction(actionType);
+      // Replying = engaging with the unread thread. If the divider is on
+      // screen, fade it (req 4); otherwise hard-hide directly so future
+      // partner arrivals don't surface a fresh divider this session and
+      // also so a stale dismissing flag doesn't make the next-mounted
+      // divider auto-fade.
+      if (!dividerHardHidden) {
+        if (dividerVisible) setDividerDismissing(true);
+        else setDividerHardHidden(true);
+      }
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       setSections(groupByDate(reversed));
@@ -481,30 +550,12 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       prevLatestIdRef.current = latestId;
       if (latestId > 0) onLatestSeenRef.current?.(latestId);
     } catch {}
-  }, []);
+  }, [dividerVisible, dividerHardHidden]);
 
   const handleItemPress = useCallback((item: HistoryAction) => {
     setSelectedItem(item);
     setEditingRemark(partnerRemark);
   }, [partnerRemark]);
-
-  const handleReactionLongPress = useCallback((item: HistoryAction) => {
-    if (item.user_id === myUserId) return;
-    setSelectedItem(null);
-    setReactionTarget(item);
-  }, [myUserId]);
-
-  const handleReactionSelect = useCallback(async (actionType: string) => {
-    if (!reactionTarget) return;
-    setReactionTarget(null);
-    try {
-      await api.sendReaction(reactionTarget.id, actionType);
-      const result = await api.getHistory(100);
-      const reversed = [...result.actions].reverse();
-      setSections(groupByDate(reversed));
-      setReactions(result.reactions || {});
-    } catch {}
-  }, [reactionTarget]);
 
   const handleSaveRemark = useCallback(async () => {
     setSavingRemark(true);
@@ -547,7 +598,14 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         keyExtractor={(item) => isDivider(item) ? 'divider' : item.id.toString()}
         onContentSizeChange={scrollToBottom}
         renderItem={({ item }) => {
-          if (isDivider(item)) return <UnreadDivider />;
+          if (isDivider(item)) {
+            return (
+              <UnreadDivider
+                dismissed={dividerDismissing}
+                onFadeComplete={onDividerFadeComplete}
+              />
+            );
+          }
           const isMine = item.user_id === myUserId;
           const myTime = formatTimeInZone(item.created_at, myTz);
           const pTime = !isMine ? formatTimeInZone(item.created_at, partnerTz) : undefined;
@@ -561,7 +619,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
               remark={!isMine ? partnerRemark : undefined}
               reactions={reactions[item.id]}
               onPress={() => handleItemPress(item)}
-              onLongPress={!isMine ? () => handleReactionLongPress(item) : undefined}
               animateOnMount={initialRenderDoneRef.current}
             />
           );
@@ -589,13 +646,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         <Pressable
           style={[styles.tapToClose, { bottom: TOOLBAR_HEIGHT + PANEL_HEIGHT }]}
           onPress={closePanel}
-        />
-      )}
-
-      {reactionTarget && (
-        <ReactionPicker
-          onSelect={handleReactionSelect}
-          onClose={() => setReactionTarget(null)}
         />
       )}
 

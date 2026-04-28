@@ -1495,6 +1495,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!month || !/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({ error: 'month parameter required (YYYY-MM)' });
     }
+    // Range-check the month so a client passing "2024-13" doesn't slip past
+    // the regex and then silently produce a query against month "14".
+    const monthNum = parseInt(month.slice(5, 7), 10);
+    if (monthNum < 1 || monthNum > 12) {
+      return res.status(400).json({ error: 'month must be 01-12' });
+    }
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
