@@ -180,8 +180,8 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const panelOpenRef = useRef(false);
   panelOpenRef.current = panelOpen;
 
-  // Flip the React state immediately so the toolbar pill text ("收起" ↔
-  // "给 ta 发个表情") swaps the moment the user taps. The spring still plays
+  // Flip the React state immediately so the toolbar pill text ("先停停" ↔
+  // "甩表情") swaps the moment the user taps. The spring still plays
   // out, but UI labels reflect intent, not animation completion.
   const closePanel = useCallback(() => {
     setPanelOpen(false);
@@ -232,7 +232,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const toolbarSlot = useToolbarSlot();
   const isFocused = useIsFocused();
   const { width: screenW } = useWindowDimensions();
+  // All vector: bar height = pillH + paddings (each is a fraction of width),
+  // plus bottom safe-area inset. Pill itself sits one "lift" above the bar.
   const barH = screenW * 0.175 + insets.bottom;
+  const toolbarLift = screenW * 0.03;
   useEffect(() => {
     if (!isFocused) {
       toolbarSlot.set(null);
@@ -240,7 +243,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
     }
     toolbarSlot.set(
       <View
-        style={[styles.toolbarRow, { bottom: barH + 12 }]}
+        style={[styles.toolbarRow, { bottom: barH + toolbarLift }]}
         pointerEvents="box-none"
       >
         <View {...toolbarPanResponder.panHandlers}>
@@ -251,14 +254,14 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
           >
             <Text style={styles.toolbarIcon}>{panelOpen ? '▾' : '💌'}</Text>
             <Text style={styles.toolbarHint}>
-              {panelOpen ? '收起' : '给 ta 发个表情'}
+              {panelOpen ? '先停停' : '甩表情'}
             </Text>
           </SpringPressable>
         </View>
       </View>
     );
     return () => toolbarSlot.set(null);
-  }, [isFocused, panelOpen, togglePanel, toolbarPanResponder, toolbarSlot, barH]);
+  }, [isFocused, panelOpen, togglePanel, toolbarPanResponder, toolbarSlot, barH, toolbarLift]);
 
   // Capture-phase responder: when ScrollView is at top and user drags down,
   // intercept the gesture from the ScrollView and use it to close the panel.
@@ -700,7 +703,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 12,
     flexDirection: 'row',
     justifyContent: 'center',
     zIndex: 70,

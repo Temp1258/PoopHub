@@ -153,6 +153,10 @@ function MainTabs({ partnerName, streak, hasUnread, hasUnreadDaily, onLatestSeen
       tabBar={(props) => <PillTabBar {...props} />}
       screenOptions={{
         swipeEnabled: true,
+        // Tap-driven switches use setPageWithoutAnimation; swipe gestures still
+        // animate via the native pager's physics. Without this, rapid taps
+        // queue up the pager's tween and the UI lags behind the user.
+        animationEnabled: false,
       }}
     >
       <Tab.Screen

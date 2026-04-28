@@ -114,6 +114,8 @@ export default function AnniversaryWishScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.kiss} />
         }
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
       >
         <Text style={styles.sectionTitle}>纪念日</Text>
         {dates.map((d) => (
