@@ -261,7 +261,12 @@ export function createPublicRouter(dbOps: DbOps): Router {
     const tokens = issueTokens(dbOps, user.id, user.token_version);
     const partnerName = user.partner_id ? dbOps.getUser(user.partner_id)?.name ?? null : null;
 
-    res.json({ user_id: user.id, partner_name: partnerName, ...tokens });
+    // Include `name` so the client can persist the user's own nickname after
+    // a fresh login. Without it, storage.getUserName() returns null until the
+    // user navigates to Settings and saves — every screen that displays the
+    // user's name (MailboxCard, InboxScreen, TimeCapsuleCard, HistoryScreen)
+    // would fall back to "我" in the meantime.
+    res.json({ user_id: user.id, name: user.name, partner_name: partnerName, ...tokens });
   });
 
   // POST /api/auth/refresh — public, uses refresh token
@@ -1075,6 +1080,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   router.post('/inbox/trash', (req: Request, res: Response) => {
     const v = validateInboxRef(req, res);
     if (!v) return;
+    // Reject trashing an unopened capsule. The trash listing query joins on
+    // `opened_at IS NOT NULL`, so a trashed-but-unopened capsule would be
+    // hidden from BOTH the inbox and the trash — silently disappearing with
+    // no way to restore. The UI only exposes trash on opened capsules; this
+    // is the API-side guard for direct callers.
+    if (v.kind === 'capsule') {
+      const capsule = dbOps.getCapsuleById(v.refId);
+      if (capsule && !capsule.opened_at) {
+        return res.status(400).json({ error: 'Cannot trash an unopened capsule' });
+      }
+    }
     dbOps.setInboxAction(v.userId, v.kind, v.refId, 'trashed');
     res.json({ success: true });
   });

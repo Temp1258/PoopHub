@@ -186,6 +186,9 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
     // cards in memory render instantly + refresh in the background. Drops
     // the previously-noticeable open delay.
     if (cardsLengthRef.current === 0) setLoading(true);
+    // Resolve the seen marker BEFORE kicking off load() so cards never paint
+    // with an empty seenBeforeOpenRef — otherwise every card briefly flashes
+    // the "未读" pill until AsyncStorage resolves a few ms later.
     (async () => {
       const seen = await storage.getInboxLastSeen();
       // First-ever open: anchor at "now" so we don't flag every historical
@@ -193,8 +196,8 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       // (between visits) get the badge.
       seenBeforeOpenRef.current = seen ?? new Date().toISOString();
       await storage.setInboxLastSeen(new Date().toISOString());
+      load();
     })();
-    load();
   }, [visible, load]);
 
   const verticalPad = listHeight > 0 ? Math.max(0, (listHeight - CARD_HEIGHT) / 2) : 0;

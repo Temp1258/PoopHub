@@ -78,6 +78,7 @@ export default function SetupScreen({ onRegistered }: Props) {
     try {
       const result = await api.login(loginId.trim().toUpperCase(), loginPassword);
       await storage.setUserId(result.user_id);
+      await storage.setUserName(result.name);
       await storage.setAccessToken(result.access_token);
       await storage.setRefreshToken(result.refresh_token);
 

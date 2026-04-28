@@ -100,6 +100,7 @@ export interface RegisterResponse {
 
 export interface LoginResponse {
   user_id: string;
+  name: string;
   partner_name: string | null;
   access_token: string;
   refresh_token: string;

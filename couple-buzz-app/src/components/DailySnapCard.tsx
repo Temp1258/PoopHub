@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -15,15 +15,22 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
   const [uploading, setUploading] = useState(false);
   const [urging, setUrging] = useState(false);
   const [reacting, setReacting] = useState(false);
-  const lastUrgeRef = useRef(0);
 
-  // Tick every second so the cooldown countdown re-renders
+  // Tick only during the active cooldown window. setLastUrgeMs bumps it →
+  // effect runs → 1Hz tick re-renders the label until cooldown expires,
+  // then self-stops. Avoids a permanent 1Hz redraw on the 每日 tab.
+  const [lastUrgeMs, setLastUrgeMs] = useState(0);
   const [, forceTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => forceTick(n => n + 1), 1000);
+    if (lastUrgeMs === 0) return;
+    if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) return;
+    const t = setInterval(() => {
+      forceTick(n => n + 1);
+      if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) clearInterval(t);
+    }, 1000);
     return () => clearInterval(t);
-  }, []);
-  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeRef.current));
+  }, [lastUrgeMs]);
+  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeMs));
   const inCooldown = cooldownLeft > 0;
 
   const load = useCallback(async () => {
@@ -136,12 +143,12 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
             style={[styles.urgeBtn, (urging || inCooldown) && styles.urgeBtnDisabled]}
             onPress={async () => {
               const now = Date.now();
-              if (now - lastUrgeRef.current < URGE_COOLDOWN_MS) return;
+              if (now - lastUrgeMs < URGE_COOLDOWN_MS) return;
               setUrging(true);
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
               try {
                 await api.urge('snap');
-                lastUrgeRef.current = Date.now();
+                setLastUrgeMs(Date.now());
                 Alert.alert('', '已经催 ta 了 ⏰');
               } catch (e: any) {
                 Alert.alert('', e.message || '催促失败');

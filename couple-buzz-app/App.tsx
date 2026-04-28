@@ -362,6 +362,10 @@ export default function App() {
 
       try {
         const status = await api.getStatus();
+        // Cache the user's own name so screens that display it (MailboxCard,
+        // InboxScreen, etc.) don't fall back to "我" for users who logged in
+        // (vs registered) and never saved in Settings.
+        if (status.name) await storage.setUserName(status.name);
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
@@ -399,6 +403,7 @@ export default function App() {
     const check = async () => {
       try {
         const status = await api.getStatus();
+        if (status.name) await storage.setUserName(status.name);
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);

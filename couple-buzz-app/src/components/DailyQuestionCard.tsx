@@ -1,4 +1,4 @@
-import React, { useState, useCallback, forwardRef, useImperativeHandle, useRef, useEffect } from 'react';
+import React, { useState, useCallback, forwardRef, useImperativeHandle, useEffect } from 'react';
 import {
   View,
   Text,
@@ -22,7 +22,6 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
   const [loading, setLoading] = useState(true);
   const [urging, setUrging] = useState(false);
   const [reacting, setReacting] = useState(false);
-  const lastUrgeRef = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -62,10 +61,17 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     setSubmitting(false);
   };
 
+  // Tick only during the active cooldown window. lastUrgeMs is bumped by
+  // handleUrge → effect re-runs → starts a 1Hz interval that re-renders
+  // until cooldown expires, then self-stops. Avoids burning a redraw every
+  // second of the user's life on this screen.
+  const [lastUrgeMs, setLastUrgeMs] = useState(0);
+  const [, forceTick] = useState(0);
+
   const handleUrge = useCallback(async () => {
     const now = Date.now();
-    if (now - lastUrgeRef.current < URGE_COOLDOWN_MS) {
-      const left = Math.ceil((URGE_COOLDOWN_MS - (now - lastUrgeRef.current)) / 1000);
+    if (now - lastUrgeMs < URGE_COOLDOWN_MS) {
+      const left = Math.ceil((URGE_COOLDOWN_MS - (now - lastUrgeMs)) / 1000);
       Alert.alert('', `稍等 ${left} 秒再催 ta～`);
       return;
     }
@@ -73,22 +79,24 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       await api.urge('question');
-      lastUrgeRef.current = Date.now();
+      setLastUrgeMs(Date.now());
       Alert.alert('', '已经催 ta 了 ⏰');
     } catch (e: any) {
       Alert.alert('', e.message || '催促失败');
     } finally {
       setUrging(false);
     }
-  }, []);
-
-  // Cooldown clock just to redraw button label every second
-  const [, forceTick] = useState(0);
+  }, [lastUrgeMs]);
   useEffect(() => {
-    const t = setInterval(() => forceTick(n => n + 1), 1000);
+    if (lastUrgeMs === 0) return;
+    if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) return;
+    const t = setInterval(() => {
+      forceTick(n => n + 1);
+      if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) clearInterval(t);
+    }, 1000);
     return () => clearInterval(t);
-  }, []);
-  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeRef.current));
+  }, [lastUrgeMs]);
+  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeMs));
   const inCooldown = cooldownLeft > 0;
 
   const handleReact = useCallback(async (reaction: 'up' | 'down') => {

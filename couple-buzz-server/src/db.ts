@@ -506,11 +506,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtSetLastReadActionId = db.prepare(
     'UPDATE users SET last_read_action_id = ? WHERE id = ? AND last_read_action_id < ?'
   );
+  // Badge / unread tracking only counts top-level actions (reply_to IS NULL).
+  // History feeds also filter reply_to IS NULL — so a reaction whose id sits
+  // above the latest top-level would otherwise sit "unread" forever, since
+  // the client's mark-read passes the latest *visible* id (top-level only).
+  // Reactions render inline beneath their parent bubble; the parent's read
+  // state covers them.
   const stmtCountUnreadActions = db.prepare(
-    'SELECT COUNT(*) AS n FROM actions WHERE user_id = ? AND id > ?'
+    'SELECT COUNT(*) AS n FROM actions WHERE user_id = ? AND reply_to IS NULL AND id > ?'
   );
   const stmtLatestPartnerActionId = db.prepare(
-    'SELECT IFNULL(MAX(id), 0) AS id FROM actions WHERE user_id = ?'
+    'SELECT IFNULL(MAX(id), 0) AS id FROM actions WHERE user_id = ? AND reply_to IS NULL'
   );
   const insertAction = db.prepare(
     'INSERT INTO actions (user_id, action_type, sender_timezone, sender_name) VALUES (?, ?, ?, ?)'

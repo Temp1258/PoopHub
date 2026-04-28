@@ -19,7 +19,11 @@ interface Ticket {
 }
 
 interface CouplePresence {
-  sockets: Map<string, string>; // userId -> socketId
+  // userId -> set of currently-connected socket ids. A user may have several
+  // devices online at once (phone + iPad). The userId entry is removed
+  // entirely when the set goes empty, so `sockets.size` always equals the
+  // number of distinct users with at least one live socket (0, 1, or 2).
+  sockets: Map<string, Set<string>>;
   bothOnlineTimer?: ReturnType<typeof setTimeout>;
   bothEmitted: boolean;
   userIds: [string, string];
@@ -54,7 +58,8 @@ export function emitToCouple(
 // while the app is foregrounded.
 export function isUserOnline(userId: string): boolean {
   for (const presence of presenceMap.values()) {
-    if (presence.sockets.has(userId)) return true;
+    const set = presence.sockets.get(userId);
+    if (set && set.size > 0) return true;
   }
   return false;
 }
@@ -120,7 +125,15 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
       });
     }
     const presence = presenceMap.get(key)!;
-    presence.sockets.set(userId, socket.id);
+    // Add this socket to the user's set. Multiple devices for the same user
+    // accumulate here, so a single device disconnecting later does not
+    // prematurely flip the user to offline.
+    let mySet = presence.sockets.get(userId);
+    if (!mySet) {
+      mySet = new Set();
+      presence.sockets.set(userId, mySet);
+    }
+    mySet.add(socket.id);
     // This user is back online — they're seeing the partner directly, so any
     // pending pat tally for them resets to zero.
     presence.patUnread.set(userId, 0);
@@ -129,15 +142,20 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     checkBothOnline(io, key, presence);
     socket.to(key).emit('partner_online', { online: true });
 
-    // Check if partner is in the same room and currently touching
-    const partnerSocketId = presence.sockets.get(partnerId);
-    if (partnerSocketId) {
-      const partnerSocket = io.sockets.sockets.get(partnerSocketId);
-      if (partnerSocket?.data.isTouching) {
-        socket.emit('touch_start', { from: partnerId });
-      }
+    // Check if partner is in the same room and currently touching. Scan all
+    // of partner's sockets, since any one of their devices could be the
+    // touching device.
+    const partnerSet = presence.sockets.get(partnerId);
+    if (partnerSet && partnerSet.size > 0) {
       // Tell the new user that partner is online
       socket.emit('partner_online', { online: true });
+      for (const partnerSocketId of partnerSet) {
+        const partnerSocket = io.sockets.sockets.get(partnerSocketId);
+        if (partnerSocket?.data.isTouching) {
+          socket.emit('touch_start', { from: partnerId });
+          break;
+        }
+      }
     }
 
     // Touch relay
@@ -151,7 +169,7 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
       // real time on Home). Every pat fires a push — APNs collapses them into
       // a single rolling notification on the lock screen via collapseId, so
       // the partner doesn't get N stacked alerts. Body shows the tally.
-      const partnerConnected = presence.sockets.has(partnerId);
+      const partnerConnected = (presence.sockets.get(partnerId)?.size ?? 0) > 0;
       if (!partnerConnected && pushFn) {
         const partner = dbOps.getUser(partnerId);
         if (partner?.device_token) {
@@ -175,21 +193,43 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     });
 
     socket.on('disconnect', () => {
+      const set = presence.sockets.get(userId);
+
       if (socket.data.isTouching) {
-        socket.to(key).emit('touch_end', { from: userId });
+        // Only forward touch_end if NO other device of this same user is
+        // still touching. Otherwise a partner who is using both phone and
+        // iPad to touch would see the receive-state cancel as soon as one
+        // device drops, even though they're still touching from the other.
+        let anyOtherTouching = false;
+        if (set) {
+          for (const otherId of set) {
+            if (otherId === socket.id) continue;
+            const other = io.sockets.sockets.get(otherId);
+            if (other?.data.isTouching) {
+              anyOtherTouching = true;
+              break;
+            }
+          }
+        }
+        if (!anyOtherTouching) {
+          socket.to(key).emit('touch_end', { from: userId });
+        }
       }
 
-      // Only delete the entry if THIS socket is the one currently registered.
-      // A multi-device login replaces the socket id on connect, so an older
-      // socket disconnecting must not trample the newer registration.
-      if (presence.sockets.get(userId) === socket.id) {
-        presence.sockets.delete(userId);
+      // Remove THIS socket from the user's set. If it's the user's last
+      // device, remove the userId entry entirely so `sockets.size` reflects
+      // the count of online users (not online sockets).
+      if (set) {
+        set.delete(socket.id);
+        if (set.size === 0) {
+          presence.sockets.delete(userId);
+        }
       }
 
       // Gate offline-side-effects on whether the user actually has zero
-      // remaining sockets. Without this gate, an old phone disconnecting
-      // while a newer one stays connected falsely flips partner-online to
-      // false and tears down the both-online presence indicator.
+      // remaining sockets. The Set + size==0 cleanup above makes
+      // `presence.sockets.has(userId)` the right signal whether we're the
+      // last device to drop or one of several.
       const userStillOnline = presence.sockets.has(userId);
       if (!userStillOnline) {
         if (presence.bothOnlineTimer) {

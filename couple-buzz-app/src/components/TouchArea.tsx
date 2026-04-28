@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Pressable, StyleSheet, Animated } from 'react-native';
+import { View, Pressable, StyleSheet, Animated, AppState } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { emitTouchStart, emitTouchEnd, subscribe } from '../services/socket';
@@ -16,6 +16,35 @@ export default function TouchArea({ onSendStart, onSendEnd }: Props = {}) {
   const receiveAnim = useRef(new Animated.Value(0)).current;
   const hapticInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const sendHapticInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // When the app backgrounds, any pending receive haptic must be cleared.
+  // Otherwise: partner ends the touch while we're disconnected, our app
+  // misses the `touch_end`, and on foreground the JS interval resumes
+  // ticking forever. The server's connection handler re-emits `touch_start`
+  // on reconnect if (and only if) the partner is still touching, so we'll
+  // pick the touch back up if it's still happening.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') return;
+      if (hapticInterval.current) {
+        clearInterval(hapticInterval.current);
+        hapticInterval.current = null;
+      }
+      setReceiving(false);
+      receiveAnim.stopAnimation();
+      receiveAnim.setValue(0);
+      // Same defensive cleanup for send-side. The user can't be holding a
+      // press while the app is backgrounded; whatever Pressable did with
+      // the gesture is moot.
+      if (sendHapticInterval.current) {
+        clearInterval(sendHapticInterval.current);
+        sendHapticInterval.current = null;
+      }
+      rippleAnim.stopAnimation();
+      rippleAnim.setValue(0);
+    });
+    return () => sub.remove();
+  }, [receiveAnim, rippleAnim]);
 
   useEffect(() => {
     const unsubs = [
