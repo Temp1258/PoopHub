@@ -491,7 +491,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       }
     }
 
-    res.json({ actions, reactions });
+    // Send the read pointer alongside actions so the client can render the
+    // unread/read divider exactly at where the user left off last session.
+    // Read here is non-mutating — POST /api/mark-read advances it.
+    res.json({ actions, reactions, last_read_action_id: user.last_read_action_id });
   });
 
   // POST /api/mark-read — client tells the server it has seen up to this

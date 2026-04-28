@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { COLORS, ACTION_EMOJI, ACTION_CATEGORIES, ActionConfig } from '../constants';
 import { api, HistoryAction } from '../services/api';
+import { subscribe } from '../services/socket';
 import { storage } from '../utils/storage';
 import ActionRecord from '../components/ActionRecord';
 import ReactionPicker from '../components/ReactionPicker';
@@ -57,9 +58,17 @@ const TIMEZONE_LABELS: Record<string, string> = {
   'Pacific/Auckland': '奥克兰 (UTC+13)',
 };
 
+// "Read here" pseudo-row injected between the last-read and first-unread
+// action in 废话区 — keyed off id=-1 so SectionList's keyExtractor stays
+// happy and renderItem can branch on the marker.
+type DividerItem = { id: -1; _divider: true };
+type ListItem = HistoryAction | DividerItem;
+const isDivider = (item: ListItem): item is DividerItem =>
+  (item as DividerItem)._divider === true;
+
 interface Section {
   title: string;
-  data: HistoryAction[];
+  data: ListItem[];
 }
 
 interface Props {
@@ -116,6 +125,70 @@ function getDeviceTimezone(): string {
   }
 }
 
+// Insert the unread-divider into the section that contains the first action
+// with id > boundaryId. Sections are oldest-first; once inserted, downstream
+// sections stay untouched.
+function injectUnreadDivider(sections: Section[], boundaryId: number): Section[] {
+  if (boundaryId <= 0) return sections;
+  let inserted = false;
+  return sections.map((s) => {
+    if (inserted) return s;
+    let insertIdx = -1;
+    for (let i = 0; i < s.data.length; i++) {
+      const it = s.data[i];
+      if (!isDivider(it) && it.id > boundaryId) { insertIdx = i; break; }
+    }
+    if (insertIdx < 0) return s;
+    inserted = true;
+    const divider: DividerItem = { id: -1, _divider: true };
+    return {
+      ...s,
+      data: [...s.data.slice(0, insertIdx), divider, ...s.data.slice(insertIdx)],
+    };
+  });
+}
+
+function UnreadDivider() {
+  return (
+    <View style={dividerStyles.row}>
+      <View style={dividerStyles.line} />
+      <View style={dividerStyles.pill}>
+        <Text style={dividerStyles.label}>以下为新消息</Text>
+      </View>
+      <View style={dividerStyles.line} />
+    </View>
+  );
+}
+
+const dividerStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    marginTop: 18,
+    marginBottom: 10,
+    gap: 12,
+  },
+  line: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.kiss,
+    opacity: 0.5,
+  },
+  pill: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 143, 171, 0.12)',
+  },
+  label: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.kiss,
+    letterSpacing: 0.6,
+  },
+});
+
 function groupByDate(actions: HistoryAction[]): Section[] {
   const groups: Record<string, HistoryAction[]> = {};
   const today = new Date();
@@ -162,6 +235,27 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const onLatestSeenRef = useRef(onLatestSeen);
   onLatestSeenRef.current = onLatestSeen;
   const prevLatestIdRef = useRef(0);
+  const myUserIdRef = useRef('');
+  // Pinned at the user's last_read_action_id when they (re)focus 废话区,
+  // so the unread divider stays put even as poll updates land. Cleared by
+  // useFocusEffect on each refocus → fresh divider per viewing session.
+  const [boundaryId, setBoundaryId] = useState(0);
+  // Gate the per-bubble entry animation: false during the very first
+  // populated render (so existing history doesn't all bounce in), true after
+  // — only freshly-mounted bubbles (live arrivals) play the spring.
+  const initialRenderDoneRef = useRef(false);
+  useEffect(() => {
+    if (sections.length > 0 && !initialRenderDoneRef.current) {
+      initialRenderDoneRef.current = true;
+    }
+  }, [sections]);
+  // Sections + divider derived once per (sections, boundary) change. Polling
+  // updates `sections` but keeps `boundaryId` stable, so the divider position
+  // stays anchored to the original first-unread message.
+  const visibleSections = useMemo(
+    () => injectUnreadDivider(sections, boundaryId),
+    [sections, boundaryId]
+  );
 
   // For saving remark we need current profile values
   const [myName, setMyName] = useState('');
@@ -299,10 +393,11 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
     }, 100);
   }, [sections]);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (captureBoundary: boolean = false) => {
     try {
       const userId = await storage.getUserId();
       setMyUserId(userId || '');
+      myUserIdRef.current = userId || '';
       const savedTz = await storage.getTimezone();
       const savedPartnerTz = await storage.getPartnerTimezone();
       const savedRemark = await storage.getPartnerRemark();
@@ -317,6 +412,11 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
 
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
+      // Capture BEFORE marking read so the divider sits where the user left
+      // off, not at "everything read".
+      if (captureBoundary) {
+        setBoundaryId(result.last_read_action_id ?? 0);
+      }
       setSections(groupByDate(reversed));
       setReactions(result.reactions || {});
       const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
@@ -332,13 +432,17 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
 
   useFocusEffect(
     useCallback(() => {
-      loadHistory();
+      // Each refocus is a new viewing session — pull fresh boundary so the
+      // divider lands where the user left off, not where it sat last visit.
+      loadHistory(true);
       const interval = setInterval(async () => {
         try {
           const result = await api.getHistory(100);
           const reversed = [...result.actions].reverse();
           const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
           if (latestId !== prevLatestIdRef.current) {
+            // Polling intentionally does NOT re-capture boundary — it would
+            // cause the divider to jump as new messages arrive while viewing.
             setSections(groupByDate(reversed));
             setReactions(result.reactions || {});
             prevLatestIdRef.current = latestId;
@@ -346,7 +450,18 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
           }
         } catch {}
       }, 5000);
-      return () => clearInterval(interval);
+      // Live arrival via socket → refresh immediately so the new bubble
+      // springs in within milliseconds (the 5s poller would otherwise hold
+      // it back). Filter self so handleSendAction's own refresh isn't
+      // duplicated by the same event echoed back to the sender's room.
+      const unsubAction = subscribe('action_new', (data: { from?: string }) => {
+        if (data?.from && data.from === myUserIdRef.current) return;
+        loadHistory(false);
+      });
+      return () => {
+        clearInterval(interval);
+        unsubAction();
+      };
     }, [loadHistory])
   );
 
@@ -428,10 +543,11 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
 
       <SectionList
         ref={listRef}
-        sections={sections}
-        keyExtractor={(item) => item.id.toString()}
+        sections={visibleSections}
+        keyExtractor={(item) => isDivider(item) ? 'divider' : item.id.toString()}
         onContentSizeChange={scrollToBottom}
         renderItem={({ item }) => {
+          if (isDivider(item)) return <UnreadDivider />;
           const isMine = item.user_id === myUserId;
           const myTime = formatTimeInZone(item.created_at, myTz);
           const pTime = !isMine ? formatTimeInZone(item.created_at, partnerTz) : undefined;
@@ -446,6 +562,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
               reactions={reactions[item.id]}
               onPress={() => handleItemPress(item)}
               onLongPress={!isMine ? () => handleReactionLongPress(item) : undefined}
+              animateOnMount={initialRenderDoneRef.current}
             />
           );
         }}

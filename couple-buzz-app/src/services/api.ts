@@ -139,6 +139,7 @@ export interface HistoryAction {
 export interface HistoryResponse {
   actions: HistoryAction[];
   reactions: Record<number, HistoryAction[]>;
+  last_read_action_id?: number;
 }
 
 export interface ReactionResponse {
