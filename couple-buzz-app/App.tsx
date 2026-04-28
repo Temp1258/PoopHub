@@ -525,16 +525,18 @@ export default function App() {
     return subscribe('touch_start', () => setUnreadForTab('Home'));
   }, [appState, setUnreadForTab]);
 
-  // Live haptic tick when the partner posts a new emoji/reaction in 废话区.
-  // The server emits this only when both sides are online (no push needed).
-  // Sender's own client receives the same event but filters via `from`.
+  // Live ping when the partner posts a new emoji/reaction in 废话区. Server
+  // suppresses the push when the recipient is foregrounded (online), so this
+  // socket event is the sole driver of both the haptic and the History red
+  // dot in that case. Sender's own client receives it too — filter via `from`.
   useEffect(() => {
     if (appState !== 'ready') return;
     return subscribe('action_new', (data: { from?: string }) => {
       if (!data?.from || data.from === myUserIdRef.current) return;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setUnreadForTab('History');
     });
-  }, [appState]);
+  }, [appState, setUnreadForTab]);
 
   // Tap fallback: navigation itself is handled by NavigationContainer's
   // `linking` prop, which is the canonical react-navigation pattern. This

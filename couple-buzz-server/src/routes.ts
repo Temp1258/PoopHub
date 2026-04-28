@@ -5,7 +5,7 @@ import fs from 'fs';
 import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
-import { createWsTicket, emitToCouple } from './socket';
+import { createWsTicket, emitToCouple, isUserOnline } from './socket';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -420,12 +420,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     dbOps.addAction(userId, action_type, timezone || user.timezone, user.name);
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
+    // Skip the APNs push if the partner is foregrounded — the socket
+    // 'action_new' below already drives the haptic + red dot, so a banner
+    // would be redundant noise. Push still fires when partner is offline.
+    if (partner?.device_token && !isUserOnline(partner.id)) {
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
       await pushFn(partner.device_token, action_type, user.name, undefined, unread);
     }
-    // Live ping for the partner's app to haptic-tick if they're foregrounded.
-    // Includes `from` so the sender's own client filters it out.
     emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type });
 
     res.json({ success: true });
@@ -458,7 +459,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const reactionId = dbOps.addReaction(userId, action_type, user.timezone, user.name, actionId);
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
+    // Same online-skip rationale as /api/actions above.
+    if (partner?.device_token && !isUserOnline(partner.id)) {
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
       await pushFn(partner.device_token, 'reaction', user.name, undefined, unread);
     }

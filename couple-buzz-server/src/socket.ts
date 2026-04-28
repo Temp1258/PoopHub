@@ -48,6 +48,17 @@ export function emitToCouple(
   ioRef.to(coupleKey(userIdA, userIdB)).emit(event, data ?? {});
 }
 
+// True iff the user has at least one live socket connection. Used by REST
+// handlers to suppress push notifications for events the recipient will
+// receive in real time via the socket — avoids redundant banners/badges
+// while the app is foregrounded.
+export function isUserOnline(userId: string): boolean {
+  for (const presence of presenceMap.values()) {
+    if (presence.sockets.has(userId)) return true;
+  }
+  return false;
+}
+
 function coupleKey(a: string, b: string): string {
   return [a, b].sort().join(':');
 }
