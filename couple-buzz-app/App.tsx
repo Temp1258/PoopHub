@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, Pressable, useWindowDimensions, Animated } from 'react-native';
+import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
 import { NavigationContainer } from '@react-navigation/native';
@@ -7,10 +7,11 @@ import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-na
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 
 import { COLORS } from './src/constants';
+import { SpringPressable } from './src/components/SpringPressable';
+import { ToolbarSlotContext } from './src/utils/toolbarSlot';
 import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
 import { api, AuthError } from './src/services/api';
@@ -27,9 +28,6 @@ const Tab = createMaterialTopTabNavigator();
 
 type AppState = 'loading' | 'setup' | 'waiting' | 'ready';
 
-// One pill button. Owns a single Animated.Value driving a scale spring —
-// press-in pops to ~1.18 with bounce, press-out springs back. Mimics the
-// "card pickup" feel where a tap feels alive and tactile.
 function PillTab({
   isFocused, label, renderIcon, onPress, pillH, radius, labelSize,
 }: {
@@ -41,58 +39,35 @@ function PillTab({
   radius: number;
   labelSize: number;
 }) {
-  const scale = useRef(new Animated.Value(1)).current;
   const tint = isFocused ? COLORS.white : COLORS.textLight;
 
-  const handlePressIn = () => {
-    Haptics.selectionAsync();
-    Animated.spring(scale, {
-      toValue: 1.18,
-      useNativeDriver: true,
-      tension: 260,
-      friction: 5,
-    }).start();
-  };
-  const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: true,
-      tension: 200,
-      friction: 6,
-    }).start();
-  };
-
   return (
-    <Animated.View style={{ flex: 1, transform: [{ scale }] }}>
-      <Pressable
-        onPress={onPress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        style={{
-          height: pillH,
-          borderRadius: radius,
-          backgroundColor: isFocused ? COLORS.kiss : COLORS.white,
-          borderWidth: isFocused ? 0 : 1,
-          borderColor: COLORS.border,
-          alignItems: 'center',
-          justifyContent: 'center',
-          // Subtle elevation so pills float above the gradient backdrop
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 2 },
-          shadowOpacity: 0.06,
-          shadowRadius: 6,
-          elevation: 2,
-        }}
-      >
-        {renderIcon && renderIcon({ focused: isFocused, color: tint })}
-        <Text style={{
-          fontSize: labelSize,
-          fontWeight: '600',
-          color: tint,
-          marginTop: 2,
-        }}>{label}</Text>
-      </Pressable>
-    </Animated.View>
+    <SpringPressable
+      onPress={onPress}
+      wrapperStyle={{ flex: 1 }}
+      style={{
+        height: pillH,
+        borderRadius: radius,
+        backgroundColor: isFocused ? COLORS.kiss : COLORS.white,
+        borderWidth: isFocused ? 0 : 1,
+        borderColor: COLORS.border,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
+        elevation: 2,
+      }}
+    >
+      {renderIcon && renderIcon({ focused: isFocused, color: tint })}
+      <Text style={{
+        fontSize: labelSize,
+        fontWeight: '600',
+        color: tint,
+        marginTop: 2,
+      }}>{label}</Text>
+    </SpringPressable>
   );
 }
 
@@ -275,6 +250,8 @@ export default function App() {
   const activeTabRef = useRef('Home');
   const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
+  const [overlay, setOverlay] = useState<React.ReactNode>(null);
+  const toolbarSlot = useMemo(() => ({ set: setOverlay }), []);
 
   useEffect(() => {
     (async () => {
@@ -526,26 +503,38 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      <NavigationContainer
-        onStateChange={(state) => {
-          if (!state) return;
-          const route = state.routes[state.index];
-          activeTabRef.current = route.name;
-          if (route.name === 'History') {
-            setHasUnread(false);
-          }
-          if (route.name === 'Us') {
-            handleDailyTabFocus();
-          }
-        }}
-      >
-        <MainTabs partnerName={partnerName} streak={streak} hasUnread={hasUnread} hasUnreadDaily={hasUnreadDaily} onLatestSeen={handleLatestSeen} />
-      </NavigationContainer>
+      <ToolbarSlotContext.Provider value={toolbarSlot}>
+        <View style={styles.appRoot}>
+          <NavigationContainer
+            onStateChange={(state) => {
+              if (!state) return;
+              const route = state.routes[state.index];
+              activeTabRef.current = route.name;
+              if (route.name === 'History') {
+                setHasUnread(false);
+              }
+              if (route.name === 'Us') {
+                handleDailyTabFocus();
+              }
+            }}
+          >
+            <MainTabs partnerName={partnerName} streak={streak} hasUnread={hasUnread} hasUnreadDaily={hasUnreadDaily} onLatestSeen={handleLatestSeen} />
+          </NavigationContainer>
+          {overlay && (
+            <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+              {overlay}
+            </View>
+          )}
+        </View>
+      </ToolbarSlotContext.Provider>
     </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  appRoot: {
+    flex: 1,
+  },
   center: {
     flex: 1,
     justifyContent: 'center',

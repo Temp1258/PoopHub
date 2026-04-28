@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -14,8 +14,9 @@ import {
   Animated,
   PanResponder,
   ScrollView,
+  useWindowDimensions,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { COLORS, ACTION_EMOJI, ACTION_CATEGORIES, ActionConfig } from '../constants';
@@ -23,6 +24,8 @@ import { api, HistoryAction } from '../services/api';
 import { storage } from '../utils/storage';
 import ActionRecord from '../components/ActionRecord';
 import ReactionPicker from '../components/ReactionPicker';
+import { SpringPressable } from '../components/SpringPressable';
+import { useToolbarSlot } from '../utils/toolbarSlot';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 const TOOLBAR_HEIGHT = 56;
@@ -222,6 +225,40 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       },
     })
   ).current;
+
+  // Push the toolbar pill into the App-level overlay slot so it renders ABOVE
+  // the bottom bar (and its transparent gradient) instead of being veiled by
+  // it. Slot is cleared when this tab loses focus or unmounts.
+  const toolbarSlot = useToolbarSlot();
+  const isFocused = useIsFocused();
+  const { width: screenW } = useWindowDimensions();
+  const barH = screenW * 0.175 + insets.bottom;
+  useEffect(() => {
+    if (!isFocused) {
+      toolbarSlot.set(null);
+      return;
+    }
+    toolbarSlot.set(
+      <View
+        style={[styles.toolbarRow, { bottom: barH + 12 }]}
+        pointerEvents="box-none"
+      >
+        <View {...toolbarPanResponder.panHandlers}>
+          <SpringPressable
+            onPress={togglePanel}
+            scaleTo={1.08}
+            style={styles.toolbar}
+          >
+            <Text style={styles.toolbarIcon}>{panelOpen ? '▾' : '💌'}</Text>
+            <Text style={styles.toolbarHint}>
+              {panelOpen ? '收起' : '给 ta 发个表情'}
+            </Text>
+          </SpringPressable>
+        </View>
+      </View>
+    );
+    return () => toolbarSlot.set(null);
+  }, [isFocused, panelOpen, togglePanel, toolbarPanResponder, toolbarSlot, barH]);
 
   // Capture-phase responder: when ScrollView is at top and user drags down,
   // intercept the gesture from the ScrollView and use it to close the panel.
@@ -535,20 +572,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         </ScrollView>
       </Animated.View>
 
-      <View style={styles.toolbarRow} pointerEvents="box-none">
-        <View {...toolbarPanResponder.panHandlers}>
-          <TouchableOpacity
-            style={styles.toolbar}
-            onPress={togglePanel}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.toolbarIcon}>{panelOpen ? '▾' : '💌'}</Text>
-            <Text style={styles.toolbarHint}>
-              {panelOpen ? '收起' : '给 ta 发个表情'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
     </View>
   );
 }
