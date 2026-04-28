@@ -15,7 +15,7 @@ import { ToolbarSlotContext } from './src/utils/toolbarSlot';
 import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
 import { api, AuthError } from './src/services/api';
-import { connectSocket, disconnectSocket } from './src/services/socket';
+import { connectSocket, disconnectSocket, subscribe } from './src/services/socket';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -293,6 +293,10 @@ export default function App() {
   const [hasUnreadPromises, setHasUnreadPromises] = useState(false);
   const [hasUnreadHome, setHasUnreadHome] = useState(false);
   const activeTabRef = useRef('Home');
+  // Notification taps that arrive before the navigation tree has finished
+  // bootstrapping (cold launch race) get parked here and replayed by the
+  // NavigationContainer's onReady callback.
+  const queuedNavTargetRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
   const [overlay, setOverlay] = useState<React.ReactNode>(null);
@@ -446,46 +450,65 @@ export default function App() {
     return () => sub.remove();
   }, [appState]);
 
-  // Listen for foreground push notifications and flag the corresponding tab
-  // (red dot). Same routing table is reused for tap-to-navigate below, so
-  // adding a new push action type only needs an entry in NOTIFICATION_TAB_ROUTES.
+  // Mark the target tab as unread (red dot). Only flips state when the user
+  // is on a different tab — being on the tab means they're already seeing
+  // the content. Used by both the foreground push listener and the tap
+  // listener (so even if navigation is delayed, the dot still surfaces).
+  const setUnreadForTab = useCallback((target: string) => {
+    if (target === activeTabRef.current) return;
+    if (target === 'Us') setHasUnreadDaily(true);
+    else if (target === 'Mailbox') setHasUnreadMail(true);
+    else if (target === 'Promises') setHasUnreadPromises(true);
+    else if (target === 'Home') setHasUnreadHome(true);
+    else if (target === 'History') setHasUnread(true);
+  }, []);
+
+  // Listen for foreground push notifications and flag the corresponding tab.
   useEffect(() => {
     const sub = Notifications.addNotificationReceivedListener((notification) => {
       const data = notification.request.content.data as { actionType?: string };
-      const target = tabForActionType(data?.actionType);
-      if (target === activeTabRef.current) return;
-      if (target === 'Us') setHasUnreadDaily(true);
-      else if (target === 'Mailbox') setHasUnreadMail(true);
-      else if (target === 'Promises') setHasUnreadPromises(true);
-      else if (target === 'Home') setHasUnreadHome(true);
-      else if (target === 'History') setHasUnread(true);
+      setUnreadForTab(tabForActionType(data?.actionType));
     });
     return () => sub.remove();
-  }, []);
+  }, [setUnreadForTab]);
 
-  // Tap-to-navigate: when the user taps a delivered notification, jump to the
-  // tab that shows that content. Handles both background-tap (listener fires
-  // on relaunch) and cold-launch via getLastNotificationResponseAsync.
+  // Foreground 拍拍 (touch) arrives via socket — server skips the push when
+  // both sides have a live socket. Mirror it into hasUnreadHome so the red
+  // dot still appears when the partner pats while we're on a different tab.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    return subscribe('touch_start', () => setUnreadForTab('Home'));
+  }, [appState, setUnreadForTab]);
+
+  // Tap-to-navigate: when the user taps a delivered notification, jump to
+  // the tab that surfaces that content. Set unread first as a fallback —
+  // if navigation is delayed/queued, the dot still tells the user where to
+  // look. onStateChange clears it once they actually arrive.
   useEffect(() => {
     if (appState !== 'ready') return;
 
-    const navigateToTabFor = (actionType?: string) => {
+    const handleTap = (actionType?: string) => {
       const target = tabForActionType(actionType);
-      if (navigationRef.isReady()) navigationRef.navigate(target as never);
+      setUnreadForTab(target);
+      if (navigationRef.isReady()) {
+        navigationRef.navigate(target as never);
+      } else {
+        queuedNavTargetRef.current = target;
+      }
     };
 
     Notifications.getLastNotificationResponseAsync().then((response) => {
       if (!response) return;
       const data = response.notification.request.content.data as { actionType?: string };
-      navigateToTabFor(data?.actionType);
+      handleTap(data?.actionType);
     });
 
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as { actionType?: string };
-      navigateToTabFor(data?.actionType);
+      handleTap(data?.actionType);
     });
     return () => sub.remove();
-  }, [appState]);
+  }, [appState, setUnreadForTab]);
 
   const handleDailyTabFocus = useCallback(async () => {
     setHasUnreadDaily(false);
@@ -580,6 +603,15 @@ export default function App() {
         <View style={styles.appRoot}>
           <NavigationContainer
             ref={navigationRef}
+            onReady={() => {
+              // Flush a notification-tap target that arrived before the nav
+              // tree was ready — typical on cold launch from a notification.
+              const queued = queuedNavTargetRef.current;
+              if (queued) {
+                queuedNavTargetRef.current = null;
+                navigationRef.navigate(queued as never);
+              }
+            }}
             onStateChange={(state) => {
               if (!state) return;
               const route = state.routes[state.index];

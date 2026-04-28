@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,8 @@ import {
   ScrollView,
   useWindowDimensions,
 } from 'react-native';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
+import { useTabAnimation } from '@react-navigation/material-top-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { COLORS, ACTION_EMOJI, ACTION_CATEGORIES, ActionConfig } from '../constants';
@@ -227,23 +228,33 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   ).current;
 
   // Push the toolbar pill into the App-level overlay slot so it renders ABOVE
-  // the bottom bar (and its transparent gradient) instead of being veiled by
-  // it. Slot is cleared when this tab loses focus or unmounts.
+  // the bottom bar (and its transparent gradient). Slot is cleared on unmount.
   const toolbarSlot = useToolbarSlot();
-  const isFocused = useIsFocused();
   const { width: screenW } = useWindowDimensions();
   // All vector: bar height = pillH + paddings (each is a fraction of width),
   // plus bottom safe-area inset. Pill itself sits one "lift" above the bar.
   const barH = screenW * 0.175 + insets.bottom;
   const toolbarLift = screenW * 0.03;
+  // Drive translateX from the material-top-tabs pager's animated position so
+  // the pill physically slides off-screen with the History view during a
+  // swipe (rather than self-fading after the swipe settles, which felt
+  // detached). History is tab index 1 in App.tsx; if we reorder, update.
+  const HISTORY_TAB_INDEX = 1;
+  const tabAnim = useTabAnimation();
+  const pillTranslateX = useMemo(
+    () => Animated.multiply(
+      Animated.subtract(HISTORY_TAB_INDEX, tabAnim.position),
+      screenW
+    ),
+    [tabAnim.position, screenW]
+  );
   useEffect(() => {
-    if (!isFocused) {
-      toolbarSlot.set(null);
-      return;
-    }
     toolbarSlot.set(
-      <View
-        style={[styles.toolbarRow, { bottom: barH + toolbarLift }]}
+      <Animated.View
+        style={[
+          styles.toolbarRow,
+          { bottom: barH + toolbarLift, transform: [{ translateX: pillTranslateX }] },
+        ]}
         pointerEvents="box-none"
       >
         <View {...toolbarPanResponder.panHandlers}>
@@ -257,10 +268,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
             </Text>
           </SpringPressable>
         </View>
-      </View>
+      </Animated.View>
     );
     return () => toolbarSlot.set(null);
-  }, [isFocused, panelOpen, togglePanel, toolbarPanResponder, toolbarSlot, barH, toolbarLift]);
+  }, [panelOpen, togglePanel, toolbarPanResponder, toolbarSlot, barH, toolbarLift, pillTranslateX]);
 
   // Capture-phase responder: when ScrollView is at top and user drags down,
   // intercept the gesture from the ScrollView and use it to close the panel.
