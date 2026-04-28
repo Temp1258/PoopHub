@@ -56,11 +56,14 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
       friction: 9,
     }).start();
     // Don't auto-focus on expand — keyboard should pop only when the user
-    // taps into the input. On collapse, blur (in case user had typed) and
-    // also tear down the date picker so reopening starts fresh.
+    // taps into the input. On collapse, blur (in case user had typed),
+    // tear down the date picker, AND clear the chosen date so reopening
+    // always starts at "未选择" — there's no explicit clear button, this
+    // is the implicit reset path users asked for.
     if (!showCreate) {
       inputRef.current?.blur();
       setShowDatePicker(false);
+      setUnlockDate(null);
     }
   }, [showCreate, expandAnim]);
 
@@ -129,9 +132,13 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
   };
 
   const handleSealComplete = async () => {
-    setSealing(false);
-    setSealedPreview('');
+    // Same pattern as MailboxCard: load first so the post-seal state (the
+    // new capsule appearing in the waiting list) is in place before sealing
+    // flips false. Avoids a one-frame flash of "empty list / no new card"
+    // between SealAnimation ending and the fresh data arriving.
     await load();
+    setSealedPreview('');
+    setSealing(false);
   };
 
   // Day+hour granularity matches the backend push body the partner gets,
@@ -271,7 +278,6 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
               />
               <View style={styles.visRow}>
                 <SpringPressable
-                  wrapperStyle={styles.visPillWrap}
                   style={[styles.visPill, visibility === 'self' && styles.visPillActive]}
                   onPress={() => setVisibility('self')}
                   scaleTo={1.05}
@@ -280,7 +286,6 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
                   <Text style={[styles.visLabel, visibility === 'self' && styles.visLabelActive]}>给自己</Text>
                 </SpringPressable>
                 <SpringPressable
-                  wrapperStyle={styles.visPillWrap}
                   style={[styles.visPill, visibility === 'partner' && styles.visPillActive]}
                   onPress={() => setVisibility('partner')}
                   scaleTo={1.05}
@@ -390,18 +395,22 @@ const styles = StyleSheet.create({
   waitingItemBody: { flex: 1 },
   waitingItemTitle: { fontSize: 14, color: COLORS.text, fontWeight: '500' },
   waitingItemSub: { fontSize: 12, color: COLORS.textLight, marginTop: 2 },
-  visRow: { flexDirection: 'row', gap: 10 },
-  // Outer wrapper takes the flex slot; inner Pressable owns the pill style
-  // (so the spring scale doesn't disturb sibling layout).
-  visPillWrap: { flex: 1 },
+  // Center the row of two compact pills — each pill sizes to its content
+  // (no flex stretching), so they read as choice chips, not as full-width
+  // segmented buttons.
+  visRow: {
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+  },
   visPill: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: 26,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.background,

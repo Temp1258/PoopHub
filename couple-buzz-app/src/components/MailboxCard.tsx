@@ -154,9 +154,15 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
   };
 
   const handleSealComplete = async () => {
-    setSealing(false);
-    setSealedPreview('');
+    // Refresh data BEFORE flipping sealing=false. Otherwise the brief gap
+    // between sealing→false and load() resolving lets the default branch
+    // render once with stale state (composeOpen=true, my_sealed=false),
+    // flashing the empty form on screen for one frame before settling on
+    // the sealed UI. Loading first keeps SealAnimation's final frame
+    // visible until everything is ready to swap in one render.
     await load();
+    setSealedPreview('');
+    setSealing(false);
   };
 
   if (loading) {
