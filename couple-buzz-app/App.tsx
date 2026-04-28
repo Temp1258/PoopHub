@@ -3,7 +3,7 @@ import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppSta
 
 LogBox.ignoreLogs(['Could not access feature flag']);
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
-import { createBottomTabNavigator, BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-navigation/material-top-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -24,7 +24,7 @@ import UsScreen from './src/screens/UsScreen';
 import MailboxScreen from './src/screens/MailboxScreen';
 import AnniversaryWishScreen from './src/screens/AnniversaryWishScreen';
 
-const Tab = createBottomTabNavigator();
+const Tab = createMaterialTopTabNavigator();
 
 // Single source of truth for app navigation: lets non-React code (e.g. push
 // notification handlers) jump to a tab without going through navigation props.
@@ -34,6 +34,9 @@ const navigationRef = createNavigationContainerRef();
 // tap the notification. Anything not listed defaults to History (废话区) —
 // most emoji actions surface there as feed entries.
 const NOTIFICATION_TAB_ROUTES: Record<string, string> = {
+  // 拍拍 (touch) — opens Home where the touch UI lives.
+  touch: 'Home',
+
   // Daily content — answers, snaps, urges, reactions, ritual greetings.
   daily_answer: 'Us', daily_both: 'Us',
   snap_submitted: 'Us', snap_both: 'Us',
@@ -86,7 +89,7 @@ function PillTab({
 }: {
   isFocused: boolean;
   label: string;
-  renderIcon: ((props: { focused: boolean; color: string; size: number }) => React.ReactNode) | undefined;
+  renderIcon: ((props: { focused: boolean; color: string }) => React.ReactNode) | undefined;
   onPress: () => void;
   pillH: number;
   radius: number;
@@ -113,7 +116,7 @@ function PillTab({
         elevation: 2,
       }}
     >
-      {renderIcon && renderIcon({ focused: isFocused, color: tint, size: 20 })}
+      {renderIcon && renderIcon({ focused: isFocused, color: tint })}
       <Text style={{
         fontSize: labelSize,
         fontWeight: '600',
@@ -127,7 +130,7 @@ function PillTab({
 // Pill-shaped (灵动岛) bottom tab bar. All sizing is proportional to screen
 // width via useWindowDimensions, so the bar reflows on rotation / different
 // device widths instead of looking off on small/large screens.
-function PillTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+function PillTabBar({ state, descriptors, navigation }: MaterialTopTabBarProps) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
@@ -200,34 +203,35 @@ function PillTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
 }
 
 function MainTabs({
-  partnerName, streak, hasUnread, hasUnreadDaily, hasUnreadMail, hasUnreadPromises, onLatestSeen,
+  partnerName, streak, hasUnread, hasUnreadDaily, hasUnreadHome, hasUnreadMail, hasUnreadPromises, onLatestSeen,
 }: {
   partnerName: string;
   streak: number;
   hasUnread: boolean;
   hasUnreadDaily: boolean;
+  hasUnreadHome: boolean;
   hasUnreadMail: boolean;
   hasUnreadPromises: boolean;
   onLatestSeen: (id: number) => void;
 }) {
   return (
     <Tab.Navigator
+      tabBarPosition="bottom"
       tabBar={(props) => <PillTabBar {...props} />}
       screenOptions={{
-        // We render our own bar; the default header isn't used by any screen.
-        headerShown: false,
-        // Mount all tabs eagerly so switching is instant — no first-mount lag.
-        lazy: false,
-        // Disable bottom-tabs' built-in screen transition animation so taps
-        // resolve instantly even when the user spam-taps between tabs.
-        animation: 'none',
+        // Swipe-between-tabs is part of the UX. Disabling pager animation on
+        // taps (animationEnabled: false) keeps rapid taps from queueing up
+        // tween calls behind each other — the gesture-driven swipe still
+        // animates via the native pager's own physics on release.
+        swipeEnabled: true,
+        animationEnabled: false,
       }}
     >
       <Tab.Screen
         name="Home"
         options={{
           tabBarLabel: '拍拍',
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🤚</Text>,
+          tabBarIcon: ({ color }) => <TabIconWithDot emoji="🤚" color={color} dot={hasUnreadHome} />,
         }}
       >
         {() => <HomeScreen partnerName={partnerName} streak={streak} />}
@@ -287,6 +291,7 @@ export default function App() {
   const [hasUnreadDaily, setHasUnreadDaily] = useState(false);
   const [hasUnreadMail, setHasUnreadMail] = useState(false);
   const [hasUnreadPromises, setHasUnreadPromises] = useState(false);
+  const [hasUnreadHome, setHasUnreadHome] = useState(false);
   const activeTabRef = useRef('Home');
   const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
@@ -452,6 +457,7 @@ export default function App() {
       if (target === 'Us') setHasUnreadDaily(true);
       else if (target === 'Mailbox') setHasUnreadMail(true);
       else if (target === 'Promises') setHasUnreadPromises(true);
+      else if (target === 'Home') setHasUnreadHome(true);
       else if (target === 'History') setHasUnread(true);
     });
     return () => sub.remove();
@@ -582,6 +588,7 @@ export default function App() {
               if (route.name === 'Us') handleDailyTabFocus();
               if (route.name === 'Mailbox') setHasUnreadMail(false);
               if (route.name === 'Promises') setHasUnreadPromises(false);
+              if (route.name === 'Home') setHasUnreadHome(false);
             }}
           >
             <MainTabs
@@ -589,6 +596,7 @@ export default function App() {
               streak={streak}
               hasUnread={hasUnread}
               hasUnreadDaily={hasUnreadDaily}
+              hasUnreadHome={hasUnreadHome}
               hasUnreadMail={hasUnreadMail}
               hasUnreadPromises={hasUnreadPromises}
               onLatestSeen={handleLatestSeen}

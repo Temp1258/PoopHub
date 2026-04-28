@@ -166,7 +166,9 @@ export type SendPushFn = (
   actionType: string,
   senderName: string,
   extra?: Record<string, string>,
-  badge?: number
+  badge?: number,
+  collapseId?: string,
+  bodyOverride?: string
 ) => Promise<boolean>;
 
 // Generate a random 4-digit pair code (CSPRNG, not Math.random)

@@ -127,7 +127,14 @@ export async function sendPush(
   actionType: string,
   senderName: string,
   extra?: Record<string, string>,
-  badge?: number
+  badge?: number,
+  // collapseId: APNs replaces an earlier delivered notification with the same
+  // id on the lock screen — used for high-frequency events (touch/pat) so the
+  // user sees a single rolling notification instead of N separate ones.
+  // bodyOverride: lets the caller render a dynamic body (e.g. "想你了 3 下")
+  // that doesn't fit the static {name}/{title} template in PUSH_MESSAGES.
+  collapseId?: string,
+  bodyOverride?: string
 ): Promise<boolean> {
   if (!provider) {
     console.error('[APNs] Provider not initialized');
@@ -144,8 +151,8 @@ export async function sendPush(
   // titles) can't smuggle `$&` / `$1` / `$$` replacement sequences and warp
   // the rendered push body. Function returns are inserted verbatim.
   const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  let body = message.body.replace(/\{name\}/g, () => senderName);
-  if (extra) {
+  let body = bodyOverride ?? message.body.replace(/\{name\}/g, () => senderName);
+  if (!bodyOverride && extra) {
     for (const [key, value] of Object.entries(extra)) {
       body = body.replace(new RegExp(`\\{${escapeRe(key)}\\}`, 'g'), () => value);
     }
@@ -161,6 +168,9 @@ export async function sendPush(
   // the field so APNs leaves the existing icon badge untouched.
   if (typeof badge === 'number') {
     notification.badge = Math.max(0, badge);
+  }
+  if (collapseId) {
+    notification.collapseId = collapseId;
   }
   notification.topic = process.env.APN_BUNDLE_ID || 'com.couplebuzz.app';
   notification.payload = { actionType, senderName, ...(extra || {}) };

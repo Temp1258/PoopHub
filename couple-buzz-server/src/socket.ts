@@ -3,7 +3,15 @@ import { Server, Socket } from 'socket.io';
 import crypto from 'crypto';
 import { DbOps } from './db';
 
-type PushFn = (deviceToken: string, actionType: string, senderName: string) => Promise<boolean>;
+type PushFn = (
+  deviceToken: string,
+  actionType: string,
+  senderName: string,
+  extra?: Record<string, string>,
+  badge?: number,
+  collapseId?: string,
+  bodyOverride?: string
+) => Promise<boolean>;
 
 interface Ticket {
   userId: string;
@@ -15,6 +23,10 @@ interface CouplePresence {
   bothOnlineTimer?: ReturnType<typeof setTimeout>;
   bothEmitted: boolean;
   userIds: [string, string];
+  // Pat unread counter, keyed by RECIPIENT user id. Resets when the recipient
+  // reconnects (i.e. they came back online — implicit "I've seen them").
+  // Lets a 拍拍 push body show "想你了 N 下" rolling tally.
+  patUnread: Map<string, number>;
 }
 
 const tickets = new Map<string, Ticket>();
@@ -72,10 +84,18 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     const key = coupleKey(userId, partnerId);
 
     if (!presenceMap.has(key)) {
-      presenceMap.set(key, { sockets: new Map(), bothEmitted: false, userIds: [userId, partnerId] });
+      presenceMap.set(key, {
+        sockets: new Map(),
+        bothEmitted: false,
+        userIds: [userId, partnerId],
+        patUnread: new Map(),
+      });
     }
     const presence = presenceMap.get(key)!;
     presence.sockets.set(userId, socket.id);
+    // This user is back online — they're seeing the partner directly, so any
+    // pending pat tally for them resets to zero.
+    presence.patUnread.set(userId, 0);
 
     socket.join(key);
     checkBothOnline(io, key, presence);
@@ -94,23 +114,29 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
 
     // Touch relay
     socket.data.isTouching = false;
-    // Throttle push: max once per 30s per user
-    socket.data.lastTouchPush = 0;
 
     socket.on('touch_start', () => {
       socket.data.isTouching = true;
       socket.to(key).emit('touch_start', { from: userId });
 
-      // If partner is not connected, send push notification
+      // Push only when partner is offline (otherwise they see the touch in
+      // real time on Home). Every pat fires a push — APNs collapses them into
+      // a single rolling notification on the lock screen via collapseId, so
+      // the partner doesn't get N stacked alerts. Body shows the tally.
       const partnerConnected = presence.sockets.has(partnerId);
       if (!partnerConnected && pushFn) {
-        const now = Date.now();
-        if (now - (socket.data.lastTouchPush || 0) > 30000) {
-          socket.data.lastTouchPush = now;
-          const partner = dbOps.getUser(partnerId);
-          if (partner?.device_token) {
-            pushFn(partner.device_token, 'touch', user.name);
-          }
+        const partner = dbOps.getUser(partnerId);
+        if (partner?.device_token) {
+          const tally = (presence.patUnread.get(partnerId) ?? 0) + 1;
+          presence.patUnread.set(partnerId, tally);
+          // Badge: emoji unread + 1 (representing "an unread pat series").
+          // Multiple pats in the series keep emoji_unread the same → badge
+          // stays put, matching the user's "+1 only" expectation.
+          const emojiUnread = dbOps.getUnreadActionCount(partnerId, userId);
+          const badge = emojiUnread + 1;
+          const body = `${user.name} 想你了 ${tally} 下！🥹`;
+          const collapseId = `pat_${userId}`;
+          pushFn(partner.device_token, 'touch', user.name, undefined, badge, collapseId, body);
         }
       }
     });
