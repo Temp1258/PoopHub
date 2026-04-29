@@ -340,14 +340,20 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             <Text style={styles.pillSecondaryText}>取消</Text>
           </SpringPressable>
           <SpringPressable onPress={() => startComment(selectedSticky.id)} style={[styles.pill, styles.pillPrimary]}>
-            <Text style={styles.pillPrimaryText}>再写点</Text>
+            <Text style={styles.pillPrimaryText}>跟个帖</Text>
           </SpringPressable>
         </View>
       );
     }
+    // Browse mode — same two-pill layout as the editor states so the close
+    // ("不看了") + start ("来一帖") buttons stay anchored at exactly the same
+    // screen position as 不写了/贴上去 etc., not jumping around per state.
     return (
       <View style={styles.toolbar}>
-        <SpringPressable onPress={startNewSticky} style={[styles.pill, styles.pillPrimary, styles.pillWide]}>
+        <SpringPressable onPress={handleClose} style={[styles.pill, styles.pillSecondary]}>
+          <Text style={styles.pillSecondaryText}>不看了</Text>
+        </SpringPressable>
+        <SpringPressable onPress={startNewSticky} style={[styles.pill, styles.pillPrimary]}>
           <Text style={styles.pillPrimaryText}>来一帖</Text>
         </SpringPressable>
       </View>
@@ -430,41 +436,63 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
 
         <View style={styles.headerRow}>
           <Text style={styles.title}>📝 每日一帖</Text>
-          <TouchableOpacity
-            style={styles.headerCloseBtn}
-            onPress={handleClose}
-            hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}
-          >
-            <Text style={styles.closeBtn}>完成</Text>
-          </TouchableOpacity>
         </View>
 
-        {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={COLORS.kiss} />
-          </View>
-        ) : wall.length === 0 ? (
-          <View style={styles.center}>
-            <Text style={styles.emptyEmoji}>🧷</Text>
-            <Text style={styles.emptyTitle}>墙上还空着</Text>
-            <Text style={styles.emptySub}>按下方「来一帖」开始写第一张</Text>
-          </View>
-        ) : (
-          <FlatList
-            data={wall}
-            keyExtractor={s => String(s.id)}
-            renderItem={renderItem}
-            onViewableItemsChanged={onViewableItemsChanged}
-            viewabilityConfig={viewabilityConfig}
-            contentContainerStyle={{ paddingTop: 32, paddingBottom: 140 + insets.bottom }}
-            showsVerticalScrollIndicator={false}
-            keyboardDismissMode="on-drag"
-          />
-        )}
+        {/* Pressable around the wall area so tapping the wood (anywhere not
+            on a sticky / pill / editor) collapses the whole modal. While the
+            editor is open, editorBackdrop sits on top of this Pressable and
+            captures taps for Keyboard.dismiss instead. A first tap on the
+            background while a sticky is selected just deselects (so the user
+            doesn't accidentally close right after picking a sticky); the
+            next tap closes. */}
+        <Pressable
+          style={styles.wallTapTarget}
+          onPress={() => {
+            if (editor) return;
+            if (selectedId !== null) {
+              setSelectedId(null);
+              return;
+            }
+            handleClose();
+          }}
+        >
+          {loading ? (
+            <View style={styles.center}>
+              <ActivityIndicator color={COLORS.kiss} />
+            </View>
+          ) : wall.length === 0 ? (
+            <View style={styles.center}>
+              <Text style={styles.emptyEmoji}>🧷</Text>
+              <Text style={styles.emptyTitle}>墙上还空着</Text>
+              <Text style={styles.emptySub}>按下方「来一帖」开始写第一张</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={wall}
+              keyExtractor={s => String(s.id)}
+              renderItem={renderItem}
+              onViewableItemsChanged={onViewableItemsChanged}
+              viewabilityConfig={viewabilityConfig}
+              contentContainerStyle={{ paddingTop: 32, paddingBottom: 140 + insets.bottom }}
+              showsVerticalScrollIndicator={false}
+              keyboardDismissMode="on-drag"
+            />
+          )}
+        </Pressable>
 
-        {/* Floating date label rendered AFTER the FlatList so scrolling
-            stickies pass behind it instead of covering it. Apple-Photos
-            style: pinned to upper-left, fades out 1.4s after the user stops
+        {/* Title-edge soft fade — wood color on top fades to transparent over
+            ~36pt below the header. Stickies scrolling under the title region
+            blur into the wood instead of cleanly clipping at a hard edge.
+            Rendered after the wall so it sits visually above the stickies. */}
+        <LinearGradient
+          colors={[WOOD_BASE, 'rgba(212, 182, 140, 0)']}
+          pointerEvents="none"
+          style={styles.titleEdgeFade}
+        />
+
+        {/* Floating date label rendered AFTER the FlatList + title-edge fade
+            so scrolling stickies pass behind everything. Apple-Photos style:
+            pinned to upper-left, fades out 1.4s after the user stops
             scrolling. */}
         {!!headerLabel && (
           <Animated.View
@@ -492,9 +520,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: WOOD_BASE,
   },
-  // Title centered in the header; 完成 button absolute-positioned on the
-  // right (mirrors the InboxScreen pattern). pageSheet handles the top gap
-  // + native drag handle on its own.
+  // Title centered in the header. The close affordance moved to a "不看了"
+  // pill in the bottom toolbar so the header is title-only now.
   headerRow: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -509,17 +536,20 @@ const styles = StyleSheet.create({
     color: '#3D2A19',
     textAlign: 'center',
   },
-  headerCloseBtn: {
-    position: 'absolute',
-    right: 20,
-    top: 14,
-    bottom: 10,
-    justifyContent: 'center',
+  // Tap-to-close target around the wall content — flex-fills the space
+  // between header and bottom toolbar.
+  wallTapTarget: {
+    flex: 1,
   },
-  closeBtn: {
-    fontSize: 15,
-    color: '#6B4A2C',
-    fontWeight: '600',
+  // Soft wood-to-transparent fade ~64pt below the modal top, masking the
+  // stickies' top edge as they scroll under the title region. Renders above
+  // the FlatList in z-order.
+  titleEdgeFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 56,
+    height: 36,
   },
   itemRow: {
     paddingVertical: 12,

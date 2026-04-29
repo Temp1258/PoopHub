@@ -289,7 +289,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       onRequestClose={onClose}
       presentationStyle="pageSheet"
     >
-      <View style={[styles.container, { paddingTop: 4 }]}>
+      <View style={[styles.container, { paddingTop: 24 }]}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>📬 收件箱</Text>
         </View>

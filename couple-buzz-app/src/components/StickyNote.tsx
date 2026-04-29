@@ -74,21 +74,42 @@ function StickyNote({ sticky, selected, writingComment, justPosted, onPress }: P
     ]).start();
   }, [justPosted, enterScale, enterY, enterOpacity]);
 
-  // Compose all transforms in one array so the spring entry stacks cleanly
-  // on top of the persistent rotation.
+  // Selection animation — gentle lift (scale 1.04) on tap so the picked
+  // sticky pops out from the wall. Combined with the high-contrast ring
+  // overlay below + shadow boost, this makes the selected state read at a
+  // glance instead of relying on shadow alone.
+  const selectScale = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.spring(selectScale, {
+      toValue: selected ? 1.04 : 1,
+      friction: 7,
+      tension: 110,
+      useNativeDriver: true,
+    }).start();
+  }, [selected, selectScale]);
+
+  // Compose all transforms in one array so the entry/selection scales stack
+  // multiplicatively on top of the persistent rotation.
   const transform = useMemo(
     () => [
       { translateY: enterY },
       { scale: enterScale },
+      { scale: selectScale },
       { rotate: `${effectiveRotation}deg` },
     ],
-    [effectiveRotation, enterY, enterScale]
+    [effectiveRotation, enterY, enterScale, selectScale]
   );
 
   return (
     <View style={{ marginLeft: leftPx + 16, width: stickyW }}>
       <Pressable onPress={onPress}>
         <Animated.View style={[styles.paper, { transform, opacity: enterOpacity }, selected && styles.paperSelected]}>
+          {/* High-contrast ring on selection — sits flush around the paper
+              edge so the sticky reads as "picked up" without layout shift
+              (the always-present transparent border keeps the inner area
+              the same size whether selected or not). */}
+          {selected && <View style={styles.selectedRing} pointerEvents="none" />}
+
           {sticky.unread && !writingComment && (
             <View style={styles.unreadIsland} pointerEvents="none">
               <Text style={styles.unreadText}>未读</Text>
@@ -136,8 +157,22 @@ const styles = StyleSheet.create({
     minHeight: 120,
   },
   paperSelected: {
-    shadowOpacity: 0.32,
-    shadowRadius: 12,
+    shadowOpacity: 0.42,
+    shadowRadius: 14,
+    shadowOffset: { width: 2, height: 6 },
+  },
+  // Outer ring overlay — sits 3pt outside the paper edge on all sides so the
+  // border doesn't push paper content inward. Dark cocoa contrasts both the
+  // cream paper and the wood wall.
+  selectedRing: {
+    position: 'absolute',
+    top: -3,
+    left: -3,
+    right: -3,
+    bottom: -3,
+    borderWidth: 2,
+    borderColor: '#3D2A19',
+    borderRadius: 7,
   },
   unreadIsland: {
     position: 'absolute',
