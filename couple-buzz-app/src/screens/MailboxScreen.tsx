@@ -8,7 +8,10 @@ import MailboxCard from '../components/MailboxCard';
 import TimeCapsuleCard from '../components/TimeCapsuleCard';
 import InboxScreen, { InboxHandle } from './InboxScreen';
 import TrashScreen, { TrashHandle } from './TrashScreen';
+import StickyWallScreen, { StickyWallHandle } from './StickyWallScreen';
 import { hasUnreadInboxItems } from '../utils/inboxUnread';
+import { api } from '../services/api';
+import { subscribe } from '../services/socket';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -17,14 +20,31 @@ export default function MailboxScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [stickyOpen, setStickyOpen] = useState(false);
   const [inboxHasUnread, setInboxHasUnread] = useState(false);
+  const [stickyHasUnread, setStickyHasUnread] = useState(false);
   const mailboxRef = useRef<Reloadable>(null);
   const capsuleRef = useRef<Reloadable>(null);
   const inboxRef = useRef<InboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
+  const stickyRef = useRef<StickyWallHandle>(null);
 
   const refreshUnreadFlag = useCallback(async () => {
     setInboxHasUnread(await hasUnreadInboxItems());
+  }, []);
+
+  // Sticky wall state — drives the entry card's 小红旗 and auto-opens the
+  // wall when an unposted temp exists, per the spec ("下次点到信箱界面，还
+  //停在没写完的临时便利贴上"). Auto-open is gated on focus / app-active so
+  // socket events don't keep popping the modal.
+  const refreshStickyFlag = useCallback(async (opts: { autoOpenIfTemp: boolean }) => {
+    try {
+      const res = await api.getStickies();
+      setStickyHasUnread(res.stickies.some(s => s.unread));
+      if (opts.autoOpenIfTemp && res.my_temp) {
+        setStickyOpen(true);
+      }
+    } catch {}
   }, []);
 
   // Refresh on every focus + when the app comes back to foreground. Both
@@ -34,15 +54,27 @@ export default function MailboxScreen() {
   useFocusEffect(
     useCallback(() => {
       refreshUnreadFlag();
-    }, [refreshUnreadFlag])
+      refreshStickyFlag({ autoOpenIfTemp: true });
+    }, [refreshUnreadFlag, refreshStickyFlag])
   );
 
   useEffect(() => {
     const sub = RNAppState.addEventListener('change', (next) => {
-      if (next === 'active') refreshUnreadFlag();
+      if (next === 'active') {
+        refreshUnreadFlag();
+        refreshStickyFlag({ autoOpenIfTemp: true });
+      }
     });
     return () => sub.remove();
-  }, [refreshUnreadFlag]);
+  }, [refreshUnreadFlag, refreshStickyFlag]);
+
+  // Live updates from partner — flip 小红旗 immediately on post / append
+  // without waiting for the next focus event.
+  useEffect(() => {
+    return subscribe('sticky_update', () => {
+      refreshStickyFlag({ autoOpenIfTemp: false });
+    });
+  }, [refreshStickyFlag]);
   // Scroll-bound fade — see UsScreen for the same pattern + rationale.
   const scrollY = useRef(new Animated.Value(0)).current;
   const fadeOpacity = scrollY.interpolate({
@@ -60,11 +92,12 @@ export default function MailboxScreen() {
         inboxRef.current?.reload(),
         trashRef.current?.reload(),
         refreshUnreadFlag(),
+        refreshStickyFlag({ autoOpenIfTemp: false }),
       ]);
     } finally {
       setRefreshing(false);
     }
-  }, [refreshUnreadFlag]);
+  }, [refreshUnreadFlag, refreshStickyFlag]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
@@ -98,6 +131,20 @@ export default function MailboxScreen() {
             <Text style={styles.entrySub}>已送达的次日达 · 已开启的择日达</Text>
           </View>
           {inboxHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
+          <Text style={styles.entryArrow}>›</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.entry}
+          onPress={() => setStickyOpen(true)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.entryEmoji}>📝</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.entryTitle}>每日一帖</Text>
+            <Text style={styles.entrySub}>双方共享的便利贴墙</Text>
+          </View>
+          {stickyHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
 
@@ -147,6 +194,12 @@ export default function MailboxScreen() {
         visible={trashOpen}
         onClose={() => setTrashOpen(false)}
         onAfterRestore={() => inboxRef.current?.reload()}
+      />
+      <StickyWallScreen
+        ref={stickyRef}
+        visible={stickyOpen}
+        onClose={() => setStickyOpen(false)}
+        onUnreadChange={setStickyHasUnread}
       />
     </View>
   );

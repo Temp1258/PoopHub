@@ -344,6 +344,45 @@ export interface SnapMonth {
   both_snapped: boolean;
 }
 
+// 每日一帖 — wall response shape. The server normalizes author identity to
+// 'me' | 'partner' relative to the requester, so the UI doesn't compare ids.
+export interface StickyBlockView {
+  id: number;
+  author_role: 'me' | 'partner';
+  content: string;
+  committed_at: string | null;
+}
+
+export interface StickyView {
+  id: number;
+  author_role: 'me' | 'partner';
+  layout_x: number;
+  layout_rotation: number;
+  posted_at: string;
+  unread: boolean;
+  blocks: StickyBlockView[];
+  my_temp_block: { content: string } | null;
+}
+
+export interface StickyTemp {
+  sticky_id: number;
+  content: string;
+  created_at: string;
+}
+
+export interface StickyWallResponse {
+  stickies: StickyView[];
+  my_temp: StickyTemp | null;
+}
+
+export interface StickyPostResponse {
+  sticky_id: number;
+  block_id: number;
+  layout_x: number;
+  layout_rotation: number;
+  posted_at: string;
+}
+
 function getDeviceTimezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -536,5 +575,37 @@ export const api = {
   },
   dailyReaction(type: 'question' | 'snap', reaction: 'up' | 'down'): Promise<{ success: boolean; reaction: 'up' | 'down' }> {
     return request('/api/daily-reaction', { method: 'POST', body: JSON.stringify({ type, reaction }) });
+  },
+
+  // 每日一帖 (sticky notes)
+  getStickies(): Promise<StickyWallResponse> {
+    return request('/api/stickies');
+  },
+  startStickyTemp(): Promise<StickyTemp> {
+    return request('/api/stickies/temp', { method: 'POST' });
+  },
+  saveStickyTemp(content: string): Promise<{ success: boolean }> {
+    return request('/api/stickies/temp', { method: 'PUT', body: JSON.stringify({ content }) });
+  },
+  cancelStickyTemp(): Promise<{ success: boolean }> {
+    return request('/api/stickies/temp', { method: 'DELETE' });
+  },
+  postSticky(content: string): Promise<StickyPostResponse> {
+    return request('/api/stickies/temp/post', { method: 'POST', body: JSON.stringify({ content }) });
+  },
+  startStickyComment(stickyId: number): Promise<{ block_id: number; content: string }> {
+    return request(`/api/stickies/${stickyId}/blocks/temp`, { method: 'POST' });
+  },
+  saveStickyComment(stickyId: number, content: string): Promise<{ success: boolean }> {
+    return request(`/api/stickies/${stickyId}/blocks/temp`, { method: 'PUT', body: JSON.stringify({ content }) });
+  },
+  cancelStickyComment(stickyId: number): Promise<{ success: boolean }> {
+    return request(`/api/stickies/${stickyId}/blocks/temp`, { method: 'DELETE' });
+  },
+  commitStickyComment(stickyId: number, content: string): Promise<{ block_id: number; content: string; committed_at: string }> {
+    return request(`/api/stickies/${stickyId}/blocks/commit`, { method: 'POST', body: JSON.stringify({ content }) });
+  },
+  markStickySeen(stickyId: number): Promise<{ success: boolean; last_seen_block_id: number }> {
+    return request(`/api/stickies/${stickyId}/seen`, { method: 'POST' });
   },
 };
