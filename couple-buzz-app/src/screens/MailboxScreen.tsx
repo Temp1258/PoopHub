@@ -1,12 +1,14 @@
-import React, { useState, useCallback, useRef } from 'react';
-import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl, Animated } from 'react-native';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl, Animated, AppState as RNAppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import MailboxCard from '../components/MailboxCard';
 import TimeCapsuleCard from '../components/TimeCapsuleCard';
 import InboxScreen, { InboxHandle } from './InboxScreen';
 import TrashScreen, { TrashHandle } from './TrashScreen';
+import { hasUnreadInboxItems } from '../utils/inboxUnread';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -15,10 +17,32 @@ export default function MailboxScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [inboxHasUnread, setInboxHasUnread] = useState(false);
   const mailboxRef = useRef<Reloadable>(null);
   const capsuleRef = useRef<Reloadable>(null);
   const inboxRef = useRef<InboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
+
+  const refreshUnreadFlag = useCallback(async () => {
+    setInboxHasUnread(await hasUnreadInboxItems());
+  }, []);
+
+  // Refresh on every focus + when the app comes back to foreground. Both
+  // matter: the flag should pop on if a new letter arrived while the tab
+  // was off-screen, and should clear after a quick visit to the inbox
+  // (which advances INBOX_LAST_SEEN).
+  useFocusEffect(
+    useCallback(() => {
+      refreshUnreadFlag();
+    }, [refreshUnreadFlag])
+  );
+
+  useEffect(() => {
+    const sub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') refreshUnreadFlag();
+    });
+    return () => sub.remove();
+  }, [refreshUnreadFlag]);
   // Scroll-bound fade — see UsScreen for the same pattern + rationale.
   const scrollY = useRef(new Animated.Value(0)).current;
   const fadeOpacity = scrollY.interpolate({
@@ -35,11 +59,12 @@ export default function MailboxScreen() {
         capsuleRef.current?.reload(),
         inboxRef.current?.reload(),
         trashRef.current?.reload(),
+        refreshUnreadFlag(),
       ]);
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [refreshUnreadFlag]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
@@ -72,6 +97,7 @@ export default function MailboxScreen() {
             <Text style={styles.entryTitle}>收件箱</Text>
             <Text style={styles.entrySub}>已送达的次日达 · 已开启的择日达</Text>
           </View>
+          {inboxHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
 
@@ -106,7 +132,16 @@ export default function MailboxScreen() {
         />
       </Animated.View>
 
-      <InboxScreen ref={inboxRef} visible={inboxOpen} onClose={() => setInboxOpen(false)} />
+      <InboxScreen
+        ref={inboxRef}
+        visible={inboxOpen}
+        onClose={() => {
+          setInboxOpen(false);
+          // Inbox open advances INBOX_LAST_SEEN to "now", so the flag should
+          // clear immediately after the user closes it.
+          refreshUnreadFlag();
+        }}
+      />
       <TrashScreen
         ref={trashRef}
         visible={trashOpen}
@@ -155,5 +190,9 @@ const styles = StyleSheet.create({
     fontSize: 22,
     color: COLORS.textLight,
     fontWeight: '300',
+  },
+  unreadFlag: {
+    fontSize: 18,
+    marginRight: 6,
   },
 });

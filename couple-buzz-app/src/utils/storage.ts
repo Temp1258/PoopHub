@@ -57,6 +57,19 @@ export const storage = {
     await AsyncStorage.setItem(KEYS.REFRESH_TOKEN, token);
   },
 
+  // Atomic two-token write. AsyncStorage.setItem is per-key; if the JS thread
+  // is suspended / the app is killed between two consecutive setItem calls,
+  // disk ends up with NEW_ACCESS + OLD_REFRESH. The server already rotated
+  // (deleted OLD_REFRESH at response time), so the next refresh dies with 401
+  // and the user gets booted to login. multiSet hands both writes to the
+  // native module in one batch — far less likely to be torn apart.
+  async setTokens(accessToken: string, refreshToken: string): Promise<void> {
+    await AsyncStorage.multiSet([
+      [KEYS.ACCESS_TOKEN, accessToken],
+      [KEYS.REFRESH_TOKEN, refreshToken],
+    ]);
+  },
+
   async getTimezone(): Promise<string | null> {
     return AsyncStorage.getItem(KEYS.TIMEZONE);
   },

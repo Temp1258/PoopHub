@@ -19,6 +19,7 @@ import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 import { storage } from '../utils/storage';
+import { mailboxRevealTime, normalizeIso } from '../utils/inboxUnread';
 import EnvelopeOpenAnimation from '../components/EnvelopeOpenAnimation';
 import IslandToast, { IslandToastHandle } from '../components/IslandToast';
 
@@ -466,28 +467,6 @@ function SwipeableCard({
       {children}
     </Animated.View>
   );
-}
-
-// SQLite's CURRENT_TIMESTAMP serializes as "YYYY-MM-DD HH:MM:SS" — no T, no
-// timezone. Date parsing of this format is implementation-defined (works in
-// Node, brittle in Hermes / older Safari). Normalize to proper ISO-Z so
-// downstream Date operations and lexicographic comparisons are stable.
-function normalizeIso(s: string | null | undefined): string {
-  if (!s) return '';
-  if (s.includes('T') && (/Z$/.test(s) || /[+-]\d\d:?\d\d$/.test(s))) return s;
-  return `${s.replace(' ', 'T')}Z`;
-}
-
-// Mailbox letter "arrived" at the session reveal time. AM session reveals at
-// 12:00 UTC of the date; PM at next-day 0:00 UTC. Mirrors server's
-// getRevealTime() so the client can compute without a round-trip.
-function mailboxRevealTime(weekKey: string): string {
-  const date = weekKey.slice(0, 10);
-  const phase = weekKey.slice(11);
-  if (phase === 'AM') return `${date}T12:00:00Z`;
-  const next = new Date(`${date}T00:00:00Z`);
-  next.setUTCDate(next.getUTCDate() + 1);
-  return next.toISOString();
 }
 
 // Friendly Chinese names for the timezones a user can pick in Settings.

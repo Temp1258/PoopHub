@@ -60,8 +60,7 @@ export default function SetupScreen({ onRegistered }: Props) {
       const result = await api.register(name.trim(), password);
       await storage.setUserId(result.user_id);
       await storage.setUserName(name.trim());
-      await storage.setAccessToken(result.access_token);
-      await storage.setRefreshToken(result.refresh_token);
+      await storage.setTokens(result.access_token, result.refresh_token);
       setMyId(result.user_id);
       setStep('showId');
     } catch (error: any) {
@@ -79,8 +78,7 @@ export default function SetupScreen({ onRegistered }: Props) {
       const result = await api.login(loginId.trim().toUpperCase(), loginPassword);
       await storage.setUserId(result.user_id);
       await storage.setUserName(result.name);
-      await storage.setAccessToken(result.access_token);
-      await storage.setRefreshToken(result.refresh_token);
+      await storage.setTokens(result.access_token, result.refresh_token);
 
       if (result.partner_name) {
         onRegistered({ partner_name: result.partner_name });

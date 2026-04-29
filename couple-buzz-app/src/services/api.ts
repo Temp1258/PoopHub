@@ -12,34 +12,58 @@ export class AuthError extends Error {
   }
 }
 
+// Three-state outcome:
+//   'success'  — new tokens persisted, retry should succeed
+//   'auth'     — server explicitly rejected the refresh token (401/403/4xx)
+//                or none was stored. Caller throws AuthError → user re-logs in.
+//   'transient'— network failure, 5xx, or malformed response. Caller treats
+//                this as a normal request failure and does NOT log out — a
+//                Wi-Fi blip on cold launch must not boot a logged-in user.
+type RefreshOutcome = 'success' | 'auth' | 'transient';
+
 // Singleton-promise lock: when several requests hit a 401 in parallel, they
 // all `await` the same in-flight refresh instead of the second-onward giving
 // up immediately and bubbling the original 401 into an AuthError (which
 // would falsely log the user out).
-let refreshPromise: Promise<boolean> | null = null;
+let refreshPromise: Promise<RefreshOutcome> | null = null;
 
-async function refreshAccessToken(): Promise<boolean> {
+async function refreshAccessToken(): Promise<RefreshOutcome> {
   if (refreshPromise) return refreshPromise;
 
-  refreshPromise = (async () => {
+  refreshPromise = (async (): Promise<RefreshOutcome> => {
     try {
       const refreshToken = await storage.getRefreshToken();
-      if (!refreshToken) return false;
+      if (!refreshToken) return 'auth';
 
-      const res = await fetch(`${API_URL}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${API_URL}/api/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+      } catch {
+        // DNS/network/TLS failure — the refresh token may still be valid;
+        // do NOT log the user out.
+        return 'transient';
+      }
 
-      if (!res.ok) return false;
+      if (res.ok) {
+        const data = await res.json();
+        // Atomic write — see storage.setTokens for why two-step setItem
+        // would be unsafe (a kill between writes leaves OLD_REFRESH that's
+        // already been rotated server-side, locking the user out).
+        await storage.setTokens(data.access_token, data.refresh_token);
+        return 'success';
+      }
 
-      const data = await res.json();
-      await storage.setAccessToken(data.access_token);
-      await storage.setRefreshToken(data.refresh_token);
-      return true;
+      // 4xx → server says this refresh token is no good (expired/rotated/
+      // unknown). 5xx → the server is sick; the token itself may still be
+      // valid, so treat as transient and try again later.
+      if (res.status >= 400 && res.status < 500) return 'auth';
+      return 'transient';
     } catch {
-      return false;
+      return 'transient';
     } finally {
       refreshPromise = null;
     }
@@ -65,16 +89,22 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
 
   // Auto-refresh on 401
   if (res.status === 401 && requiresAuth) {
-    const refreshed = await refreshAccessToken();
-    if (refreshed) {
+    const outcome = await refreshAccessToken();
+    if (outcome === 'success') {
       const newToken = await storage.getAccessToken();
       headers['Authorization'] = `Bearer ${newToken}`;
       res = await fetch(`${API_URL}${path}`, { ...options, headers });
-    }
-
-    // Still 401 after refresh attempt — definitive auth failure.
-    if (res.status === 401) {
+      // If the retry still 401s, the new token was already revoked — that's
+      // a real auth failure.
+      if (res.status === 401) throw new AuthError();
+    } else if (outcome === 'auth') {
+      // Server explicitly rejected the refresh token — re-login required.
       throw new AuthError();
+    } else {
+      // Transient: refresh couldn't complete because of network/5xx. Surface
+      // the original 401 as a normal Error so callers retry next time
+      // instead of clearing the session.
+      throw new Error('Network error');
     }
   }
 
