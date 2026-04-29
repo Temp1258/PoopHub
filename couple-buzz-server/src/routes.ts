@@ -1933,6 +1933,25 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true, last_seen_block_id: max });
   });
 
+  // DELETE /api/stickies/:id — 撕下来. Either side of the couple can rip a
+  // sticky off the wall; this is a hard delete (no trash, no recovery), as
+  // intended by spec. Cascades blocks + seen rows in one transaction. The
+  // socket update lets the partner's wall refresh immediately.
+  router.delete('/stickies/:id', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const id = parseId(req.params.id as string);
+    if (id === null) return res.status(400).json({ error: 'Invalid ID' });
+    const ok = dbOps.deleteSticky(id, ctx.userId, ctx.partnerId);
+    if (!ok) return res.status(404).json({ error: 'Sticky not found' });
+    emitToCouple(ctx.userId, ctx.partnerId, 'sticky_update', {
+      from: ctx.userId,
+      kind: 'deleted',
+      sticky_id: id,
+    });
+    res.json({ success: true });
+  });
+
   // POST /api/logout
   router.post('/logout', (req: Request, res: Response) => {
     const userId = req.userId!;

@@ -280,6 +280,10 @@ export interface DbOps {
   deleteTempBlock(stickyId: number, authorId: string): boolean;
   commitBlock(stickyId: number, authorId: string, content: string): StickyBlock | null;
   markStickySeen(userId: string, stickyId: number, blockId: number): void;
+  // Permanently rip a posted sticky off the wall. Cascades through blocks +
+  // per-recipient seen rows. Either side of the couple can tear; the route
+  // checks couple membership upstream.
+  deleteSticky(stickyId: number, userId: string, partnerId: string): boolean;
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -1019,6 +1023,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     DO UPDATE SET last_seen_block_id = MAX(sticky_seen.last_seen_block_id, excluded.last_seen_block_id)
   `);
 
+  // Tear-off: remove a sticky and everything that hangs off it. SQLite isn't
+  // configured with foreign_keys=ON, so we cascade in JS inside one tx.
+  const stmtDeleteStickyBlocks = db.prepare('DELETE FROM sticky_blocks WHERE sticky_id = ?');
+  const stmtDeleteStickySeenRows = db.prepare('DELETE FROM sticky_seen WHERE sticky_id = ?');
+  const stmtDeleteStickyNote = db.prepare('DELETE FROM sticky_notes WHERE id = ?');
+
   const dbOps: DbOps = {
     createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void {
       insertUser.run(id, name, passwordHash, pairCode, timezone);
@@ -1573,6 +1583,19 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     markStickySeen(userId, stickyId, blockId): void {
       stmtUpsertStickySeen.run(userId, stickyId, blockId);
+    },
+
+    deleteSticky(stickyId, userId, partnerId): boolean {
+      return db.transaction(() => {
+        const sticky = stmtGetStickyForCouple.get(
+          stickyId, userId, partnerId, partnerId, userId
+        ) as StickyNote | undefined;
+        if (!sticky || sticky.status !== 'posted') return false;
+        stmtDeleteStickyBlocks.run(stickyId);
+        stmtDeleteStickySeenRows.run(stickyId);
+        stmtDeleteStickyNote.run(stickyId);
+        return true;
+      })();
     },
   };
 

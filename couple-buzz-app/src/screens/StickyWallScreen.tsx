@@ -296,6 +296,35 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     [selectedId, wall]
   );
 
+  // 撕下来 — confirm with a destructive alert before hard-deleting. The
+  // sticky and all its committed blocks vanish for both sides immediately
+  // via socket update; there is no trash recovery (per spec), so the
+  // confirmation is the user's only safety net.
+  const handleTearOff = useCallback(() => {
+    if (!selectedSticky) return;
+    Alert.alert(
+      '撕下来这张便利贴？',
+      '撕下来后无法恢复，所有跟帖也会一起消失。',
+      [
+        { text: '不撕了', style: 'cancel' },
+        {
+          text: '撕下来',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.deleteSticky(selectedSticky.id);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              setSelectedId(null);
+              await reload();
+            } catch (e: any) {
+              Alert.alert('', e.message || '撕除失败');
+            }
+          },
+        },
+      ]
+    );
+  }, [selectedSticky, reload]);
+
   // ── Render ─────────────────────────────────────────────────────────────
 
   const renderItem = useCallback(({ item }: { item: StickyView }) => {
@@ -336,8 +365,8 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     if (selectedSticky) {
       return (
         <View style={styles.toolbar}>
-          <SpringPressable onPress={() => setSelectedId(null)} style={[styles.pill, styles.pillSecondary]}>
-            <Text style={styles.pillSecondaryText}>取消</Text>
+          <SpringPressable onPress={handleTearOff} style={[styles.pill, styles.pillSecondary]}>
+            <Text style={styles.pillSecondaryText}>撕下来</Text>
           </SpringPressable>
           <SpringPressable onPress={() => startComment(selectedSticky.id)} style={[styles.pill, styles.pillPrimary]}>
             <Text style={styles.pillPrimaryText}>跟个帖</Text>
@@ -473,19 +502,27 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
               renderItem={renderItem}
               onViewableItemsChanged={onViewableItemsChanged}
               viewabilityConfig={viewabilityConfig}
-              contentContainerStyle={{ paddingTop: 32, paddingBottom: 140 + insets.bottom }}
+              contentContainerStyle={{ paddingTop: 64, paddingBottom: 140 + insets.bottom }}
               showsVerticalScrollIndicator={false}
               keyboardDismissMode="on-drag"
             />
           )}
         </Pressable>
 
-        {/* Title-edge soft fade — wood color on top fades to transparent over
-            ~36pt below the header. Stickies scrolling under the title region
-            blur into the wood instead of cleanly clipping at a hard edge.
-            Rendered after the wall so it sits visually above the stickies. */}
+        {/* Title-edge soft fade — anchored right at the title's bottom edge so
+            the blur reads as continuous with the title instead of detached.
+            Multi-stop gradient (solid → half → transparent) gives a softer
+            dissolve than a single 2-stop ramp; rendered after the wall so it
+            sits visually above the stickies as they scroll under it. */}
         <LinearGradient
-          colors={[WOOD_BASE, 'rgba(212, 182, 140, 0)']}
+          colors={[
+            WOOD_BASE,
+            WOOD_BASE,
+            'rgba(212, 182, 140, 0.6)',
+            'rgba(212, 182, 140, 0.2)',
+            'rgba(212, 182, 140, 0)',
+          ]}
+          locations={[0, 0.15, 0.5, 0.8, 1]}
           pointerEvents="none"
           style={styles.titleEdgeFade}
         />
@@ -535,21 +572,27 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#3D2A19',
     textAlign: 'center',
+    // Subtle wood-tone halo softens the title's edges so the text blends
+    // into the wood / fade band below instead of looking pasted on.
+    textShadowColor: 'rgba(212, 182, 140, 0.85)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 5,
   },
   // Tap-to-close target around the wall content — flex-fills the space
   // between header and bottom toolbar.
   wallTapTarget: {
     flex: 1,
   },
-  // Soft wood-to-transparent fade ~64pt below the modal top, masking the
-  // stickies' top edge as they scroll under the title region. Renders above
-  // the FlatList in z-order.
+  // Soft wood-to-transparent fade anchored right under the title so the blur
+  // reads as a continuous extension of the title boundary. Header is ~48pt
+  // tall (paddingTop 14 + ~24pt title + paddingBottom 10), so top:36 sits at
+  // the bottom of the title text; height 70 gives a long, gentle dissolve.
   titleEdgeFade: {
     position: 'absolute',
     left: 0,
     right: 0,
-    top: 56,
-    height: 36,
+    top: 36,
+    height: 70,
   },
   itemRow: {
     paddingVertical: 12,

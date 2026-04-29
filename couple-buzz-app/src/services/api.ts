@@ -608,4 +608,7 @@ export const api = {
   markStickySeen(stickyId: number): Promise<{ success: boolean; last_seen_block_id: number }> {
     return request(`/api/stickies/${stickyId}/seen`, { method: 'POST' });
   },
+  deleteSticky(stickyId: number): Promise<{ success: boolean }> {
+    return request(`/api/stickies/${stickyId}`, { method: 'DELETE' });
+  },
 };
