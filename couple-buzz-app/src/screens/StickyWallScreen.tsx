@@ -23,17 +23,13 @@ import { subscribe } from '../services/socket';
 import StickyNote, { INK_MINE, INK_PARTNER } from '../components/StickyNote';
 import { SpringPressable } from '../components/SpringPressable';
 
-// Wood-grain palette: warm light pine. Subtle vertical stripe gradient gives
-// a hint of grain without shipping a texture asset (keeps the screen 100%
-// OTA-able). Sticky paper (`#FFFBE6`) pops nicely against this.
+// Wood-color base: warm light pine, applied as a flat backgroundColor on the
+// container. We dropped the earlier 5-stop horizontal stripe gradient — even
+// though it added a hint of grain, the title region (above the title-edge
+// fade) showed a different slice of the stripes than the fade band right
+// below it, making the header feel disconnected from the wall. A single solid
+// color reads as one continuous wood surface.
 const WOOD_BASE = '#D4B68C';
-const WOOD_STRIPES: [string, string, string, string, string] = [
-  '#D8B98F',
-  '#CFAD7E',
-  '#D6B589',
-  '#C9A574',
-  '#D4B68C',
-];
 
 interface Props {
   visible: boolean;
@@ -89,6 +85,11 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   // animation duration passes so the same id doesn't replay if React happens
   // to re-render the item.
   const [justPostedId, setJustPostedId] = useState<number | null>(null);
+  // Sticky id currently mid tear-off. Set when the user confirms 撕下来; the
+  // StickyNote runs a short rip animation, then the parent fires the API +
+  // reload after the animation completes (otherwise the row vanishes from
+  // state mid-animation and the visual cuts off).
+  const [tearingOffId, setTearingOffId] = useState<number | null>(null);
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -299,7 +300,9 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   // 撕下来 — confirm with a destructive alert before hard-deleting. The
   // sticky and all its committed blocks vanish for both sides immediately
   // via socket update; there is no trash recovery (per spec), so the
-  // confirmation is the user's only safety net.
+  // confirmation is the user's only safety net. The tear-off animation
+  // plays first (~360ms), THEN the API + reload — without that delay the
+  // row would vanish from state mid-animation and the visual would cut off.
   const handleTearOff = useCallback(() => {
     if (!selectedSticky) return;
     Alert.alert(
@@ -310,15 +313,21 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
         {
           text: '撕下来',
           style: 'destructive',
-          onPress: async () => {
-            try {
-              await api.deleteSticky(selectedSticky.id);
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              setSelectedId(null);
-              await reload();
-            } catch (e: any) {
-              Alert.alert('', e.message || '撕除失败');
-            }
+          onPress: () => {
+            const id = selectedSticky.id;
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            setTearingOffId(id);
+            setTimeout(async () => {
+              try {
+                await api.deleteSticky(id);
+                setSelectedId(null);
+                setTearingOffId(null);
+                await reload();
+              } catch (e: any) {
+                setTearingOffId(null);
+                Alert.alert('', e.message || '撕除失败');
+              }
+            }, 360);
           },
         },
       ]
@@ -336,11 +345,12 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
           selected={selectedId === item.id}
           writingComment={writingComment}
           justPosted={justPostedId === item.id}
+          tearingOff={tearingOffId === item.id}
           onPress={() => handleStickyTap(item)}
         />
       </View>
     );
-  }, [selectedId, editor, handleStickyTap, justPostedId]);
+  }, [selectedId, editor, handleStickyTap, justPostedId, tearingOffId]);
 
   const renderToolbar = () => {
     if (editor) {
@@ -453,16 +463,6 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
       <View style={styles.container}>
-        {/* Wood-grain background. A 5-stop linear gradient gives a soft
-            vertical streak that reads as "wood" without a texture asset. */}
-        <LinearGradient
-          colors={WOOD_STRIPES}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={StyleSheet.absoluteFill}
-          pointerEvents="none"
-        />
-
         <View style={styles.headerRow}>
           <Text style={styles.title}>📝 每日一帖</Text>
         </View>
@@ -572,11 +572,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#3D2A19',
     textAlign: 'center',
-    // Subtle wood-tone halo softens the title's edges so the text blends
-    // into the wood / fade band below instead of looking pasted on.
-    textShadowColor: 'rgba(212, 182, 140, 0.85)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 5,
+    // Subtle dark drop-shadow softens the text edges against the solid wood
+    // bg without coloring outside the lines.
+    textShadowColor: 'rgba(60, 40, 22, 0.22)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   // Tap-to-close target around the wall content — flex-fills the space
   // between header and bottom toolbar.

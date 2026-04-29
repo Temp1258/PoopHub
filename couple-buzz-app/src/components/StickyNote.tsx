@@ -23,6 +23,11 @@ interface Props {
   // True for one render cycle right after the user taps 贴上去 — plays the
   // "drop onto wall" entry animation (scale-down from 1.4 + spring).
   justPosted?: boolean;
+  // True while the parent is mid tear-off — plays a short rip animation
+  // (shrink + tilt + lift + fade). Parent fires the actual delete API after
+  // the animation duration so the visual completes before the row leaves
+  // state.
+  tearingOff?: boolean;
   onPress: () => void;
 }
 
@@ -37,7 +42,7 @@ function BlockText({ block }: { block: StickyBlockView }) {
   );
 }
 
-function StickyNote({ sticky, selected, writingComment, justPosted, onPress }: Props) {
+function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, onPress }: Props) {
   const { width: screenW } = useWindowDimensions();
   const stickyW = Math.round(screenW * STICKY_WIDTH_RATIO);
 
@@ -88,22 +93,58 @@ function StickyNote({ sticky, selected, writingComment, justPosted, onPress }: P
     }).start();
   }, [selected, selectScale]);
 
-  // Compose all transforms in one array so the entry/selection scales stack
-  // multiplicatively on top of the persistent rotation.
+  // Tear-off animation — short rip motion: shrink toward the wall, lift up,
+  // tilt off-axis, and fade out. Direction is randomized so consecutive
+  // tears don't all look identical.
+  const tearScale = useRef(new Animated.Value(1)).current;
+  const tearOpacity = useRef(new Animated.Value(1)).current;
+  const tearRotate = useRef(new Animated.Value(0)).current;
+  const tearY = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!tearingOff) return;
+    const direction = Math.random() > 0.5 ? 1 : -1;
+    Animated.parallel([
+      Animated.timing(tearScale, { toValue: 0.32, duration: 320, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(tearOpacity, { toValue: 0, duration: 300, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(tearRotate, { toValue: direction * 22, duration: 320, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(tearY, { toValue: -36, duration: 320, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+    ]).start();
+  }, [tearingOff, tearScale, tearOpacity, tearRotate, tearY]);
+
+  // tearRotate is a numeric Animated.Value; convert to a deg-string transform
+  // via interpolate. Memoized so the underlying animated node identity is
+  // stable across renders.
+  const tearRotateDeg = useMemo(
+    () => tearRotate.interpolate({ inputRange: [-360, 360], outputRange: ['-360deg', '360deg'] }),
+    [tearRotate]
+  );
+
+  // Combined opacity = enter × tear. Animated.multiply yields a derived node
+  // both animations can drive without one clobbering the other.
+  const opacity = useMemo(
+    () => Animated.multiply(enterOpacity, tearOpacity),
+    [enterOpacity, tearOpacity]
+  );
+
+  // Compose all transforms in one array so the entry/selection/tear scales
+  // stack multiplicatively on top of the persistent rotation.
   const transform = useMemo(
     () => [
       { translateY: enterY },
+      { translateY: tearY },
       { scale: enterScale },
       { scale: selectScale },
+      { scale: tearScale },
+      { rotate: tearRotateDeg },
       { rotate: `${effectiveRotation}deg` },
     ],
-    [effectiveRotation, enterY, enterScale, selectScale]
+    [effectiveRotation, enterY, tearY, enterScale, selectScale, tearScale, tearRotateDeg]
   );
 
   return (
     <View style={{ marginLeft: leftPx + 16, width: stickyW }}>
       <Pressable onPress={onPress}>
-        <Animated.View style={[styles.paper, { transform, opacity: enterOpacity }, selected && styles.paperSelected]}>
+        <Animated.View style={[styles.paper, { transform, opacity }, selected && styles.paperSelected]}>
           {/* High-contrast ring on selection — sits flush around the paper
               edge so the sticky reads as "picked up" without layout shift
               (the always-present transparent border keeps the inner area
