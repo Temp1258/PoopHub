@@ -9,17 +9,31 @@ import {
   ActivityIndicator,
   FlatList,
   Animated,
-  PanResponder,
   Easing,
   Alert,
+  Pressable,
+  Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, StickyView, StickyTemp } from '../services/api';
 import { subscribe } from '../services/socket';
 import StickyNote, { INK_MINE, INK_PARTNER } from '../components/StickyNote';
 import { SpringPressable } from '../components/SpringPressable';
+
+// Wood-grain palette: warm light pine. Subtle vertical stripe gradient gives
+// a hint of grain without shipping a texture asset (keeps the screen 100%
+// OTA-able). Sticky paper (`#FFFBE6`) pops nicely against this.
+const WOOD_BASE = '#D4B68C';
+const WOOD_STRIPES: [string, string, string, string, string] = [
+  '#D8B98F',
+  '#CFAD7E',
+  '#D6B589',
+  '#C9A574',
+  '#D4B68C',
+];
 
 interface Props {
   visible: boolean;
@@ -235,39 +249,14 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     }
   }, [editor, submitting, editorText, reload]);
 
-  // Single close path used by both the pull-down gesture and the explicit
-  // 关闭 button. While writing, treats close as cancel (deletes the temp) —
-  // matches the spec's "下拉关掉每日一帖墙" semantic.
+  // Single close path used by Modal's onRequestClose (= pageSheet swipe-down)
+  // and the explicit 关闭 button. While writing, treats close as cancel
+  // (deletes the temp) — matches the spec's "下拉关掉每日一帖墙" semantic.
   const handleClose = useCallback(() => {
+    Keyboard.dismiss();
     if (editor) cancelEditor();
     onClose();
   }, [editor, cancelEditor, onClose]);
-
-  // Top-of-screen pull handle — tug down to dismiss. If we're mid-write the
-  // close path also deletes the temp, matching the spec ("下拉关掉每日一帖
-  // 墙 = 删除该临时便利贴").
-  const dragY = useRef(new Animated.Value(0)).current;
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) => g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
-        onPanResponderMove: (_, g) => {
-          if (g.dy > 0) dragY.setValue(g.dy);
-        },
-        onPanResponderRelease: (_, g) => {
-          if (g.dy > 110) {
-            Animated.timing(dragY, { toValue: 800, duration: 220, useNativeDriver: true }).start(() => {
-              dragY.setValue(0);
-              if (editor) cancelEditor();
-              onClose();
-            });
-          } else {
-            Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 7 }).start();
-          }
-        },
-      }),
-    [dragY, editor, cancelEditor, onClose]
-  );
 
   // ── Sticky tap → mark seen + select ────────────────────────────────────
 
@@ -357,10 +346,16 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     if (!editor) return null;
     const targetSticky = editor.kind === 'comment' ? wall.find(s => s.id === editor.stickyId) : null;
     const inkColor = INK_MINE; // editor is always "me"
+    // Both the dim backdrop and the editor paper itself dismiss the keyboard
+    // on tap. The TextInput naturally captures its own touches, so tapping
+    // the input keeps focus while tapping anywhere else (paper padding,
+    // context blocks, count text, dimmed area) hides the keyboard. This is
+    // the only way the user can preview/post their note while the keyboard
+    // is up.
     return (
-      <View style={[styles.editorOverlay, { top: insets.top + 56, bottom: insets.bottom + 96 }]} pointerEvents="box-none">
-        <View style={styles.editorBackdrop} />
-        <View style={styles.editorSheet}>
+      <View style={[styles.editorOverlay, { top: insets.top + 48, bottom: insets.bottom + 96 }]} pointerEvents="box-none">
+        <Pressable style={styles.editorBackdrop} onPress={Keyboard.dismiss} />
+        <Pressable style={styles.editorSheet} onPress={Keyboard.dismiss}>
           {targetSticky && (
             <View style={styles.editorContextBlock}>
               {targetSticky.blocks.map((b, i) => (
@@ -377,39 +372,48 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
           <TextInput
             value={editorText}
             onChangeText={setEditorText}
-            placeholder={editor.kind === 'new' ? '在这里写下你想说的...' : '继续往下写...'}
+            placeholder={editor.kind === 'new' ? '点这里开始写...' : '继续往下写...'}
             placeholderTextColor="rgba(92, 64, 51, 0.4)"
             multiline
             maxLength={1000}
             style={[styles.editorInput, { color: inkColor }]}
-            autoFocus
           />
           <Text style={styles.editorCount}>{editorText.length} / 1000</Text>
-        </View>
+        </Pressable>
       </View>
     );
   };
 
+  // pageSheet (matches InboxScreen) is the iOS native sheet modal: native
+  // slide-up + native swipe-down dismiss + a small top gap that reveals the
+  // tab beneath. onRequestClose fires for both the system swipe and any
+  // explicit close call, so we route both through handleClose to honor the
+  // "下拉关掉墙 = 删 temp（如在写）" semantic in one place.
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="overFullScreen" transparent onRequestClose={onClose}>
-      <Animated.View
-        style={[styles.container, { transform: [{ translateY: dragY }] }]}
-      >
-        <View style={[styles.dragArea, { paddingTop: insets.top }]} {...panResponder.panHandlers}>
-          <View style={styles.dragHandle} />
-          <View style={styles.headerRow}>
-            <Text style={styles.title}>📝 每日一帖</Text>
-            <TouchableOpacity onPress={handleClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.closeBtn}>关闭</Text>
-            </TouchableOpacity>
-          </View>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
+      <View style={styles.container}>
+        {/* Wood-grain background. A 5-stop linear gradient gives a soft
+            vertical streak that reads as "wood" without a texture asset. */}
+        <LinearGradient
+          colors={WOOD_STRIPES}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>📝 每日一帖</Text>
+          <TouchableOpacity onPress={handleClose} hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}>
+            <Text style={styles.closeBtn}>完成</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Floating date label, Apple-Photos style */}
         {!!headerLabel && (
           <Animated.View
             pointerEvents="none"
-            style={[styles.floatingDate, { top: insets.top + 56, opacity: headerOpacity }]}
+            style={[styles.floatingDate, { opacity: headerOpacity }]}
           >
             <Text style={styles.floatingDateText}>{headerLabel}</Text>
           </Animated.View>
@@ -434,6 +438,7 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             viewabilityConfig={viewabilityConfig}
             contentContainerStyle={{ paddingTop: 8, paddingBottom: 140 + insets.bottom }}
             showsVerticalScrollIndicator={false}
+            keyboardDismissMode="on-drag"
           />
         )}
 
@@ -442,7 +447,7 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
         <View style={[styles.toolbarSlot, { paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
           {renderToolbar()}
         </View>
-      </Animated.View>
+      </View>
     </Modal>
   );
 });
@@ -452,34 +457,26 @@ export default StickyWallScreen;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFF1E6',
+    backgroundColor: WOOD_BASE,
   },
-  dragArea: {
-    paddingHorizontal: 20,
-    paddingBottom: 6,
-  },
-  dragHandle: {
-    alignSelf: 'center',
-    width: 44,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: 'rgba(92, 64, 51, 0.18)',
-    marginTop: 6,
-    marginBottom: 10,
-  },
+  // pageSheet handles the top gap + native drag handle, so we just need a
+  // simple title row with paddingTop matching InboxScreen's "header" pattern.
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 10,
   },
   title: {
     fontSize: 20,
     fontWeight: '700',
-    color: COLORS.text,
+    color: '#3D2A19',
   },
   closeBtn: {
-    fontSize: 14,
-    color: COLORS.textLight,
+    fontSize: 15,
+    color: '#6B4A2C',
     fontWeight: '600',
   },
   itemRow: {
@@ -496,6 +493,7 @@ const styles = StyleSheet.create({
 
   floatingDate: {
     position: 'absolute',
+    top: 56,
     left: 16,
     backgroundColor: 'rgba(14, 14, 16, 0.78)',
     borderRadius: 999,
@@ -557,10 +555,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // Sits below the dragArea (top inset + 56pt) and above the toolbar (bottom
-  // inset + 96pt) so the drag handle + 关闭 button stay tappable while the
-  // editor is open. The backdrop fills only this region — the dragArea
-  // visually covers the wall above on its own.
+  // Sits below the header row and above the toolbar so the title + 完成
+  // stay reachable while the editor is open. Inline styles supply the
+  // top/bottom from current safe-area insets.
   editorOverlay: {
     position: 'absolute',
     left: 0,
