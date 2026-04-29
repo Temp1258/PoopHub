@@ -1628,6 +1628,306 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ ticket, expires_in: 30 });
   });
 
+  // ── 每日一帖 (sticky notes) ───────────────────────────────────────────────
+  // Lifecycle: 来一帖 → POST /stickies/temp creates a {note,block} pair both
+  // status='temp' (invisible to partner). 贴上去 → POST /stickies/temp/post
+  // flips both to posted/committed and pushes partner. Already-posted sticky
+  // can grow with 再写点 / 先写这么多 — each appended block is also a
+  // temp→committed lifecycle scoped to (sticky, author).
+
+  const STICKY_CONTENT_MAX = 1000;
+  const STICKY_WALL_LIMIT = 200;
+
+  // Resolve the requester + partner; bail with the right error if not paired.
+  // Returns null and sends the response on failure.
+  function requirePair(req: Request, res: Response): { userId: string; partnerId: string; userName: string } | null {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return null;
+    }
+    if (!user.partner_id) {
+      res.status(400).json({ error: 'Not paired' });
+      return null;
+    }
+    return { userId, partnerId: user.partner_id, userName: user.name };
+  }
+
+  // Given a posted sticky id from path params, ensure the requester is part of
+  // the couple stamped on the sticky. Returns the row or null after writing
+  // the response.
+  function loadStickyOrFail(req: Request, res: Response, ctx: { userId: string; partnerId: string }): ReturnType<DbOps['getStickyForCouple']> | null {
+    const id = parseId(req.params.id as string);
+    if (id === null) {
+      res.status(400).json({ error: 'Invalid ID' });
+      return null;
+    }
+    const sticky = dbOps.getStickyForCouple(id, ctx.userId, ctx.partnerId);
+    if (!sticky) {
+      res.status(404).json({ error: 'Sticky not found' });
+      return null;
+    }
+    if (sticky.status !== 'posted') {
+      res.status(400).json({ error: 'Sticky not posted yet' });
+      return null;
+    }
+    return sticky;
+  }
+
+  // GET /api/stickies — wall + my unposted temp + my temp comments.
+  router.get('/stickies', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const { userId, partnerId } = ctx;
+
+    const stickies = dbOps.listWallStickies(userId, partnerId, STICKY_WALL_LIMIT);
+    const stickyIds = stickies.map(s => s.id);
+    const blocks = dbOps.listCommittedBlocksForStickies(stickyIds);
+    const seen = dbOps.listSeenForStickies(userId, stickyIds);
+
+    const blocksBySticky = new Map<number, typeof blocks>();
+    for (const b of blocks) {
+      const arr = blocksBySticky.get(b.sticky_id) ?? [];
+      arr.push(b);
+      blocksBySticky.set(b.sticky_id, arr);
+    }
+
+    // Per-recipient unread = max committed block id authored by partner > my
+    // last_seen cursor for this sticky. My own posts/comments never trigger
+    // an unread on my own side.
+    const wall = stickies.map(s => {
+      const myBlocks = blocksBySticky.get(s.id) ?? [];
+      const partnerBlocks = myBlocks.filter(b => b.author_id === partnerId);
+      const maxPartnerBlockId = partnerBlocks.length
+        ? partnerBlocks[partnerBlocks.length - 1].id
+        : 0;
+      const lastSeen = seen.get(s.id) ?? 0;
+      const unread = maxPartnerBlockId > lastSeen;
+
+      // Fetch any draft block by me on this sticky so the editor can reopen
+      // mid-comment if the user backgrounded the app while writing.
+      const myTempBlock = dbOps.getTempBlock(s.id, userId);
+
+      return {
+        id: s.id,
+        author_role: s.user_id === userId ? 'me' : 'partner',
+        layout_x: s.layout_x,
+        layout_rotation: s.layout_rotation,
+        posted_at: s.posted_at,
+        unread,
+        blocks: myBlocks.map(b => ({
+          id: b.id,
+          author_role: b.author_id === userId ? 'me' : 'partner',
+          content: b.content,
+          committed_at: b.committed_at,
+        })),
+        my_temp_block: myTempBlock
+          ? { content: myTempBlock.content }
+          : null,
+      };
+    });
+
+    const myTempSticky = dbOps.getTempSticky(userId);
+    let myTemp = null;
+    if (myTempSticky) {
+      const tempBlock = dbOps.getTempBlock(myTempSticky.id, userId);
+      myTemp = {
+        sticky_id: myTempSticky.id,
+        content: tempBlock?.content ?? '',
+        created_at: myTempSticky.created_at,
+      };
+    }
+
+    res.json({ stickies: wall, my_temp: myTemp });
+  });
+
+  // POST /api/stickies/temp — 来一帖 (idempotent; returns existing if present).
+  router.post('/stickies/temp', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const { userId, partnerId } = ctx;
+
+    const existing = dbOps.getTempSticky(userId);
+    if (existing) {
+      const block = dbOps.getTempBlock(existing.id, userId);
+      return res.json({
+        sticky_id: existing.id,
+        content: block?.content ?? '',
+        created_at: existing.created_at,
+      });
+    }
+    const { sticky, block } = dbOps.createTempSticky(userId, partnerId);
+    res.json({
+      sticky_id: sticky.id,
+      content: block.content,
+      created_at: sticky.created_at,
+    });
+  });
+
+  // PUT /api/stickies/temp — autosave while typing.
+  router.put('/stickies/temp', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const { content } = req.body || {};
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'content must be a string' });
+    }
+    if (content.length > STICKY_CONTENT_MAX) {
+      return res.status(400).json({ error: `content max ${STICKY_CONTENT_MAX} characters` });
+    }
+    const ok = dbOps.updateTempStickyContent(ctx.userId, content);
+    if (!ok) return res.status(404).json({ error: 'No temp sticky' });
+    res.json({ success: true });
+  });
+
+  // DELETE /api/stickies/temp — 不写了 / 下拉关闭.
+  router.delete('/stickies/temp', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    dbOps.deleteTempSticky(ctx.userId);
+    res.json({ success: true });
+  });
+
+  // POST /api/stickies/temp/post — 贴上去.
+  router.post('/stickies/temp/post', async (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const { userId, partnerId, userName } = ctx;
+    const { content } = req.body || {};
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'content is required' });
+    }
+    if (content.length > STICKY_CONTENT_MAX) {
+      return res.status(400).json({ error: `content max ${STICKY_CONTENT_MAX} characters` });
+    }
+
+    // Layout chosen on server so both clients render the same wall. Bounded
+    // range avoids extreme tilts that would clip stickies at screen edges.
+    const layoutX = 0.05 + Math.random() * 0.9;
+    const layoutRotation = (Math.random() - 0.5) * 12; // -6° .. +6°
+
+    const result = dbOps.postSticky(userId, content.trim(), layoutX, layoutRotation);
+    if (!result) {
+      return res.status(404).json({ error: 'No temp sticky to post' });
+    }
+
+    // Push partner if offline; socket update either way (sender's client also
+    // listens — it filters by `from`).
+    const partner = dbOps.getUser(partnerId);
+    if (partner?.device_token && !isUserOnline(partnerId)) {
+      await pushFn(partner.device_token, 'sticky_posted', userName);
+    }
+    emitToCouple(userId, partnerId, 'sticky_update', {
+      from: userId,
+      kind: 'posted',
+      sticky_id: result.sticky.id,
+    });
+
+    res.json({
+      sticky_id: result.sticky.id,
+      block_id: result.block.id,
+      layout_x: result.sticky.layout_x,
+      layout_rotation: result.sticky.layout_rotation,
+      posted_at: result.sticky.posted_at,
+    });
+  });
+
+  // POST /api/stickies/:id/blocks/temp — 再写点 (idempotent per (sticky,author)).
+  router.post('/stickies/:id/blocks/temp', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const sticky = loadStickyOrFail(req, res, ctx);
+    if (!sticky) return;
+
+    const existing = dbOps.getTempBlock(sticky.id, ctx.userId);
+    if (existing) {
+      return res.json({ block_id: existing.id, content: existing.content });
+    }
+    const block = dbOps.createTempBlock(sticky.id, ctx.userId);
+    res.json({ block_id: block.id, content: '' });
+  });
+
+  // PUT /api/stickies/:id/blocks/temp — autosave the in-progress comment.
+  router.put('/stickies/:id/blocks/temp', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const sticky = loadStickyOrFail(req, res, ctx);
+    if (!sticky) return;
+
+    const { content } = req.body || {};
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'content must be a string' });
+    }
+    if (content.length > STICKY_CONTENT_MAX) {
+      return res.status(400).json({ error: `content max ${STICKY_CONTENT_MAX} characters` });
+    }
+    const ok = dbOps.updateTempBlockContent(sticky.id, ctx.userId, content);
+    if (!ok) return res.status(404).json({ error: 'No temp block' });
+    res.json({ success: true });
+  });
+
+  // DELETE /api/stickies/:id/blocks/temp — 取消"再写点".
+  router.delete('/stickies/:id/blocks/temp', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const sticky = loadStickyOrFail(req, res, ctx);
+    if (!sticky) return;
+    dbOps.deleteTempBlock(sticky.id, ctx.userId);
+    res.json({ success: true });
+  });
+
+  // POST /api/stickies/:id/blocks/commit — 先写这么多.
+  router.post('/stickies/:id/blocks/commit', async (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const sticky = loadStickyOrFail(req, res, ctx);
+    if (!sticky) return;
+    const { content } = req.body || {};
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'content is required' });
+    }
+    if (content.length > STICKY_CONTENT_MAX) {
+      return res.status(400).json({ error: `content max ${STICKY_CONTENT_MAX} characters` });
+    }
+
+    const block = dbOps.commitBlock(sticky.id, ctx.userId, content.trim());
+    if (!block) return res.status(404).json({ error: 'No temp block to commit' });
+
+    // Notify the OTHER participant of the sticky. With a 2-person couple
+    // that's just `partnerId` regardless of whether commenter is the sticky's
+    // original author or the partner — the recipient is "whoever isn't me".
+    const partner = dbOps.getUser(ctx.partnerId);
+    if (partner?.device_token && !isUserOnline(ctx.partnerId)) {
+      await pushFn(partner.device_token, 'sticky_appended', ctx.userName);
+    }
+    emitToCouple(ctx.userId, ctx.partnerId, 'sticky_update', {
+      from: ctx.userId,
+      kind: 'appended',
+      sticky_id: sticky.id,
+      block_id: block.id,
+    });
+
+    res.json({
+      block_id: block.id,
+      content: block.content,
+      committed_at: block.committed_at,
+    });
+  });
+
+  // POST /api/stickies/:id/seen — advance my read cursor on this sticky to
+  // its current max committed block id. Idempotent + monotonic (the upsert
+  // takes MAX, so a stale request can't roll the cursor back).
+  router.post('/stickies/:id/seen', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const sticky = loadStickyOrFail(req, res, ctx);
+    if (!sticky) return;
+    const max = dbOps.maxCommittedBlockIdOnSticky(sticky.id);
+    dbOps.markStickySeen(ctx.userId, sticky.id, max);
+    res.json({ success: true, last_seen_block_id: max });
+  });
+
   // POST /api/logout
   router.post('/logout', (req: Request, res: Response) => {
     const userId = req.userId!;

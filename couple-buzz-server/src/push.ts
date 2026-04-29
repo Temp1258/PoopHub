@@ -89,6 +89,8 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   date_new: { title: '📅 新纪念日', body: '{name} 添加了一个新纪念日' },
   snap_submitted: { title: '📸 每日快照', body: '{name} 拍了今天的快照，在等你的照片' },
   snap_both: { title: '📸 每日快照', body: '你们都拍了今天的快照！快来看看 💕' },
+  sticky_posted: { title: '📝 每日一帖', body: '{name} 贴了一张新便利贴' },
+  sticky_appended: { title: '✍️ 每日一帖', body: '{name} 在便利贴上加了几句' },
   touch: { title: '拍臭宝！👏', body: '{name} 想你了！🥹' },
 };
 

@@ -47,10 +47,11 @@ const NOTIFICATION_TAB_ROUTES: Record<string, string> = {
   ritual_morning: 'Us', ritual_evening: 'Us',
   ritual_both_morning: 'Us', ritual_both_evening: 'Us',
 
-  // Mailbox + capsules.
+  // Mailbox + capsules + stickies (每日一帖 lives in 信箱 tab).
   mailbox_open: 'Mailbox', mailbox_written: 'Mailbox',
   mailbox_countdown_15min: 'Mailbox', mailbox_reveal: 'Mailbox',
   capsule_unlock: 'Mailbox', capsule_buried: 'Mailbox',
+  sticky_posted: 'Mailbox', sticky_appended: 'Mailbox',
 
   // Promises (bucket list + important dates).
   bucket_new: 'Promises', bucket_complete: 'Promises',

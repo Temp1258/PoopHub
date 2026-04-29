@@ -148,6 +148,40 @@ export interface DailyReaction {
   created_at: string;
 }
 
+// 每日一帖 — 双方共享的便利贴墙。
+// sticky_notes 是"一张贴"的元信息（创作者 / 配对快照 / 屏幕坐标 / 时间戳），
+// sticky_blocks 是这张贴上所有的"笔触"（初稿 + 后续两人各自'再写点'追加的留言）。
+// status='temp' 的 note/block 是用户尚未"贴上去/先写这么多"的临时态，对方完全
+// 看不见；只有 status='posted' / 'committed' 才会出现在墙上的最终视图里。
+// sticky_seen 是 per-sticky 的"我看到哪一条 block 为止"游标，驱动每张贴右上
+// 角的"未读"小灵动岛 + 入口卡的整体小红旗。
+export interface StickyNote {
+  id: number;
+  user_id: string;        // 提笔人 (creator)
+  partner_id: string;     // 配对快照，防止 unpair-repair 后串墙
+  status: 'temp' | 'posted';
+  layout_x: number;       // 0..1 normalized horizontal jitter, 双端共用
+  layout_rotation: number; // -8°..+8° tilt, 双端共用
+  posted_at: string | null;
+  created_at: string;
+}
+
+export interface StickyBlock {
+  id: number;
+  sticky_id: number;
+  author_id: string;       // 这一段的提笔人，决定墨水颜色
+  content: string;
+  status: 'temp' | 'committed';
+  committed_at: string | null;
+  created_at: string;
+}
+
+export interface StickySeen {
+  user_id: string;
+  sticky_id: number;
+  last_seen_block_id: number;
+}
+
 export interface DbOps {
   createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void;
   getUser(id: string): User | undefined;
@@ -229,6 +263,23 @@ export interface DbOps {
   getMailboxMessageById(id: number): MailboxMessage | undefined;
   getCapsuleById(id: number): TimeCapsule | undefined;
   getDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap'): 'up' | 'down' | null;
+  // Sticky notes (每日一帖)
+  getTempSticky(userId: string): StickyNote | undefined;
+  createTempSticky(userId: string, partnerId: string): { sticky: StickyNote; block: StickyBlock };
+  updateTempStickyContent(userId: string, content: string): boolean;
+  deleteTempSticky(userId: string): boolean;
+  postSticky(userId: string, content: string, layoutX: number, layoutRotation: number): { sticky: StickyNote; block: StickyBlock } | null;
+  getStickyForCouple(stickyId: number, userId: string, partnerId: string): StickyNote | undefined;
+  listWallStickies(userId: string, partnerId: string, limit: number): StickyNote[];
+  listCommittedBlocksForStickies(stickyIds: number[]): StickyBlock[];
+  listSeenForStickies(userId: string, stickyIds: number[]): Map<number, number>;
+  maxCommittedBlockIdOnSticky(stickyId: number): number;
+  getTempBlock(stickyId: number, authorId: string): StickyBlock | undefined;
+  createTempBlock(stickyId: number, authorId: string): StickyBlock;
+  updateTempBlockContent(stickyId: number, authorId: string, content: string): boolean;
+  deleteTempBlock(stickyId: number, authorId: string): boolean;
+  commitBlock(stickyId: number, authorId: string, content: string): StickyBlock | null;
+  markStickySeen(userId: string, stickyId: number, blockId: number): void;
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -394,6 +445,42 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       UNIQUE(user_id, kind, ref_id)
     );
 
+    -- 每日一帖 — see StickyNote/StickyBlock/StickySeen interfaces above for the
+    -- temp/posted lifecycle. layout_x/layout_rotation are computed on post and
+    -- shared across both clients so the wall renders identically on both sides.
+    CREATE TABLE IF NOT EXISTS sticky_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('temp', 'posted')),
+      layout_x REAL NOT NULL DEFAULT 0,
+      layout_rotation REAL NOT NULL DEFAULT 0,
+      posted_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sticky_blocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sticky_id INTEGER NOT NULL,
+      author_id TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK(status IN ('temp', 'committed')),
+      committed_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sticky_id) REFERENCES sticky_notes(id),
+      FOREIGN KEY (author_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sticky_seen (
+      user_id TEXT NOT NULL,
+      sticky_id INTEGER NOT NULL,
+      last_seen_block_id INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, sticky_id),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (sticky_id) REFERENCES sticky_notes(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
@@ -405,6 +492,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE INDEX IF NOT EXISTS idx_daily_reactions_lookup ON daily_reactions(reactor_id, target_user_id, target_date, target_type);
     CREATE INDEX IF NOT EXISTS idx_inbox_actions_user ON inbox_actions(user_id, status);
     CREATE INDEX IF NOT EXISTS idx_inbox_actions_ref ON inbox_actions(kind, ref_id);
+    CREATE INDEX IF NOT EXISTS idx_sticky_couple_status ON sticky_notes(user_id, partner_id, status);
+    CREATE INDEX IF NOT EXISTS idx_sticky_blocks_sticky ON sticky_blocks(sticky_id);
+    CREATE INDEX IF NOT EXISTS idx_sticky_blocks_author_status ON sticky_blocks(sticky_id, author_id, status);
 
   `);
 
@@ -808,6 +898,88 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     FROM daily_snaps s
     WHERE s.user_id IN (?, ?) AND s.snap_date >= ? AND s.snap_date < ?
     GROUP BY s.snap_date ORDER BY s.snap_date DESC
+  `);
+
+  // Sticky note (每日一帖) statements
+  const stmtGetTempSticky = db.prepare(
+    "SELECT * FROM sticky_notes WHERE user_id = ? AND status = 'temp' LIMIT 1"
+  );
+  const stmtInsertTempSticky = db.prepare(
+    "INSERT INTO sticky_notes (user_id, partner_id, status) VALUES (?, ?, 'temp')"
+  );
+  const stmtGetStickyById = db.prepare('SELECT * FROM sticky_notes WHERE id = ?');
+  const stmtUpdateTempStickyContent = db.prepare(`
+    UPDATE sticky_blocks SET content = ?
+    WHERE sticky_id = (SELECT id FROM sticky_notes WHERE user_id = ? AND status = 'temp' LIMIT 1)
+      AND author_id = ? AND status = 'temp'
+  `);
+  // Postable iff a temp sticky exists for this user AND its initial temp block
+  // exists. The transaction wrapper in postSticky() does the row-level work;
+  // these statements are the building blocks.
+  const stmtPostStickyHeader = db.prepare(`
+    UPDATE sticky_notes
+    SET status = 'posted', posted_at = CURRENT_TIMESTAMP, layout_x = ?, layout_rotation = ?
+    WHERE id = ? AND status = 'temp'
+  `);
+  const stmtCommitStickyInitialBlock = db.prepare(`
+    UPDATE sticky_blocks
+    SET status = 'committed', committed_at = CURRENT_TIMESTAMP, content = ?
+    WHERE sticky_id = ? AND author_id = ? AND status = 'temp'
+  `);
+  const stmtDeleteTempStickyBlocks = db.prepare(
+    "DELETE FROM sticky_blocks WHERE sticky_id = ? AND status = 'temp'"
+  );
+  const stmtDeleteTempStickyHeader = db.prepare(
+    "DELETE FROM sticky_notes WHERE user_id = ? AND status = 'temp'"
+  );
+
+  // Wall query: posted stickies between this couple, newest first. partner_id
+  // is matched to the snapshot stored on each row, so stickies from a previous
+  // pairing don't leak into the current couple's wall after re-pairing.
+  const stmtListWallStickies = db.prepare(`
+    SELECT * FROM sticky_notes
+    WHERE status = 'posted'
+      AND ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?))
+    ORDER BY posted_at DESC, id DESC
+    LIMIT ?
+  `);
+  const stmtGetStickyForCouple = db.prepare(`
+    SELECT * FROM sticky_notes
+    WHERE id = ?
+      AND ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?))
+    LIMIT 1
+  `);
+  const stmtMaxCommittedBlockIdOnSticky = db.prepare(`
+    SELECT IFNULL(MAX(id), 0) AS m FROM sticky_blocks
+    WHERE sticky_id = ? AND status = 'committed'
+  `);
+
+  // Block lifecycle for "再写点" / "先写这么多".
+  const stmtGetTempBlock = db.prepare(
+    "SELECT * FROM sticky_blocks WHERE sticky_id = ? AND author_id = ? AND status = 'temp' LIMIT 1"
+  );
+  const stmtInsertTempBlock = db.prepare(
+    "INSERT INTO sticky_blocks (sticky_id, author_id, content, status) VALUES (?, ?, '', 'temp')"
+  );
+  const stmtGetBlockById = db.prepare('SELECT * FROM sticky_blocks WHERE id = ?');
+  const stmtUpdateTempBlockContent = db.prepare(
+    "UPDATE sticky_blocks SET content = ? WHERE sticky_id = ? AND author_id = ? AND status = 'temp'"
+  );
+  const stmtDeleteTempBlock = db.prepare(
+    "DELETE FROM sticky_blocks WHERE sticky_id = ? AND author_id = ? AND status = 'temp'"
+  );
+  const stmtCommitBlock = db.prepare(`
+    UPDATE sticky_blocks
+    SET status = 'committed', committed_at = CURRENT_TIMESTAMP, content = ?
+    WHERE sticky_id = ? AND author_id = ? AND status = 'temp'
+  `);
+
+  // Per-recipient seen cursor.
+  const stmtUpsertStickySeen = db.prepare(`
+    INSERT INTO sticky_seen (user_id, sticky_id, last_seen_block_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, sticky_id)
+    DO UPDATE SET last_seen_block_id = MAX(sticky_seen.last_seen_block_id, excluded.last_seen_block_id)
   `);
 
   const dbOps: DbOps = {
@@ -1237,6 +1409,133 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     getCapsuleById(id): TimeCapsule | undefined {
       return stmtGetCapsuleById.get(id) as TimeCapsule | undefined;
+    },
+
+    // -- Sticky notes (每日一帖) -------------------------------------------
+
+    getTempSticky(userId): StickyNote | undefined {
+      return stmtGetTempSticky.get(userId) as StickyNote | undefined;
+    },
+
+    createTempSticky(userId, partnerId): { sticky: StickyNote; block: StickyBlock } {
+      // Atomic: a temp sticky always carries an initial empty temp block. The
+      // route layer guarantees there's no existing temp first, so we don't
+      // bother with INSERT OR IGNORE here.
+      return db.transaction(() => {
+        const result = stmtInsertTempSticky.run(userId, partnerId);
+        const stickyId = Number(result.lastInsertRowid);
+        const blockResult = stmtInsertTempBlock.run(stickyId, userId);
+        const sticky = stmtGetStickyById.get(stickyId) as StickyNote;
+        const block = stmtGetBlockById.get(Number(blockResult.lastInsertRowid)) as StickyBlock;
+        return { sticky, block };
+      })();
+    },
+
+    updateTempStickyContent(userId, content): boolean {
+      const result = stmtUpdateTempStickyContent.run(content, userId, userId);
+      return result.changes > 0;
+    },
+
+    deleteTempSticky(userId): boolean {
+      // Cascade through the temp blocks first; SQLite has no ON DELETE
+      // CASCADE without PRAGMA foreign_keys=ON which we don't enable here.
+      return db.transaction(() => {
+        const temp = stmtGetTempSticky.get(userId) as StickyNote | undefined;
+        if (!temp) return false;
+        stmtDeleteTempStickyBlocks.run(temp.id);
+        const result = stmtDeleteTempStickyHeader.run(userId);
+        return result.changes > 0;
+      })();
+    },
+
+    postSticky(userId, content, layoutX, layoutRotation): { sticky: StickyNote; block: StickyBlock } | null {
+      return db.transaction(() => {
+        const temp = stmtGetTempSticky.get(userId) as StickyNote | undefined;
+        if (!temp) return null;
+        const headerResult = stmtPostStickyHeader.run(layoutX, layoutRotation, temp.id);
+        if (headerResult.changes === 0) return null;
+        const blockResult = stmtCommitStickyInitialBlock.run(content, temp.id, userId);
+        if (blockResult.changes === 0) return null;
+        const sticky = stmtGetStickyById.get(temp.id) as StickyNote;
+        // After commit the original temp row is now 'committed' — fetch by
+        // (sticky, author, committed) to get the canonical initial block.
+        const block = db.prepare(
+          "SELECT * FROM sticky_blocks WHERE sticky_id = ? AND author_id = ? AND status = 'committed' ORDER BY id ASC LIMIT 1"
+        ).get(temp.id, userId) as StickyBlock;
+        return { sticky, block };
+      })();
+    },
+
+    getStickyForCouple(stickyId, userId, partnerId): StickyNote | undefined {
+      return stmtGetStickyForCouple.get(stickyId, userId, partnerId, partnerId, userId) as StickyNote | undefined;
+    },
+
+    listWallStickies(userId, partnerId, limit): StickyNote[] {
+      return stmtListWallStickies.all(userId, partnerId, partnerId, userId, limit) as StickyNote[];
+    },
+
+    listCommittedBlocksForStickies(stickyIds): StickyBlock[] {
+      if (stickyIds.length === 0) return [];
+      // Build placeholders for IN(...) — stickyIds count is bounded by the
+      // wall query's LIMIT (route caps at 200), so we don't worry about
+      // SQLITE_MAX_VARIABLE_NUMBER. Each placeholder is a real bind, no string
+      // interpolation of user data.
+      const placeholders = stickyIds.map(() => '?').join(',');
+      const stmt = db.prepare(
+        `SELECT * FROM sticky_blocks WHERE status = 'committed' AND sticky_id IN (${placeholders}) ORDER BY committed_at ASC, id ASC`
+      );
+      return stmt.all(...stickyIds) as StickyBlock[];
+    },
+
+    listSeenForStickies(userId, stickyIds): Map<number, number> {
+      const out = new Map<number, number>();
+      if (stickyIds.length === 0) return out;
+      const placeholders = stickyIds.map(() => '?').join(',');
+      const stmt = db.prepare(
+        `SELECT sticky_id, last_seen_block_id FROM sticky_seen WHERE user_id = ? AND sticky_id IN (${placeholders})`
+      );
+      const rows = stmt.all(userId, ...stickyIds) as { sticky_id: number; last_seen_block_id: number }[];
+      for (const r of rows) out.set(r.sticky_id, r.last_seen_block_id);
+      return out;
+    },
+
+    maxCommittedBlockIdOnSticky(stickyId): number {
+      const row = stmtMaxCommittedBlockIdOnSticky.get(stickyId) as { m: number };
+      return row?.m ?? 0;
+    },
+
+    getTempBlock(stickyId, authorId): StickyBlock | undefined {
+      return stmtGetTempBlock.get(stickyId, authorId) as StickyBlock | undefined;
+    },
+
+    createTempBlock(stickyId, authorId): StickyBlock {
+      const result = stmtInsertTempBlock.run(stickyId, authorId);
+      return stmtGetBlockById.get(Number(result.lastInsertRowid)) as StickyBlock;
+    },
+
+    updateTempBlockContent(stickyId, authorId, content): boolean {
+      const result = stmtUpdateTempBlockContent.run(content, stickyId, authorId);
+      return result.changes > 0;
+    },
+
+    deleteTempBlock(stickyId, authorId): boolean {
+      const result = stmtDeleteTempBlock.run(stickyId, authorId);
+      return result.changes > 0;
+    },
+
+    commitBlock(stickyId, authorId, content): StickyBlock | null {
+      const result = stmtCommitBlock.run(content, stickyId, authorId);
+      if (result.changes === 0) return null;
+      // After commit the row is no longer 'temp', so re-fetch by (sticky,
+      // author) for the most-recent committed block authored here.
+      const block = db.prepare(
+        "SELECT * FROM sticky_blocks WHERE sticky_id = ? AND author_id = ? AND status = 'committed' ORDER BY id DESC LIMIT 1"
+      ).get(stickyId, authorId) as StickyBlock | undefined;
+      return block ?? null;
+    },
+
+    markStickySeen(userId, stickyId, blockId): void {
+      stmtUpsertStickySeen.run(userId, stickyId, blockId);
     },
   };
 
