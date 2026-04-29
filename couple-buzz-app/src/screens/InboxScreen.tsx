@@ -14,6 +14,8 @@ import {
   Dimensions,
   Easing,
 } from 'react-native';
+
+const SCREEN_H = Dimensions.get('window').height;
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
@@ -76,7 +78,14 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
   const [loading, setLoading] = useState(true);
   const [cards, setCards] = useState<LetterCard[]>([]);
   const [revealAnim, setRevealAnim] = useState<LetterCard | null>(null);
-  const [listHeight, setListHeight] = useState(0);
+  // Seed listHeight with a screen-height-derived guess so verticalPad has a
+  // sensible value during the pageSheet slide-in (when onLayout sometimes
+  // hasn't fired yet). The real measurement replaces this on first layout
+  // pass. This is what was causing "cards don't paint until I scroll" — the
+  // ScrollView's native-driven transforms had no real layout context at
+  // mount, leaving cards stuck at uncomputed positions until a finger drag
+  // forced a re-layout.
+  const [listHeight, setListHeight] = useState(SCREEN_H * 0.7);
   const [centerIdx, setCenterIdx] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
@@ -160,7 +169,10 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
         });
       }
 
-      out.sort((a, b) => (a.sortAt < b.sortAt ? 1 : a.sortAt > b.sortAt ? -1 : 0));
+      // Oldest first → newest last. The user enters at the bottom (see the
+      // scroll-to-latest effect below), so this matches "scroll up to read
+      // older letters".
+      out.sort((a, b) => (a.sortAt < b.sortAt ? -1 : a.sortAt > b.sortAt ? 1 : 0));
       setCards(out);
       // Don't reset centerIdx on background refreshes — user may have
       // scrolled. Only reset when list shape clearly changed.
@@ -201,7 +213,34 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
     })();
   }, [visible, load]);
 
-  const verticalPad = listHeight > 0 ? Math.max(0, (listHeight - CARD_HEIGHT) / 2) : 0;
+  const verticalPad = Math.max(0, (listHeight - CARD_HEIGHT) / 2);
+
+  // Land the user on the latest letter (bottom) on first paint. Doing the
+  // scroll programmatically also kicks the natively-driven scrollY chain
+  // awake — without this nudge, the cards' interpolated transforms can sit
+  // un-bridged after the pageSheet slide-in, producing "blank inbox until
+  // you swipe" symptoms. Re-runs only when card count changes (i.e. fresh
+  // open or reload that adds a letter), not on background refreshes that
+  // keep the same shape.
+  const initialScrolledRef = useRef(false);
+  useEffect(() => {
+    if (!visible) {
+      initialScrolledRef.current = false;
+      return;
+    }
+    if (loading || cards.length === 0 || initialScrolledRef.current) return;
+    const targetIdx = cards.length - 1;
+    const targetY = targetIdx * SNAP_INTERVAL;
+    // Native value first so transforms recompute, then ScrollView frame
+    // catches up.
+    scrollY.setValue(targetY);
+    requestAnimationFrame(() => {
+      scrollViewRef.current?.scrollTo({ y: targetY, animated: false });
+      setCenterIdx(targetIdx);
+      lastTickedIdxRef.current = targetIdx;
+      initialScrolledRef.current = true;
+    });
+  }, [visible, loading, cards.length, scrollY]);
 
   const onScroll = Animated.event(
     [{ nativeEvent: { contentOffset: { y: scrollY } } }],

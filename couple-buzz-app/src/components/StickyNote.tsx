@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, useWindowDimensions, Pressable } from 'react-native';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { View, Text, StyleSheet, useWindowDimensions, Pressable, Animated, Easing } from 'react-native';
 import { COLORS } from '../constants';
 import { StickyView, StickyBlockView } from '../services/api';
 
@@ -20,6 +20,9 @@ interface Props {
   // True when this user is currently writing a temp comment on this sticky —
   // suppresses the "未读" island so the editor doesn't fight for attention.
   writingComment: boolean;
+  // True for one render cycle right after the user taps 贴上去 — plays the
+  // "drop onto wall" entry animation (scale-down from 1.4 + spring).
+  justPosted?: boolean;
   onPress: () => void;
 }
 
@@ -34,7 +37,7 @@ function BlockText({ block }: { block: StickyBlockView }) {
   );
 }
 
-function StickyNote({ sticky, selected, writingComment, onPress }: Props) {
+function StickyNote({ sticky, selected, writingComment, justPosted, onPress }: Props) {
   const { width: screenW } = useWindowDimensions();
   const stickyW = Math.round(screenW * STICKY_WIDTH_RATIO);
 
@@ -52,17 +55,40 @@ function StickyNote({ sticky, selected, writingComment, onPress }: Props) {
 
   const blocks = sticky.blocks;
 
-  // Memoize transform so React doesn't re-build the array each render and
-  // RN's native side can short-circuit identity checks.
+  // Drop-onto-wall entry animation — only the just-posted sticky plays it.
+  // Sticky enters big + slightly higher with low opacity, then springs to its
+  // resting size + position. Reads as "the note got slapped onto the wall".
+  const enterScale = useRef(new Animated.Value(1)).current;
+  const enterY = useRef(new Animated.Value(0)).current;
+  const enterOpacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!justPosted) return;
+    enterScale.setValue(1.35);
+    enterY.setValue(-32);
+    enterOpacity.setValue(0);
+    Animated.parallel([
+      Animated.spring(enterScale, { toValue: 1, friction: 6, tension: 90, useNativeDriver: true }),
+      Animated.spring(enterY, { toValue: 0, friction: 6, tension: 90, useNativeDriver: true }),
+      Animated.timing(enterOpacity, { toValue: 1, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+    ]).start();
+  }, [justPosted, enterScale, enterY, enterOpacity]);
+
+  // Compose all transforms in one array so the spring entry stacks cleanly
+  // on top of the persistent rotation.
   const transform = useMemo(
-    () => [{ rotate: `${effectiveRotation}deg` }],
-    [effectiveRotation]
+    () => [
+      { translateY: enterY },
+      { scale: enterScale },
+      { rotate: `${effectiveRotation}deg` },
+    ],
+    [effectiveRotation, enterY, enterScale]
   );
 
   return (
     <View style={{ marginLeft: leftPx + 16, width: stickyW }}>
       <Pressable onPress={onPress}>
-        <View style={[styles.paper, { transform }, selected && styles.paperSelected]}>
+        <Animated.View style={[styles.paper, { transform, opacity: enterOpacity }, selected && styles.paperSelected]}>
           {sticky.unread && !writingComment && (
             <View style={styles.unreadIsland} pointerEvents="none">
               <Text style={styles.unreadText}>未读</Text>
@@ -86,7 +112,7 @@ function StickyNote({ sticky, selected, writingComment, onPress }: Props) {
               </Text>
             </View>
           )}
-        </View>
+        </Animated.View>
       </Pressable>
     </View>
   );

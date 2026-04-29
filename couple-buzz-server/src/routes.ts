@@ -1805,11 +1805,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Layout is anchored to the *creator's* POV: layout_x is always picked in
     // the left half [0.05..0.45]. The client mirrors x and rotation when the
     // viewer is not the creator, so each side sees their own posts on the
-    // left and partner's on the right. Rotation guarantees a minimum |3°|
-    // so no sticky ends up looking perfectly square against the wall.
+    // left and partner's on the right. Rotation magnitude lives in [4°, 12°]
+    // with a random sign — wide enough that adjacent stickies don't end up
+    // visually identical and the wall reads as "stuck up by hand".
     const layoutX = 0.05 + Math.random() * 0.4;
     const sign = Math.random() > 0.5 ? 1 : -1;
-    const layoutRotation = sign * (3 + Math.random() * 5); // ±3°..±8°
+    const layoutRotation = sign * (4 + Math.random() * 8); // ±4°..±12°
 
     const result = dbOps.postSticky(userId, content.trim(), layoutX, layoutRotation);
     if (!result) {

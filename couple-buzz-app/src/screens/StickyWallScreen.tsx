@@ -84,6 +84,11 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   const [submitting, setSubmitting] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [headerLabel, setHeaderLabel] = useState<string>('');
+  // Sticky id that should play the "drop onto wall" entry animation on its
+  // next mount. Set right after a successful post; cleared after the
+  // animation duration passes so the same id doesn't replay if React happens
+  // to re-render the item.
+  const [justPostedId, setJustPostedId] = useState<number | null>(null);
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -234,8 +239,17 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     try {
       if (current.kind === 'new') {
-        await api.postSticky(text);
+        const r = await api.postSticky(text);
         setMyTemp(null);
+        // "Slap" haptic and prime the entry animation for the new sticky's
+        // next mount. The thump fires now (mid-flight) so it lines up with
+        // the user's expectation of pressing 贴上去 → felt impact → seeing
+        // the sticky land.
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        setJustPostedId(r.sticky_id);
+        // Clear the entry-anim flag well after the animation finishes so a
+        // late re-render doesn't replay it.
+        setTimeout(() => setJustPostedId(null), 1200);
       } else {
         await api.commitStickyComment(current.stickyId, text);
       }
@@ -292,11 +306,12 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
           sticky={item}
           selected={selectedId === item.id}
           writingComment={writingComment}
+          justPosted={justPostedId === item.id}
           onPress={() => handleStickyTap(item)}
         />
       </View>
     );
-  }, [selectedId, editor, handleStickyTap]);
+  }, [selectedId, editor, handleStickyTap, justPostedId]);
 
   const renderToolbar = () => {
     if (editor) {
@@ -312,7 +327,7 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             style={[styles.pill, styles.pillPrimary, submitting && styles.pillDisabled]}
           >
             <Text style={styles.pillPrimaryText}>
-              {submitting ? '保存中...' : editor.kind === 'new' ? '贴上去' : '就这些'}
+              {submitting ? '保存中...' : editor.kind === 'new' ? '贴上去' : '就这样'}
             </Text>
           </SpringPressable>
         </View>
@@ -415,7 +430,11 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
 
         <View style={styles.headerRow}>
           <Text style={styles.title}>📝 每日一帖</Text>
-          <TouchableOpacity onPress={handleClose} hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}>
+          <TouchableOpacity
+            style={styles.headerCloseBtn}
+            onPress={handleClose}
+            hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}
+          >
             <Text style={styles.closeBtn}>完成</Text>
           </TouchableOpacity>
         </View>
@@ -470,20 +489,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: WOOD_BASE,
   },
-  // pageSheet handles the top gap + native drag handle, so we just need a
-  // simple title row with paddingTop matching InboxScreen's "header" pattern.
+  // Title centered in the header; 完成 button absolute-positioned on the
+  // right (mirrors the InboxScreen pattern). pageSheet handles the top gap
+  // + native drag handle on its own.
   headerRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     paddingHorizontal: 20,
     paddingTop: 14,
     paddingBottom: 10,
+    minHeight: 40,
   },
   title: {
     fontSize: 20,
     fontWeight: '700',
     color: '#3D2A19',
+    textAlign: 'center',
+  },
+  headerCloseBtn: {
+    position: 'absolute',
+    right: 20,
+    top: 14,
+    bottom: 10,
+    justifyContent: 'center',
   },
   closeBtn: {
     fontSize: 15,
@@ -577,13 +605,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  // Backdrop is invisible — the wall stays fully visible behind the editor.
+  // The Pressable still mounts so taps outside the TextInput dismiss the
+  // keyboard. To prevent stickies from being tappable through the backdrop
+  // while writing, the backdrop blocks pointer events of the wall items.
   editorBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(40, 25, 15, 0.42)',
+    backgroundColor: 'transparent',
   },
-  // Mid-sized sticky paper, not full-bleed. Soft 18pt radius + subtle tilt
-  // keeps the "handwritten note" feel; the lighter shadow stops it looking
-  // like a hard slab of UI.
+  // Mid-sized sticky paper, not full-bleed. Soft 18pt radius + subtle shadow
+  // keeps the "handwritten note" feel; held upright (no tilt) so the writing
+  // surface reads cleanly while you type.
   editorSheet: {
     width: '82%',
     minHeight: 260,
@@ -593,7 +625,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 18,
     paddingBottom: 14,
-    transform: [{ rotate: '-1.5deg' }],
     shadowColor: '#000',
     shadowOffset: { width: 1, height: 6 },
     shadowOpacity: 0.22,
