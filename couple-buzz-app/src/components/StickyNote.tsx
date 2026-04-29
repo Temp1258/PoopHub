@@ -37,19 +37,26 @@ function BlockText({ block }: { block: StickyBlockView }) {
 function StickyNote({ sticky, selected, writingComment, onPress }: Props) {
   const { width: screenW } = useWindowDimensions();
   const stickyW = Math.round(screenW * STICKY_WIDTH_RATIO);
-  // 0..1 → pixel offset into the slack between sticky's right edge and
-  // screen right. layout_x is computed once on the server so both sides
-  // see the same nail position.
+
+  // Server anchors layout_x to the creator's POV, always in the left half
+  // [0.05..0.45]. From each viewer's perspective we want our own stickies on
+  // our left and partner's on our right — so mirror x and rotation when the
+  // viewer is not the creator. Both sides see a coherent "mine left / yours
+  // right" wall, even though only one row exists per sticky in the DB.
+  const isMine = sticky.author_role === 'me';
+  const effectiveX = isMine ? sticky.layout_x : 1 - sticky.layout_x;
+  const effectiveRotation = isMine ? sticky.layout_rotation : -sticky.layout_rotation;
+
   const slack = screenW - stickyW - 32; // 32 = horizontal margin (16 each side)
-  const leftPx = Math.max(0, Math.min(slack, sticky.layout_x * slack));
+  const leftPx = Math.max(0, Math.min(slack, effectiveX * slack));
 
   const blocks = sticky.blocks;
 
   // Memoize transform so React doesn't re-build the array each render and
   // RN's native side can short-circuit identity checks.
   const transform = useMemo(
-    () => [{ rotate: `${sticky.layout_rotation}deg` }],
-    [sticky.layout_rotation]
+    () => [{ rotate: `${effectiveRotation}deg` }],
+    [effectiveRotation]
   );
 
   return (

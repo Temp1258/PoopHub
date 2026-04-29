@@ -312,7 +312,7 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             style={[styles.pill, styles.pillPrimary, submitting && styles.pillDisabled]}
           >
             <Text style={styles.pillPrimaryText}>
-              {submitting ? '保存中...' : editor.kind === 'new' ? '贴上去' : '先写这么多'}
+              {submitting ? '保存中...' : editor.kind === 'new' ? '贴上去' : '就这些'}
             </Text>
           </SpringPressable>
         </View>
@@ -353,15 +353,26 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     // the only way the user can preview/post their note while the keyboard
     // is up.
     return (
-      <View style={[styles.editorOverlay, { top: insets.top + 48, bottom: insets.bottom + 96 }]} pointerEvents="box-none">
+      <View
+        style={[styles.editorOverlay, { top: insets.top + 48, bottom: insets.bottom + 96 }]}
+        pointerEvents="box-none"
+      >
         <Pressable style={styles.editorBackdrop} onPress={Keyboard.dismiss} />
+        {/* Sheet is a centered, mid-sized sticky paper — not full-bleed, so
+            the wall (and its wood texture) breathes around it. Subtle tilt
+            keeps the "便利贴" vibe; soft shadow + 18pt radius rounds out the
+            edges. The Pressable wrapper dismisses the keyboard on any tap
+            outside the TextInput. */}
         <Pressable style={styles.editorSheet} onPress={Keyboard.dismiss}>
           {targetSticky && (
             <View style={styles.editorContextBlock}>
               {targetSticky.blocks.map((b, i) => (
                 <View key={b.id}>
                   {i > 0 && <View style={styles.divider} />}
-                  <Text style={[styles.editorContextText, { color: b.author_role === 'me' ? INK_MINE : INK_PARTNER }]} numberOfLines={3}>
+                  <Text
+                    style={[styles.editorContextText, { color: b.author_role === 'me' ? INK_MINE : INK_PARTNER }]}
+                    numberOfLines={3}
+                  >
                     {b.content}
                   </Text>
                 </View>
@@ -556,29 +567,38 @@ const styles = StyleSheet.create({
   },
 
   // Sits below the header row and above the toolbar so the title + 完成
-  // stay reachable while the editor is open. Inline styles supply the
-  // top/bottom from current safe-area insets.
+  // stay reachable while the editor is open. The overlay centers its sheet
+  // child so the paper floats in the middle of the wall instead of filling
+  // edge-to-edge.
   editorOverlay: {
     position: 'absolute',
     left: 0,
     right: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   editorBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'rgba(40, 25, 15, 0.42)',
   },
+  // Mid-sized sticky paper, not full-bleed. Soft 18pt radius + subtle tilt
+  // keeps the "handwritten note" feel; the lighter shadow stops it looking
+  // like a hard slab of UI.
   editorSheet: {
-    flex: 1,
-    marginHorizontal: 20,
-    marginVertical: 16,
+    width: '82%',
+    minHeight: 260,
+    maxHeight: '94%',
     backgroundColor: '#FFFBE6',
-    borderRadius: 8,
-    padding: 20,
+    borderRadius: 18,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 14,
+    transform: [{ rotate: '-1.5deg' }],
     shadowColor: '#000',
-    shadowOffset: { width: 2, height: 6 },
-    shadowOpacity: 0.32,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOffset: { width: 1, height: 6 },
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    elevation: 10,
   },
   editorContextBlock: {
     paddingBottom: 4,

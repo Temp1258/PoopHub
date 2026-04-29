@@ -251,7 +251,11 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>📬 收件箱</Text>
-          <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}>
+          <TouchableOpacity
+            style={styles.headerCloseBtn}
+            onPress={onClose}
+            hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}
+          >
             <Text style={styles.closeBtn}>完成</Text>
           </TouchableOpacity>
         </View>
@@ -270,7 +274,13 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
               <Text style={styles.emptyTitle}>还没有收到信</Text>
               <Text style={styles.emptySub}>已送达的次日达和已开启的择日达都会出现在这里</Text>
             </View>
-          ) : listHeight > 0 ? (
+          ) : (
+            // Render unconditionally — gating on listHeight > 0 stalled the
+            // first paint when onLayout hadn't fired yet (pageSheet animation
+            // sometimes defers it), and the user only saw the cards after
+            // touching the screen forced a re-layout. verticalPad falls back
+            // to 0 while listHeight is still being measured; the cards
+            // re-center the moment onLayout reports the real height.
             <Animated.ScrollView
               ref={scrollViewRef as any}
               contentContainerStyle={[
@@ -373,7 +383,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                 );
               })}
             </Animated.ScrollView>
-          ) : null}
+          )}
         </View>
 
         <EnvelopeOpenAnimation
@@ -512,17 +522,28 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  // Title centered on screen with the 完成 button absolute-positioned at the
+  // right edge — gives a balanced iOS-style header without sacrificing tap
+  // target.
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 20,
     paddingBottom: 16,
+    minHeight: 32,
   },
   headerTitle: {
     fontSize: 22,
     fontWeight: '700',
     color: COLORS.text,
+    textAlign: 'center',
+  },
+  headerCloseBtn: {
+    position: 'absolute',
+    right: 20,
+    top: 0,
+    bottom: 16,
+    justifyContent: 'center',
   },
   closeBtn: {
     fontSize: 16,

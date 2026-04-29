@@ -1802,10 +1802,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: `content max ${STICKY_CONTENT_MAX} characters` });
     }
 
-    // Layout chosen on server so both clients render the same wall. Bounded
-    // range avoids extreme tilts that would clip stickies at screen edges.
-    const layoutX = 0.05 + Math.random() * 0.9;
-    const layoutRotation = (Math.random() - 0.5) * 12; // -6° .. +6°
+    // Layout is anchored to the *creator's* POV: layout_x is always picked in
+    // the left half [0.05..0.45]. The client mirrors x and rotation when the
+    // viewer is not the creator, so each side sees their own posts on the
+    // left and partner's on the right. Rotation guarantees a minimum |3°|
+    // so no sticky ends up looking perfectly square against the wall.
+    const layoutX = 0.05 + Math.random() * 0.4;
+    const sign = Math.random() > 0.5 ? 1 : -1;
+    const layoutRotation = sign * (3 + Math.random() * 5); // ±3°..±8°
 
     const result = dbOps.postSticky(userId, content.trim(), layoutX, layoutRotation);
     if (!result) {
