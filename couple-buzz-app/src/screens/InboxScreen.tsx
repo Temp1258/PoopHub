@@ -13,7 +13,9 @@ import {
   PanResponder,
   Dimensions,
   Easing,
+  Pressable,
 } from 'react-native';
+import { SpringPressable } from '../components/SpringPressable';
 
 const SCREEN_H = Dimensions.get('window').height;
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -287,21 +289,20 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       onRequestClose={onClose}
       presentationStyle="pageSheet"
     >
-      <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+      <View style={[styles.container, { paddingTop: 4 }]}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>📬 收件箱</Text>
-          <TouchableOpacity
-            style={styles.headerCloseBtn}
-            onPress={onClose}
-            hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}
-          >
-            <Text style={styles.closeBtn}>完成</Text>
-          </TouchableOpacity>
         </View>
 
-        <View
+        {/* Tap on the list background (anywhere not on a card or interactive
+            child) closes the inbox. ScrollView claims drag motions for itself
+            so vertical scrolls still work; taps on padding bubble up to this
+            Pressable. Card TouchableOpacity / SpringPressable on the pill
+            still capture their own presses without triggering close. */}
+        <Pressable
           style={styles.listWrap}
           onLayout={(e) => setListHeight(e.nativeEvent.layout.height)}
+          onPress={onClose}
         >
           {loading ? (
             <View style={styles.centered}>
@@ -423,6 +424,14 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
               })}
             </Animated.ScrollView>
           )}
+        </Pressable>
+
+        {/* "收起" 灵动岛 pill — primary close affordance, anchored to the bottom
+            center of the modal. Mirrors the StickyWallScreen toolbar pattern. */}
+        <View style={[styles.pillSlot, { paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
+          <SpringPressable onPress={onClose} style={styles.dismissPill} scaleTo={1.06}>
+            <Text style={styles.dismissPillText}>收起</Text>
+          </SpringPressable>
         </View>
 
         <EnvelopeOpenAnimation
@@ -561,14 +570,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  // Title centered on screen with the 完成 button absolute-positioned at the
-  // right edge — gives a balanced iOS-style header without sacrificing tap
-  // target.
+  // Title sits high in the modal (paddingTop on the container is small) and
+  // is horizontally centered. The 完成 button used to live here but moved to
+  // a "收起" pill at the bottom center, so the header is title-only now.
   header: {
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 20,
-    paddingBottom: 16,
+    paddingBottom: 12,
     minHeight: 32,
   },
   headerTitle: {
@@ -577,17 +586,32 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     textAlign: 'center',
   },
-  headerCloseBtn: {
+  // Bottom-center "收起" pill toolbar (灵动岛 styling).
+  pillSlot: {
     position: 'absolute',
-    right: 20,
-    top: 0,
-    bottom: 16,
-    justifyContent: 'center',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
   },
-  closeBtn: {
-    fontSize: 16,
+  dismissPill: {
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+    borderRadius: 24,
+    backgroundColor: COLORS.kiss,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    elevation: 8,
+    minWidth: 132,
+    alignItems: 'center',
+  },
+  dismissPillText: {
+    color: COLORS.white,
+    fontSize: 15,
     fontWeight: '600',
-    color: COLORS.kiss,
+    letterSpacing: 0.4,
   },
   listWrap: {
     flex: 1,

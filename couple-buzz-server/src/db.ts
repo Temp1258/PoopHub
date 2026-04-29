@@ -571,6 +571,43 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     db.exec("ALTER TABLE time_capsules ADD COLUMN visibility TEXT NOT NULL DEFAULT 'partner'");
   }
 
+  // Migration: relayout existing sticky_notes to the current standard
+  // (creator-side left half [0.05..0.45] + tilt magnitude [1°..5°]). Old
+  // rows posted under earlier rules — wider x range or taller tilts — would
+  // otherwise sit on the wall mismatched against new posts. Idempotent: any
+  // row already inside the standard is left alone, and re-randomization
+  // only fires if at least one row falls outside.
+  const stickyTableExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sticky_notes'"
+  ).get();
+  if (stickyTableExists) {
+    const violator = db.prepare(`
+      SELECT 1 FROM sticky_notes
+      WHERE status = 'posted'
+        AND (layout_x < 0.05 OR layout_x > 0.45
+          OR ABS(layout_rotation) < 1 OR ABS(layout_rotation) > 5)
+      LIMIT 1
+    `).get();
+    if (violator) {
+      const ids = db.prepare(
+        "SELECT id FROM sticky_notes WHERE status = 'posted'"
+      ).all() as { id: number }[];
+      const updateLayout = db.prepare(
+        "UPDATE sticky_notes SET layout_x = ?, layout_rotation = ? WHERE id = ?"
+      );
+      const relayout = db.transaction((rows: { id: number }[]) => {
+        for (const r of rows) {
+          const x = 0.05 + Math.random() * 0.4;
+          const sign = Math.random() > 0.5 ? 1 : -1;
+          const rot = sign * (1 + Math.random() * 4);
+          updateLayout.run(x, rot, r.id);
+        }
+      });
+      relayout(ids);
+      console.log(`[Migration] Relayout ${ids.length} sticky notes to current standard`);
+    }
+  }
+
   const insertUser = db.prepare(
     'INSERT INTO users (id, name, password_hash, pair_code, timezone) VALUES (?, ?, ?, ?, ?)'
   );

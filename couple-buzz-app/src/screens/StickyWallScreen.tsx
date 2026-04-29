@@ -439,16 +439,6 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
           </TouchableOpacity>
         </View>
 
-        {/* Floating date label, Apple-Photos style */}
-        {!!headerLabel && (
-          <Animated.View
-            pointerEvents="none"
-            style={[styles.floatingDate, { opacity: headerOpacity }]}
-          >
-            <Text style={styles.floatingDateText}>{headerLabel}</Text>
-          </Animated.View>
-        )}
-
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator color={COLORS.kiss} />
@@ -466,10 +456,23 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             renderItem={renderItem}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
-            contentContainerStyle={{ paddingTop: 8, paddingBottom: 140 + insets.bottom }}
+            contentContainerStyle={{ paddingTop: 32, paddingBottom: 140 + insets.bottom }}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
           />
+        )}
+
+        {/* Floating date label rendered AFTER the FlatList so scrolling
+            stickies pass behind it instead of covering it. Apple-Photos
+            style: pinned to upper-left, fades out 1.4s after the user stops
+            scrolling. */}
+        {!!headerLabel && (
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.floatingDate, { opacity: headerOpacity }]}
+          >
+            <Text style={styles.floatingDateText}>{headerLabel}</Text>
+          </Animated.View>
         )}
 
         {renderEditor()}
