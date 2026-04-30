@@ -4,16 +4,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
-import MailboxCard from '../components/MailboxCard';
-import TimeCapsuleCard from '../components/TimeCapsuleCard';
 import InboxScreen, { InboxHandle } from './InboxScreen';
 import TrashScreen, { TrashHandle } from './TrashScreen';
 import StickyWallScreen, { StickyWallHandle } from './StickyWallScreen';
+import WriteLetterScreen from './WriteLetterScreen';
 import { hasUnreadInboxItems } from '../utils/inboxUnread';
 import { api } from '../services/api';
 import { subscribe } from '../services/socket';
-
-type Reloadable = { reload: () => Promise<void> };
+import { storage } from '../utils/storage';
+import { SpringPressable } from '../components/SpringPressable';
 
 export default function MailboxScreen() {
   const insets = useSafeAreaInsets();
@@ -21,10 +20,10 @@ export default function MailboxScreen() {
   const [inboxOpen, setInboxOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [stickyOpen, setStickyOpen] = useState(false);
+  const [writeOpen, setWriteOpen] = useState(false);
   const [inboxHasUnread, setInboxHasUnread] = useState(false);
   const [stickyHasUnread, setStickyHasUnread] = useState(false);
-  const mailboxRef = useRef<Reloadable>(null);
-  const capsuleRef = useRef<Reloadable>(null);
+  const [partnerName, setPartnerName] = useState<string>('');
   const inboxRef = useRef<InboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
   const stickyRef = useRef<StickyWallHandle>(null);
@@ -35,7 +34,7 @@ export default function MailboxScreen() {
 
   // Sticky wall state — drives the entry card's 小红旗 and auto-opens the
   // wall when an unposted temp exists, per the spec ("下次点到信箱界面，还
-  //停在没写完的临时便利贴上"). Auto-open is gated on focus / app-active so
+  // 停在没写完的临时便利贴上"). Auto-open is gated on focus / app-active so
   // socket events don't keep popping the modal.
   const refreshStickyFlag = useCallback(async (opts: { autoOpenIfTemp: boolean }) => {
     try {
@@ -47,14 +46,13 @@ export default function MailboxScreen() {
     } catch {}
   }, []);
 
-  // Refresh on every focus + when the app comes back to foreground. Both
-  // matter: the flag should pop on if a new letter arrived while the tab
-  // was off-screen, and should clear after a quick visit to the inbox
-  // (which advances INBOX_LAST_SEEN).
+  // Refresh on every focus + when the app comes back to foreground.
   useFocusEffect(
     useCallback(() => {
       refreshUnreadFlag();
       refreshStickyFlag({ autoOpenIfTemp: true });
+      // Pull cached partner name for the 写信 → 择日达 → "给对方" label.
+      storage.getPartnerName().then(n => { if (n) setPartnerName(n); }).catch(() => {});
     }, [refreshUnreadFlag, refreshStickyFlag])
   );
 
@@ -75,6 +73,7 @@ export default function MailboxScreen() {
       refreshStickyFlag({ autoOpenIfTemp: false });
     });
   }, [refreshStickyFlag]);
+
   // Scroll-bound fade — see UsScreen for the same pattern + rationale.
   const scrollY = useRef(new Animated.Value(0)).current;
   const fadeOpacity = scrollY.interpolate({
@@ -87,8 +86,6 @@ export default function MailboxScreen() {
     setRefreshing(true);
     try {
       await Promise.all([
-        mailboxRef.current?.reload(),
-        capsuleRef.current?.reload(),
         inboxRef.current?.reload(),
         trashRef.current?.reload(),
         refreshUnreadFlag(),
@@ -102,7 +99,7 @@ export default function MailboxScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
       <Animated.ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: 140 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -117,9 +114,6 @@ export default function MailboxScreen() {
         )}
         scrollEventThrottle={16}
       >
-        <MailboxCard ref={mailboxRef} />
-        <TimeCapsuleCard ref={capsuleRef} />
-
         <TouchableOpacity
           style={styles.entry}
           onPress={() => setInboxOpen(true)}
@@ -136,31 +130,32 @@ export default function MailboxScreen() {
 
         <TouchableOpacity
           style={styles.entry}
-          onPress={() => setStickyOpen(true)}
-          activeOpacity={0.85}
-        >
-          <Text style={styles.entryEmoji}>📝</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.entryTitle}>每日一帖</Text>
-            <Text style={styles.entrySub}>双方共享的便利贴墙</Text>
-          </View>
-          {stickyHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
-          <Text style={styles.entryArrow}>›</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.entry}
           onPress={() => setTrashOpen(true)}
           activeOpacity={0.85}
         >
           <Text style={styles.entryEmoji}>🗑️</Text>
           <View style={{ flex: 1 }}>
-            <Text style={styles.entryTitle}>垃圾篓</Text>
+            <Text style={styles.entryTitle}>废件箱</Text>
             <Text style={styles.entrySub}>从收件箱删除的信件可以在这里恢复</Text>
           </View>
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.entry}
+          onPress={() => setStickyOpen(true)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.entryEmoji}>📝</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.entryTitle}>小贴吧</Text>
+            <Text style={styles.entrySub}>双方共享的便利贴墙</Text>
+          </View>
+          {stickyHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
+          <Text style={styles.entryArrow}>›</Text>
+        </TouchableOpacity>
       </Animated.ScrollView>
+
       {/* Scroll-bound top fade — see UsScreen for rationale. */}
       <Animated.View
         pointerEvents="none"
@@ -178,6 +173,20 @@ export default function MailboxScreen() {
           style={{ flex: 1 }}
         />
       </Animated.View>
+
+      {/* 写信 floating pill — anchored at the bottom of the screen, just above
+          the home indicator + tab bar. Replaces the old MailboxCard +
+          TimeCapsuleCard cards inline; tapping it opens the unified
+          letter-writing flow that branches to 次日达 / 择日达 after sealing. */}
+      <View style={[styles.writePillSlot, { bottom: insets.bottom + 96 }]} pointerEvents="box-none">
+        <SpringPressable
+          onPress={() => setWriteOpen(true)}
+          style={styles.writePill}
+          scaleTo={1.06}
+        >
+          <Text style={styles.writePillText}>写信 ✉️</Text>
+        </SpringPressable>
+      </View>
 
       <InboxScreen
         ref={inboxRef}
@@ -201,6 +210,11 @@ export default function MailboxScreen() {
         onClose={() => setStickyOpen(false)}
         onUnreadChange={setStickyHasUnread}
       />
+      <WriteLetterScreen
+        visible={writeOpen}
+        onClose={() => setWriteOpen(false)}
+        partnerName={partnerName}
+      />
     </View>
   );
 }
@@ -212,7 +226,6 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 20,
-    paddingBottom: 40,
     gap: 16,
   },
   entry: {
@@ -247,5 +260,33 @@ const styles = StyleSheet.create({
   unreadFlag: {
     fontSize: 18,
     marginRight: 6,
+  },
+  // Floating 写信 pill anchored above the bottom tab bar. The bottom offset
+  // (insets.bottom + 96) accounts for safe area + the PillTabBar's height
+  // (~width*0.175) on typical iPhone widths.
+  writePillSlot: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  writePill: {
+    paddingHorizontal: 32,
+    paddingVertical: 13,
+    borderRadius: 26,
+    backgroundColor: COLORS.kiss,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    elevation: 8,
+    minWidth: 140,
+    alignItems: 'center',
+  },
+  writePillText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
 });
