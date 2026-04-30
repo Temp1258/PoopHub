@@ -11,6 +11,10 @@ export const INK_PARTNER = '#0F4F8A';   // 深蓝墨水
 const PAPER = '#FFFBE6';                // warm cream sticky paper
 
 const STICKY_WIDTH_RATIO = 0.66;
+// Each block in a sticky renders as its own paper. They overlap by this
+// amount (within the papers' padding zones, so no content gets clipped) and
+// are stitched together by a small staple visual at each joint.
+const BLOCK_OVERLAP = 14;
 
 interface Props {
   sticky: StickyView;
@@ -46,14 +50,13 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
   const { width: screenW } = useWindowDimensions();
   const stickyW = Math.round(screenW * STICKY_WIDTH_RATIO);
 
-  // Server anchors layout_x to the creator's POV, always in the left half
-  // [0.05..0.45]. From each viewer's perspective we want our own stickies on
-  // our left and partner's on our right — so mirror x and rotation when the
-  // viewer is not the creator. Both sides see a coherent "mine left / yours
-  // right" wall, even though only one row exists per sticky in the DB.
+  // Server anchors layout_x to the creator's POV (always in the left half
+  // [0.05..0.45]). From each viewer's perspective we want our own stickies
+  // on our left and partner's on our right — so mirror x when the viewer is
+  // not the creator. Per-block rotations are likewise mirrored below at the
+  // point each paper is rendered.
   const isMine = sticky.author_role === 'me';
   const effectiveX = isMine ? sticky.layout_x : 1 - sticky.layout_x;
-  const effectiveRotation = isMine ? sticky.layout_rotation : -sticky.layout_rotation;
 
   const slack = screenW - stickyW - 32; // 32 = horizontal margin (16 each side)
   const leftPx = Math.max(0, Math.min(slack, effectiveX * slack));
@@ -126,55 +129,93 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
     [enterOpacity, tearOpacity]
   );
 
-  // Compose all transforms in one array so the entry/selection/tear scales
-  // stack multiplicatively on top of the persistent rotation.
-  const transform = useMemo(
-    () => [
-      { translateY: enterY },
-      { translateY: tearY },
-      { scale: enterScale },
-      { scale: selectScale },
-      { scale: tearScale },
-      { rotate: tearRotateDeg },
-      { rotate: `${effectiveRotation}deg` },
-    ],
-    [effectiveRotation, enterY, tearY, enterScale, selectScale, tearScale, tearRotateDeg]
-  );
+  // Build a transform array for one paper given its own rotation. The shared
+  // animated values (enter / select / tear) drive ALL papers in the thread
+  // together so the whole stack moves as one cohesive unit, while each paper
+  // gets its own per-block tilt for the "scattered" stapled look.
+  const paperTransform = (rotDeg: number) => [
+    { translateY: enterY },
+    { translateY: tearY },
+    { scale: enterScale },
+    { scale: selectScale },
+    { scale: tearScale },
+    { rotate: tearRotateDeg },
+    { rotate: `${rotDeg}deg` },
+  ];
 
   return (
     <View style={{ marginLeft: leftPx + 16, width: stickyW }}>
       <Pressable onPress={onPress}>
-        <Animated.View style={[styles.paper, { transform, opacity }, selected && styles.paperSelected]}>
-          {/* High-contrast ring on selection — sits flush around the paper
-              edge so the sticky reads as "picked up" without layout shift
-              (the always-present transparent border keeps the inner area
-              the same size whether selected or not). */}
-          {selected && <View style={styles.selectedRing} pointerEvents="none" />}
+        <View>
+          {blocks.map((block, i) => {
+            const isFirst = i === 0;
+            const isLast = i === blocks.length - 1;
+            const rawRot = block.layout_rotation || 0;
+            const blockRot = isMine ? rawRot : -rawRot;
+            // Show a staple under this paper if there's another paper coming
+            // — either another committed block or my pending temp comment.
+            const hasNextPaper = !isLast || !!sticky.my_temp_block;
+            return (
+              <Animated.View
+                key={block.id}
+                style={[
+                  styles.paper,
+                  {
+                    transform: paperTransform(blockRot),
+                    opacity,
+                    marginTop: isFirst ? 0 : -BLOCK_OVERLAP,
+                    // Older papers on top so each subsequent paper peeks out
+                    // *below* the one above it — like a real stack of stapled
+                    // sheets. Higher zIndex also keeps the staple (a child of
+                    // the upper paper) visually crossing the joint without
+                    // being hidden by the next paper.
+                    zIndex: blocks.length - i + 10,
+                  },
+                  selected && styles.paperSelected,
+                ]}
+              >
+                {selected && <View style={styles.selectedRing} pointerEvents="none" />}
+                {isFirst && sticky.unread && !writingComment && (
+                  <View style={styles.unreadIsland} pointerEvents="none">
+                    <Text style={styles.unreadText}>未读</Text>
+                  </View>
+                )}
+                <BlockText block={block} />
+                {hasNextPaper && (
+                  <View style={styles.stapleSlot} pointerEvents="none">
+                    <View style={styles.stapleTop} />
+                    <View style={styles.stapleLeg} />
+                    <View style={[styles.stapleLeg, styles.stapleLegRight]} />
+                  </View>
+                )}
+              </Animated.View>
+            );
+          })}
 
-          {sticky.unread && !writingComment && (
-            <View style={styles.unreadIsland} pointerEvents="none">
-              <Text style={styles.unreadText}>未读</Text>
-            </View>
-          )}
-
-          {blocks.map((block, i) => (
-            <View key={block.id}>
-              {i > 0 && <View style={styles.divider} />}
-              <BlockText block={block} />
-            </View>
-          ))}
-
-          {/* My in-progress comment on this sticky (rendered grayed-out/italic
-              to signal "not yet committed"). Partner can't see this. */}
+          {/* My in-progress comment renders as its own dashed-border paper at
+              the bottom of the thread — visually part of the stack but
+              clearly "draft". Partner can't see this. */}
           {sticky.my_temp_block && (
-            <View>
-              <View style={[styles.divider, styles.dividerPending]} />
+            <Animated.View
+              style={[
+                styles.paper,
+                styles.paperPending,
+                {
+                  transform: paperTransform(0),
+                  opacity,
+                  marginTop: -BLOCK_OVERLAP,
+                  zIndex: 1,
+                },
+                selected && styles.paperSelected,
+              ]}
+            >
+              {selected && <View style={styles.selectedRing} pointerEvents="none" />}
               <Text style={[styles.blockText, styles.pendingText]}>
                 {sticky.my_temp_block.content || '（继续写...）'}
               </Text>
-            </View>
+            </Animated.View>
           )}
-        </Animated.View>
+        </View>
       </Pressable>
     </View>
   );
@@ -239,19 +280,52 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text,
   },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(92, 64, 51, 0.18)',
-    marginVertical: 10,
+  // Staple visual at the joint between two papers. Three small rectangles
+  // form a "U" seen from above (top bar + two legs). Sits half-inside the
+  // upper paper's bottom and half-outside (where it lands inside the next
+  // paper's overlap region), and is a child of the upper paper which sits
+  // higher in z, so it visibly crosses both sheets.
+  stapleSlot: {
+    position: 'absolute',
+    bottom: -4,
+    left: '50%',
+    marginLeft: -9,
+    width: 18,
+    height: 8,
+    zIndex: 50,
   },
-  dividerPending: {
-    backgroundColor: 'transparent',
+  stapleTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: '#5A5A5A',
+    borderRadius: 1,
+  },
+  stapleLeg: {
+    position: 'absolute',
+    top: 2,
+    left: 0,
+    width: 2,
+    height: 6,
+    backgroundColor: '#5A5A5A',
+    borderRadius: 1,
+  },
+  stapleLegRight: {
+    left: undefined,
+    right: 0,
+  },
+  // In-progress comment paper: dashed border + faintly different bg makes
+  // the "draft" status read instantly. Only the author sees it.
+  paperPending: {
     borderStyle: 'dashed',
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 2,
     borderColor: 'rgba(92, 64, 51, 0.4)',
+    backgroundColor: '#FFF5D6',
   },
   pendingText: {
-    color: 'rgba(92, 64, 51, 0.55)',
+    color: 'rgba(92, 64, 51, 0.6)',
     fontStyle: 'italic',
     fontWeight: '500',
   },

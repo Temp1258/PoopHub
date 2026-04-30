@@ -1721,6 +1721,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
           author_role: b.author_id === userId ? 'me' : 'partner',
           content: b.content,
           committed_at: b.committed_at,
+          layout_rotation: b.layout_rotation,
         })),
         my_temp_block: myTempBlock
           ? { content: myTempBlock.content }

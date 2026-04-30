@@ -351,6 +351,10 @@ export interface StickyBlockView {
   author_role: 'me' | 'partner';
   content: string;
   committed_at: string | null;
+  // Each block renders as its own paper in the sticky's "stapled stack" with
+  // an independent tilt — server picks at commit time so both clients see
+  // the same scattered arrangement.
+  layout_rotation: number;
 }
 
 export interface StickyView {

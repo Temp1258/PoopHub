@@ -174,6 +174,9 @@ export interface StickyBlock {
   status: 'temp' | 'committed';
   committed_at: string | null;
   created_at: string;
+  // 每条 block 自己独立成一张便利贴纸渲染时使用的倾角。生成于 commit 一刻，
+  // 同一 sticky 下不同 block 各自独立，让叠在一起的几张纸看起来错落有致。
+  layout_rotation: number;
 }
 
 export interface StickySeen {
@@ -575,6 +578,21 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     db.exec("ALTER TABLE time_capsules ADD COLUMN visibility TEXT NOT NULL DEFAULT 'partner'");
   }
 
+  // Migration: add layout_rotation column to sticky_blocks. Each committed
+  // block now renders as its own paper with an independent tilt; this column
+  // stores that tilt so both clients see the same arrangement. Pre-existing
+  // committed blocks default to 0 and will be repaired by the relayout pass
+  // below.
+  const stickyBlocksTableExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sticky_blocks'"
+  ).get();
+  if (stickyBlocksTableExists) {
+    const stickyBlockCols = db.pragma('table_info(sticky_blocks)') as { name: string }[];
+    if (!stickyBlockCols.some((c) => c.name === 'layout_rotation')) {
+      db.exec('ALTER TABLE sticky_blocks ADD COLUMN layout_rotation REAL NOT NULL DEFAULT 0');
+    }
+  }
+
   // Migration: relayout existing sticky_notes to the current standard
   // (creator-side left half [0.05..0.45] + tilt magnitude [1°..5°]). Old
   // rows posted under earlier rules — wider x range or taller tilts — would
@@ -609,6 +627,34 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       });
       relayout(ids);
       console.log(`[Migration] Relayout ${ids.length} sticky notes to current standard`);
+    }
+  }
+
+  // Migration: same idempotent re-randomization for sticky_blocks tilts.
+  // Catches pre-column rows (rotation=0) and anything outside [1°,5°].
+  if (stickyBlocksTableExists) {
+    const violatorBlock = db.prepare(`
+      SELECT 1 FROM sticky_blocks
+      WHERE status = 'committed'
+        AND (ABS(layout_rotation) < 1 OR ABS(layout_rotation) > 5)
+      LIMIT 1
+    `).get();
+    if (violatorBlock) {
+      const ids = db.prepare(
+        "SELECT id FROM sticky_blocks WHERE status = 'committed'"
+      ).all() as { id: number }[];
+      const updateBlockRot = db.prepare(
+        "UPDATE sticky_blocks SET layout_rotation = ? WHERE id = ?"
+      );
+      const relayout = db.transaction((rows: { id: number }[]) => {
+        for (const r of rows) {
+          const sign = Math.random() > 0.5 ? 1 : -1;
+          const rot = sign * (1 + Math.random() * 4);
+          updateBlockRot.run(rot, r.id);
+        }
+      });
+      relayout(ids);
+      console.log(`[Migration] Relayout ${ids.length} sticky blocks to per-block tilt`);
     }
   }
 
@@ -964,7 +1010,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   `);
   const stmtCommitStickyInitialBlock = db.prepare(`
     UPDATE sticky_blocks
-    SET status = 'committed', committed_at = CURRENT_TIMESTAMP, content = ?
+    SET status = 'committed', committed_at = CURRENT_TIMESTAMP,
+        content = ?, layout_rotation = ?
     WHERE sticky_id = ? AND author_id = ? AND status = 'temp'
   `);
   const stmtDeleteTempStickyBlocks = db.prepare(
@@ -1011,9 +1058,18 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   const stmtCommitBlock = db.prepare(`
     UPDATE sticky_blocks
-    SET status = 'committed', committed_at = CURRENT_TIMESTAMP, content = ?
+    SET status = 'committed', committed_at = CURRENT_TIMESTAMP,
+        content = ?, layout_rotation = ?
     WHERE sticky_id = ? AND author_id = ? AND status = 'temp'
   `);
+
+  // Pick a random tilt for a freshly-committed block, in the same magnitude
+  // range as posts ([1°, 5°]). Independent per block so a thread of stapled
+  // papers reads as visually scattered, not perfectly aligned.
+  function pickBlockRotation(): number {
+    const sign = Math.random() > 0.5 ? 1 : -1;
+    return sign * (1 + Math.random() * 4);
+  }
 
   // Per-recipient seen cursor.
   const stmtUpsertStickySeen = db.prepare(`
@@ -1501,7 +1557,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         if (!temp) return null;
         const headerResult = stmtPostStickyHeader.run(layoutX, layoutRotation, temp.id);
         if (headerResult.changes === 0) return null;
-        const blockResult = stmtCommitStickyInitialBlock.run(content, temp.id, userId);
+        // Each block carries its own random tilt independent of the sticky's
+        // overall rotation — drives the multi-paper "stapled stack" look.
+        const blockRotation = pickBlockRotation();
+        const blockResult = stmtCommitStickyInitialBlock.run(content, blockRotation, temp.id, userId);
         if (blockResult.changes === 0) return null;
         const sticky = stmtGetStickyById.get(temp.id) as StickyNote;
         // After commit the original temp row is now 'committed' — fetch by
@@ -1571,7 +1630,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     commitBlock(stickyId, authorId, content): StickyBlock | null {
-      const result = stmtCommitBlock.run(content, stickyId, authorId);
+      const blockRotation = pickBlockRotation();
+      const result = stmtCommitBlock.run(content, blockRotation, stickyId, authorId);
       if (result.changes === 0) return null;
       // After commit the row is no longer 'temp', so re-fetch by (sticky,
       // author) for the most-recent committed block authored here.
