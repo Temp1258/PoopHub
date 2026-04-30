@@ -12,12 +12,16 @@ import {
   Keyboard,
   TouchableOpacity,
   Dimensions,
+  InputAccessoryView,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api } from '../services/api';
 import { SpringPressable } from '../components/SpringPressable';
+import { storage } from '../utils/storage';
+import { formatPostmark } from '../utils/postmark';
 
 interface Props {
   visible: boolean;
@@ -49,6 +53,11 @@ const DAY_PRESETS = [
 ];
 
 const SCREEN_H = Dimensions.get('window').height;
+// nativeID linking the editor's TextInput to its iOS InputAccessoryView. The
+// accessory bar shows above the keyboard with a "完成" button so the user
+// can dismiss the keyboard from a fixed location no matter where they're
+// looking on the page.
+const KB_ACCESSORY_ID = 'writeLetterDoneBar';
 
 // Compute YYYY-MM-DD `daysAhead` days from today. Server validates the
 // unlock_date is strictly in the future, so days >= 1 is required.
@@ -74,13 +83,24 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   const [recipient, setRecipient] = useState<Recipient>('partner');
   const [submitting, setSubmitting] = useState(false);
 
-  // Reset stage + state every time the modal opens. Stale state from a
-  // previous session would otherwise leak into the new one (e.g. user opens,
-  // writes, dismisses, reopens — they should see a clean letter).
+  // User-side data for the formal letter heading + footer signature. Pulled
+  // from local storage on each open so a fresh nickname / timezone / partner
+  // remark immediately reflects in the letter.
+  const [myName, setMyName] = useState('');
+  const [myTz, setMyTz] = useState('Asia/Shanghai');
+  const [partnerRemark, setPartnerRemark] = useState('');
+  // 1-minute tick so the footer time keeps up with the wall clock if the
+  // user lingers in the editor. Uses a state stub since we only need a
+  // re-render trigger, not the value.
+  const [, setNowTick] = useState(0);
+
+  // Reset stage + per-letter state every time the modal opens, but DO load
+  // the persisted draft body from AsyncStorage so an accidental exit doesn't
+  // throw away the user's typing. The draft is cleared on successful submit
+  // (in runSubmit) — anything else (close, swipe-down) preserves it.
   useEffect(() => {
     if (visible) {
       setStage('write');
-      setContent('');
       setDaysAhead(7);
       setRecipient('partner');
       setSubmitting(false);
@@ -90,8 +110,44 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       letterRotate.setValue(0);
       letterOpacity.setValue(1);
       mailboxBounce.setValue(0);
+
+      // Load saved draft + sender/partner identity bits.
+      Promise.all([
+        storage.getWriteLetterDraft(),
+        storage.getUserName(),
+        storage.getTimezone(),
+        storage.getPartnerRemark(),
+      ]).then(([savedDraft, n, tz, r]) => {
+        setContent(savedDraft || '');
+        if (n) setMyName(n);
+        if (tz) setMyTz(tz);
+        if (r) setPartnerRemark(r);
+      }).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  // Debounced draft autosave. Without this, content typed quickly before
+  // the user accidentally closes the modal (e.g. swipe-down within 500ms of
+  // typing) wouldn't make it to AsyncStorage.
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!visible) return;
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    draftSaveTimer.current = setTimeout(() => {
+      storage.setWriteLetterDraft(content).catch(() => {});
+    }, 400);
+    return () => {
+      if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    };
+  }, [content, visible]);
+
+  // 1-minute tick to refresh the footer's "now" timestamp while the user
+  // is composing.
+  useEffect(() => {
+    if (!visible) return;
+    const t = setInterval(() => setNowTick(n => n + 1), 60000);
+    return () => clearInterval(t);
   }, [visible]);
 
   // ── Animation values for the "letter into mailbox" delivery ───────────
@@ -195,6 +251,10 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
 
       try {
         await Promise.all([animPromise, apiPromise]);
+        // Letter shipped — clear the persisted draft so a fresh open shows
+        // an empty page.
+        await storage.clearWriteLetterDraft();
+        setContent('');
         onClose();
       } catch (e: any) {
         Alert.alert('', e?.message || '寄送失败');
@@ -215,38 +275,69 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
 
   // ── Stage-specific renders ────────────────────────────────────────────
 
-  const renderWriteStage = () => (
-    <>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>写信</Text>
-      </View>
-      <View style={styles.bodyArea}>
-        <Pressable style={styles.letterPaper} onPress={Keyboard.dismiss}>
-          <Text style={styles.letterDate}>
-            {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}
-          </Text>
-          <TextInput
-            value={content}
-            onChangeText={setContent}
-            placeholder="写下你想说的话..."
-            placeholderTextColor="rgba(92, 64, 51, 0.4)"
-            multiline
-            maxLength={1000}
-            style={styles.letterBody}
-          />
-          <Text style={styles.letterCount}>{content.length} / 1000</Text>
+  const renderWriteStage = () => {
+    // Addressee defaults to the partner's nickname (remark > name > "对方"),
+    // unless the user has already chosen 给自己 in the capsule-details stage
+    // and come back to edit. Signature is always the writer's own name.
+    const addressee = recipient === 'self'
+      ? (myName || '自己')
+      : (partnerRemark || partnerName || '对方');
+    const signature = myName || '我';
+    const nowStamp = formatPostmark(new Date().toISOString(), myTz);
+
+    return (
+      <>
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>写信</Text>
+        </View>
+        {/* Outer Pressable so tapping the gray modal bg around the paper
+            also dismisses the keyboard. Inner Pressable on the paper does
+            the same for the paper's padding (header / footer / count). */}
+        <Pressable style={styles.bodyArea} onPress={Keyboard.dismiss}>
+          <Pressable style={styles.letterPaper} onPress={Keyboard.dismiss}>
+            <Text style={styles.letterAddress}>致 {addressee}：</Text>
+            <TextInput
+              value={content}
+              onChangeText={setContent}
+              placeholder="写下你想说的话..."
+              placeholderTextColor="rgba(92, 64, 51, 0.4)"
+              multiline
+              maxLength={1000}
+              style={styles.letterBody}
+              inputAccessoryViewID={Platform.OS === 'ios' ? KB_ACCESSORY_ID : undefined}
+            />
+            <View style={styles.letterFooter}>
+              <Text style={styles.letterFooterTime}>{nowStamp}</Text>
+              <Text style={styles.letterFooterSig}>—— {signature}</Text>
+              <Text style={styles.letterCount}>{content.length} / 1000</Text>
+            </View>
+          </Pressable>
         </Pressable>
-      </View>
-      <View style={[styles.toolbar, { paddingBottom: insets.bottom + 16 }]}>
-        <SpringPressable onPress={handleCancel} style={[styles.pill, styles.pillSecondary]}>
-          <Text style={styles.pillSecondaryText}>不写了</Text>
-        </SpringPressable>
-        <SpringPressable onPress={handleSeal} style={[styles.pill, styles.pillPrimary]}>
-          <Text style={styles.pillPrimaryText}>封存</Text>
-        </SpringPressable>
-      </View>
-    </>
-  );
+        <View style={[styles.toolbar, { paddingBottom: insets.bottom + 16 }]}>
+          <SpringPressable onPress={handleCancel} style={[styles.pill, styles.pillSecondary]}>
+            <Text style={styles.pillSecondaryText}>不写了</Text>
+          </SpringPressable>
+          <SpringPressable onPress={handleSeal} style={[styles.pill, styles.pillPrimary]}>
+            <Text style={styles.pillPrimaryText}>封存</Text>
+          </SpringPressable>
+        </View>
+
+        {/* iOS keyboard accessory — fixed bar above the keyboard with a
+            "完成" button. Gives the user a deterministic dismiss target
+            regardless of where they're focused on the page. */}
+        {Platform.OS === 'ios' && (
+          <InputAccessoryView nativeID={KB_ACCESSORY_ID}>
+            <View style={styles.kbBar}>
+              <TouchableOpacity onPress={Keyboard.dismiss} style={styles.kbBarBtn} hitSlop={{ top: 6, bottom: 6, left: 12, right: 12 }}>
+                <Text style={styles.kbBarIcon}>⌄</Text>
+                <Text style={styles.kbBarText}>完成</Text>
+              </TouchableOpacity>
+            </View>
+          </InputAccessoryView>
+        )}
+      </>
+    );
+  };
 
   const renderKindStage = () => (
     <>
@@ -462,11 +553,13 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 6,
   },
-  letterDate: {
-    fontSize: 13,
-    color: '#8B7355',
-    textAlign: 'right',
-    marginBottom: 12,
+  // Salutation at the top of the page — "致 X：". Keeps the formal letter
+  // shape; the address is filled in from the user's data, not editable.
+  letterAddress: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: INK,
+    marginBottom: 14,
     fontStyle: 'italic',
   },
   letterBody: {
@@ -478,11 +571,55 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     fontWeight: '500',
   },
+  // Footer block with time + signature + char count. Right-aligned to
+  // match traditional letter-bottom signatures.
+  letterFooter: {
+    alignItems: 'flex-end',
+    marginTop: 10,
+    gap: 2,
+  },
+  letterFooterTime: {
+    fontSize: 12,
+    color: '#8B7355',
+    fontVariant: ['tabular-nums'],
+    fontStyle: 'italic',
+  },
+  letterFooterSig: {
+    fontSize: 14,
+    color: INK,
+    fontStyle: 'italic',
+    fontWeight: '500',
+    marginTop: 2,
+  },
   letterCount: {
-    alignSelf: 'flex-end',
     fontSize: 11,
     color: '#8B7355',
-    marginTop: 6,
+    marginTop: 4,
+  },
+
+  // ── iOS keyboard accessory bar ─────────────────────────────────────────
+  kbBar: {
+    backgroundColor: '#F2F2F7',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(0,0,0,0.18)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    alignItems: 'flex-end',
+  },
+  kbBarBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  kbBarIcon: {
+    fontSize: 18,
+    color: '#0A84FF',
+    lineHeight: 20,
+  },
+  kbBarText: {
+    fontSize: 15,
+    color: '#0A84FF',
+    fontWeight: '500',
   },
 
   // ── Sealed letter card (kind stage preview) ────────────────────────────

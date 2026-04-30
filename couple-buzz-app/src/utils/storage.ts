@@ -14,6 +14,7 @@ const KEYS = {
   DAILY_SEEN_PA: 'couple_buzz_daily_seen_pa',
   DAILY_SEEN_PS: 'couple_buzz_daily_seen_ps',
   INBOX_LAST_SEEN: 'couple_buzz_inbox_last_seen',
+  WRITE_LETTER_DRAFT: 'couple_buzz_write_letter_draft',
 };
 
 export const storage = {
@@ -125,6 +126,21 @@ export const storage = {
 
   async setInboxLastSeen(iso: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.INBOX_LAST_SEEN, iso);
+  },
+
+  // Draft body of an in-progress letter from WriteLetterScreen. Persists
+  // across modal close so the user doesn't lose typed content if they
+  // accidentally exit. Cleared on successful submit.
+  async getWriteLetterDraft(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.WRITE_LETTER_DRAFT);
+  },
+
+  async setWriteLetterDraft(text: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.WRITE_LETTER_DRAFT, text);
+  },
+
+  async clearWriteLetterDraft(): Promise<void> {
+    await AsyncStorage.removeItem(KEYS.WRITE_LETTER_DRAFT);
   },
 
   async clearAll(): Promise<void> {

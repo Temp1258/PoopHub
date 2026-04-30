@@ -24,6 +24,7 @@ import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 import { storage } from '../utils/storage';
 import { mailboxRevealTime, normalizeIso } from '../utils/inboxUnread';
+import { formatPostmark } from '../utils/postmark';
 import EnvelopeOpenAnimation from '../components/EnvelopeOpenAnimation';
 import IslandToast, { IslandToastHandle } from '../components/IslandToast';
 
@@ -57,6 +58,11 @@ interface LetterCard {
   accent: string;
   // Partner-side timezone — formats the postmark in the writer's frame.
   fromTz: string;
+  // Receiver's own timezone — used to render a second postmark line so the
+  // recipient sees the moment the letter was written in BOTH the sender's
+  // local clock and their own clock. ISO of the send moment used by both.
+  toTz: string;
+  arrivedIso: string;
 }
 
 const MAILBOX_ACCENT = '#FFB5C2';
@@ -134,6 +140,8 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           kindLabel: '次日达 · 来自 ta',
           accent: MAILBOX_ACCENT,
           fromTz: partnerZone,
+          toTz: myZone,
+          arrivedIso: writtenAt,
         });
       }
 
@@ -155,19 +163,22 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           writerZone = partnerZone;
         }
         const capsuleArrived = normalizeIso(c.opened_at);
+        const writtenIso = normalizeIso(c.created_at);
         out.push({
           key: `c-${c.id}`,
           kind: 'capsule',
           refId: c.id,
           arrivedAt: capsuleArrived,
           sortAt: capsuleArrived,
-          date: formatPostmark(normalizeIso(c.created_at), writerZone),
+          date: formatPostmark(writtenIso, writerZone),
           from,
           to,
           body: c.content,
           kindLabel,
           accent: CAPSULE_ACCENT,
           fromTz: writerZone,
+          toTz: myZone,
+          arrivedIso: writtenIso,
         });
       }
 
@@ -399,7 +410,19 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                               </View>
                             )}
                           </View>
-                          <Text style={styles.cardDate}>{card.date}</Text>
+                          {/* Two-line postmark — same write moment shown
+                              in both timezones. Lets the recipient see
+                              what local-time the writer wrote it AND what
+                              local-time it was for them, without doing
+                              tz math themselves. */}
+                          <View style={styles.cardStampStack}>
+                            <Text style={styles.cardStampLine}>
+                              ta：{card.date}
+                            </Text>
+                            <Text style={styles.cardStampLine}>
+                              我：{formatPostmark(card.arrivedIso, card.toTz)}
+                            </Text>
+                          </View>
                         </View>
                         <View style={styles.cardDivider} />
                         <View style={styles.cardFromTo}>
@@ -527,43 +550,9 @@ function SwipeableCard({
   );
 }
 
-// Friendly Chinese names for the timezones a user can pick in Settings.
-// Falls back to GMT±N for any tz not in this list (e.g. an auto-detected
-// device timezone that doesn't match the picker presets).
-const TZ_FRIENDLY: Record<string, string> = {
-  'Asia/Shanghai': '北京时间',
-  'Asia/Hong_Kong': '香港时间',
-  'Asia/Taipei': '台北时间',
-  'Asia/Tokyo': '东京时间',
-  'Asia/Seoul': '首尔时间',
-  'Asia/Singapore': '新加坡时间',
-  'America/New_York': '纽约时间',
-  'America/Los_Angeles': '洛杉矶时间',
-  'America/Chicago': '芝加哥时间',
-  'Europe/London': '伦敦时间',
-  'Europe/Paris': '巴黎时间',
-  'Europe/Berlin': '柏林时间',
-  'Australia/Sydney': '悉尼时间',
-};
-
-// "纽约时间 04-27 20:34" — postmark for the inbox card. Format the moment
-// in the writer's timezone so the recipient sees the same wall-clock time
-// the writer saw when sending.
-function formatPostmark(iso: string, tz: string): string {
-  try {
-    const date = new Date(iso);
-    const md = date.toLocaleDateString('en-CA', { timeZone: tz, month: '2-digit', day: '2-digit' });
-    // hour must be 24h, minute 2-digit. en-GB gives "HH:mm" reliably.
-    const hm = date.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
-    const tzLabel = TZ_FRIENDLY[tz] ?? (() => {
-      const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date);
-      return parts.find(p => p.type === 'timeZoneName')?.value || tz;
-    })();
-    return `${tzLabel} ${md} ${hm}`;
-  } catch {
-    return iso.slice(0, 10);
-  }
-}
+// formatPostmark + TZ_FRIENDLY moved to ../utils/postmark — shared with
+// WriteLetterScreen (footer signature) so receiver-side stamps and writer-
+// side stamps stay locked to the same format.
 
 const styles = StyleSheet.create({
   container: {
@@ -680,6 +669,16 @@ const styles = StyleSheet.create({
   },
   cardDate: {
     fontSize: 11,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.85)',
+    fontVariant: ['tabular-nums'],
+  },
+  cardStampStack: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  cardStampLine: {
+    fontSize: 10.5,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.85)',
     fontVariant: ['tabular-nums'],
