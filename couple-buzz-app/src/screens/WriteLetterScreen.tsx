@@ -15,6 +15,7 @@ import {
   InputAccessoryView,
   Platform,
   FlatList,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -633,26 +634,44 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       presentationStyle="pageSheet"
       onRequestClose={handleCancel}
     >
-      <View style={styles.container}>
-        {stage === 'write' && renderWriteStage()}
-        {stage === 'sealing' && (
-          <>
-            <View style={styles.headerRow}>
-              <Text style={styles.title}>封信</Text>
-            </View>
-            <View style={styles.bodyArea}>
-              <SealAnimation
-                preview={content.trim()}
-                onComplete={() => setStage('kind')}
-              />
-            </View>
-          </>
-        )}
-        {stage === 'kind' && renderKindStage()}
-        {stage === 'capsuleDetails' && renderCapsuleDetailsStage()}
-        {stage === 'sending' && renderSendingStage()}
-        {renderDateTimePickerModal()}
-      </View>
+      {/* KeyboardAvoidingView shrinks the modal's content area by the
+          keyboard's height when it's up. With container as flex:1 inside
+          and bodyArea as flex:1 inside that, the letterPaper + TextInput
+          + bottom toolbar all compress above the keyboard — the user can
+          see what they're typing AND reach the 去寄出 pill without doing
+          anything. iOS's native multiline TextInput cursor-tracking then
+          handles scrolling within the (now smaller) input as the user
+          types past the visible area.
+
+          Only iOS uses 'padding' here; Android handles soft keyboard via
+          android:windowSoftInputMode at the activity level, KAV would
+          double-shift. The app is iOS-first, but the `undefined` fallback
+          keeps things sane if ever ported. */}
+      <KeyboardAvoidingView
+        style={styles.kavRoot}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={styles.container}>
+          {stage === 'write' && renderWriteStage()}
+          {stage === 'sealing' && (
+            <>
+              <View style={styles.headerRow}>
+                <Text style={styles.title}>封信</Text>
+              </View>
+              <View style={styles.bodyArea}>
+                <SealAnimation
+                  preview={content.trim()}
+                  onComplete={() => setStage('kind')}
+                />
+              </View>
+            </>
+          )}
+          {stage === 'kind' && renderKindStage()}
+          {stage === 'capsuleDetails' && renderCapsuleDetailsStage()}
+          {stage === 'sending' && renderSendingStage()}
+          {renderDateTimePickerModal()}
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -662,6 +681,10 @@ const INK = '#3D2A19';
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  kavRoot: {
     flex: 1,
     backgroundColor: COLORS.background,
   },
