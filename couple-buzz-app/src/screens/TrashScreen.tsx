@@ -8,6 +8,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../constants';
@@ -209,12 +210,15 @@ const TrashScreen = forwardRef<TrashHandle, Props>(({ visible, onClose, onAfterR
       onRequestClose={onClose}
       presentationStyle="pageSheet"
     >
-      <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+      <Pressable
+        style={[styles.container, { paddingTop: insets.top + 8 }]}
+        onPress={onClose}
+      >
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}>
             <Text style={styles.closeBtn}>完成</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>🗑️ 垃圾篓</Text>
+          <Text style={styles.headerTitle}>🗑️ 废件箱</Text>
           {items.length > 0 ? (
             <TouchableOpacity onPress={toggleSelectionMode} hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}>
               <Text style={styles.actionBtn}>{selectionMode ? '取消' : '选择'}</Text>
@@ -240,7 +244,7 @@ const TrashScreen = forwardRef<TrashHandle, Props>(({ visible, onClose, onAfterR
         ) : items.length === 0 ? (
           <View style={styles.centered}>
             <Text style={styles.emptyEmoji}>🗑️</Text>
-            <Text style={styles.emptyTitle}>垃圾篓是空的</Text>
+            <Text style={styles.emptyTitle}>废件箱是空的</Text>
             <Text style={styles.emptySub}>右划收件箱里的信会进到这里</Text>
           </View>
         ) : (
@@ -316,7 +320,7 @@ const TrashScreen = forwardRef<TrashHandle, Props>(({ visible, onClose, onAfterR
         ) : null}
 
         <IslandToast ref={toastRef} top={insets.top + 8} />
-      </View>
+      </Pressable>
     </Modal>
   );
 });

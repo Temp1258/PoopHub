@@ -46,3 +46,55 @@ export function formatPostmark(iso: string, tz: string): string {
     return iso.slice(0, 10);
   }
 }
+
+// Convert "year/month/day/hour/minute interpreted in `tz`" to an absolute
+// UTC ISO instant. Used by the 择日达 picker — the sender chooses a
+// hour:minute in their own local clock, and we send the equivalent UTC
+// instant so the recipient (in any tz) sees the same moment.
+//
+// DST-aware via `formatToParts` which returns the offset that would apply
+// at the picked instant, not "today's" offset.
+export function toUtcIsoFromLocalParts(
+  year: number,
+  month: number,    // 1-12
+  day: number,
+  hour: number,
+  minute: number,
+  tz: string
+): string {
+  // Treat the inputs as if they were already UTC, then subtract the tz
+  // offset to land on the real UTC instant.
+  const naiveMs = Date.UTC(year, month - 1, day, hour, minute);
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' });
+    const offsetStr = fmt.formatToParts(new Date(naiveMs)).find(p => p.type === 'timeZoneName')?.value || 'GMT+0';
+    const m = offsetStr.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (!m) return new Date(naiveMs).toISOString();
+    const sign = m[1] === '+' ? 1 : -1;
+    const offsetMin = sign * (parseInt(m[2]) * 60 + (m[3] ? parseInt(m[3]) : 0));
+    return new Date(naiveMs - offsetMin * 60 * 1000).toISOString();
+  } catch {
+    return new Date(naiveMs).toISOString();
+  }
+}
+
+// Days in (year, month). month is 1-12. Day-of-month picker uses this to
+// clamp 31→30/29/28 when the user changes year/month.
+export function daysInMonth(year: number, month: number): number {
+  return new Date(year, month, 0).getDate();
+}
+
+// Today's local date in `tz` as {year, month, day} — used to seed the
+// picker with "tomorrow at 9am" and to validate "must be in the future".
+export function localDateParts(tz: string, ref: Date = new Date()): { year: number; month: number; day: number } {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const parts = fmt.formatToParts(ref);
+    const y = parseInt(parts.find(p => p.type === 'year')!.value, 10);
+    const m = parseInt(parts.find(p => p.type === 'month')!.value, 10);
+    const d = parseInt(parts.find(p => p.type === 'day')!.value, 10);
+    return { year: y, month: m, day: d };
+  } catch {
+    return { year: ref.getUTCFullYear(), month: ref.getUTCMonth() + 1, day: ref.getUTCDate() };
+  }
+}

@@ -1182,7 +1182,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // POST /api/capsules
   router.post('/capsules', async (req: Request, res: Response) => {
     const userId = req.userId!;
-    const { content, unlock_date, visibility } = req.body;
+    const { content, unlock_date, unlock_at, visibility } = req.body;
 
     if (!content || typeof content !== 'string' || !content.trim()) {
       return res.status(400).json({ error: 'content is required' });
@@ -1196,15 +1196,31 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!isValidDateString(unlock_date)) {
       return res.status(400).json({ error: 'unlock_date must be YYYY-MM-DD' });
     }
+    // unlock_at is the new minute-precision unlock instant. Older clients may
+    // not send it; fall back to midnight UTC of unlock_date so existing
+    // behavior is preserved. New clients send a full ISO timestamp computed
+    // from the sender's tz-aware picker.
+    let unlockAtIso: string;
+    if (unlock_at && typeof unlock_at === 'string') {
+      const t = new Date(unlock_at).getTime();
+      if (!Number.isFinite(t)) {
+        return res.status(400).json({ error: 'unlock_at must be a valid ISO timestamp' });
+      }
+      unlockAtIso = new Date(t).toISOString();
+    } else {
+      unlockAtIso = `${unlock_date}T00:00:00.000Z`;
+    }
     const vis: 'self' | 'partner' = visibility === 'self' ? 'self' : 'partner';
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const userToday = getLocalDate(user.timezone);
-    if (unlock_date <= userToday) {
-      return res.status(400).json({ error: 'unlock_date must be in the future' });
+    // Reject anything that doesn't unlock strictly in the future. Compared
+    // as ISO timestamps (UTC) — works regardless of sender/receiver tz.
+    const nowIso = new Date().toISOString();
+    if (unlockAtIso <= nowIso) {
+      return res.status(400).json({ error: 'unlock_at must be in the future' });
     }
 
     const existing = dbOps.getCapsules(userId, user.partner_id);
@@ -1212,7 +1228,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Maximum 50 pending capsules' });
     }
 
-    const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date, vis);
+    const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date, unlockAtIso, vis);
 
     // Notify partner only when this capsule is meant for them. Body includes a
     // day+hour countdown so the partner knows when to expect it.
@@ -1224,7 +1240,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       }
     }
 
-    res.json({ id: capsule.id, unlock_date: capsule.unlock_date, created_at: capsule.created_at });
+    res.json({ id: capsule.id, unlock_date: capsule.unlock_date, unlock_at: capsule.unlock_at, created_at: capsule.created_at });
   });
 
   // GET /api/capsules
@@ -1234,7 +1250,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ capsules: [] });
 
-    const userToday = getLocalDate(user.timezone);
+    const nowIso = new Date().toISOString();
     // 'self' capsules are private to the author. 'partner' (default) capsules
     // are visible to both — the recipient gets the surprise + countdown push.
     // Recipient-side soft-deletes (trashed/purged) hide the capsule from the
@@ -1255,7 +1271,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         author: c.user_id === userId ? 'me' : 'partner',
         content: c.opened_at ? c.content : null,
         unlock_date: c.unlock_date,
-        is_unlockable: c.unlock_date <= userToday && !c.opened_at,
+        unlock_at: c.unlock_at,
+        // Minute-precision unlock check. Compare full ISO strings — both in
+        // UTC, so lexicographic compare is equivalent to chronological.
+        is_unlockable: c.unlock_at <= nowIso && !c.opened_at,
         opened_at: c.opened_at,
         visibility: c.visibility,
         created_at: c.created_at,
@@ -1296,8 +1315,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       }
     }
 
-    const userToday = getLocalDate(user.timezone);
-    if (capsule.unlock_date > userToday) {
+    const nowIso = new Date().toISOString();
+    if (capsule.unlock_at > nowIso) {
       return res.status(400).json({ error: 'Capsule is not yet unlockable' });
     }
 

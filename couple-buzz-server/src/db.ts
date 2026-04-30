@@ -89,7 +89,13 @@ export interface TimeCapsule {
   user_id: string;
   partner_id: string;
   content: string;
+  // Date-only field kept for legacy callers + the trash join. New unlock
+  // logic uses unlock_at (full ISO with minute precision).
   unlock_date: string;
+  // ISO timestamp (UTC) when the capsule becomes unlockable. The sender's
+  // chosen local time + their timezone is converted to absolute UTC on the
+  // client; the server just stores and compares to NOW().
+  unlock_at: string;
   opened_at: string | null;
   visibility: 'self' | 'partner';
   created_at: string;
@@ -242,10 +248,13 @@ export interface DbOps {
     dailyQuestionDays: number; ritualMorningDays: number; ritualEveningDays: number;
   };
   // Time Capsules
-  createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, visibility: 'self' | 'partner'): TimeCapsule;
+  createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule;
   getCapsules(userId: string, partnerId: string): TimeCapsule[];
   openCapsule(id: number): boolean;
-  getUnlockableCapsules(today: string): TimeCapsule[];
+  // `nowIso` is the cutoff: any capsule with unlock_at <= nowIso (and not
+  // yet opened) is due. Replaces the old date-only check with minute
+  // precision now that the picker lets the sender choose hour:minute.
+  getUnlockableCapsules(nowIso: string): TimeCapsule[];
   // Bucket List
   createBucketItem(userId: string, partnerId: string, title: string, category: string | null): BucketItem;
   getBucketItems(userId: string, partnerId: string): BucketItem[];
@@ -396,6 +405,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       partner_id TEXT NOT NULL,
       content TEXT NOT NULL,
       unlock_date TEXT NOT NULL,
+      unlock_at TEXT NOT NULL DEFAULT '',
       opened_at DATETIME DEFAULT NULL,
       visibility TEXT NOT NULL DEFAULT 'partner',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -576,6 +586,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const capsuleCols = db.pragma('table_info(time_capsules)') as { name: string }[];
   if (capsuleCols.length > 0 && !capsuleCols.some((c) => c.name === 'visibility')) {
     db.exec("ALTER TABLE time_capsules ADD COLUMN visibility TEXT NOT NULL DEFAULT 'partner'");
+  }
+
+  // Migration: add unlock_at column for minute-precision capsule unlocks.
+  // Pre-existing rows had only unlock_date (YYYY-MM-DD); backfill those to
+  // midnight UTC of the date so existing capsules unlock at the same instant
+  // they always have. New rows fill unlock_at directly from the client's
+  // tz-aware picker (full ISO timestamp).
+  if (capsuleCols.length > 0 && !capsuleCols.some((c) => c.name === 'unlock_at')) {
+    db.exec("ALTER TABLE time_capsules ADD COLUMN unlock_at TEXT NOT NULL DEFAULT ''");
+    // Backfill: empty unlock_at gets unlock_date + 'T00:00:00.000Z'.
+    db.exec("UPDATE time_capsules SET unlock_at = unlock_date || 'T00:00:00.000Z' WHERE unlock_at = ''");
   }
 
   // Migration: add layout_rotation column to sticky_blocks. Each committed
@@ -891,7 +912,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
   // Time capsule statements
   const stmtInsertCapsule = db.prepare(
-    'INSERT INTO time_capsules (user_id, partner_id, content, unlock_date, visibility) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO time_capsules (user_id, partner_id, content, unlock_date, unlock_at, visibility) VALUES (?, ?, ?, ?, ?, ?)'
   );
   const stmtGetCapsuleById = db.prepare('SELECT * FROM time_capsules WHERE id = ?');
   const stmtGetCapsules = db.prepare(
@@ -901,7 +922,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'UPDATE time_capsules SET opened_at = CURRENT_TIMESTAMP WHERE id = ? AND opened_at IS NULL'
   );
   const stmtUnlockableCapsules = db.prepare(
-    'SELECT * FROM time_capsules WHERE unlock_date <= ? AND opened_at IS NULL'
+    'SELECT * FROM time_capsules WHERE unlock_at <= ? AND opened_at IS NULL'
   );
 
   // Bucket list statements
@@ -1388,8 +1409,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     // Time Capsules
-    createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, visibility: 'self' | 'partner'): TimeCapsule {
-      const result = stmtInsertCapsule.run(userId, partnerId, content, unlockDate, visibility);
+    createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule {
+      const result = stmtInsertCapsule.run(userId, partnerId, content, unlockDate, unlockAt, visibility);
       return stmtGetCapsuleById.get(result.lastInsertRowid) as TimeCapsule;
     },
 
@@ -1402,8 +1423,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return result.changes > 0;
     },
 
-    getUnlockableCapsules(today: string): TimeCapsule[] {
-      return stmtUnlockableCapsules.all(today) as TimeCapsule[];
+    getUnlockableCapsules(nowIso: string): TimeCapsule[] {
+      return stmtUnlockableCapsules.all(nowIso) as TimeCapsule[];
     },
 
     // Bucket List

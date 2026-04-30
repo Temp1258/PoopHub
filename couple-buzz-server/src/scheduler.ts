@@ -55,9 +55,12 @@ export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
       await fireOnce('weekly_report', () => broadcastPush(dbOps, pushFn, 'weekly_report'));
     }
 
-    // Daily 00:00 and 08:00 UTC — unlock any due capsules
-    if ((utcHour === 0 || utcHour === 8) && utcMin === 0) {
-      await fireOnce(`capsule_${utcHour}`, () => checkCapsuleUnlocks(dbOps, pushFn));
+    // Capsule unlock pushes — fire every 5 minutes so the recipient gets
+    // notified within ~5min of the picked unlock_at instant. The minute
+    // bucket is part of the dedup key so each tick is a distinct event.
+    if (utcMin % 5 === 0) {
+      const minuteBucket = now.toISOString().slice(0, 16);
+      await fireOnce(`capsule_${minuteBucket}`, () => checkCapsuleUnlocks(dbOps, pushFn));
     }
   }, 60 * 1000);
 }
@@ -70,8 +73,14 @@ async function broadcastPush(dbOps: DbOps, pushFn: SendPushFn, type: string): Pr
 }
 
 async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
-  const capsules = dbOps.getUnlockableCapsules(today);
+  const now = new Date();
+  // Only push for capsules that crossed their unlock_at within the last
+  // ~5min (one scheduler tick). Without this filter, every 5-min tick
+  // would re-push every still-unlockable capsule until the recipient
+  // opens it — that's spammy.
+  const cutoffIso = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+  const capsules = dbOps.getUnlockableCapsules(now.toISOString())
+    .filter(c => c.unlock_at > cutoffIso);
   const notified = new Set<string>();
 
   for (const capsule of capsules) {

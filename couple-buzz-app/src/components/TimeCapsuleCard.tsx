@@ -115,7 +115,10 @@ const TimeCapsuleCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref
     const text = content.trim();
     setSubmitting(true);
     try {
-      await api.createCapsule(text, dateStr, visibility);
+      // NOTE: this component is no longer mounted (replaced by WriteLetterScreen
+      // in v1.1.0). Kept around for safe rollback only — pass midnight UTC
+      // as unlock_at so the signature matches the post-v1.1.1 API.
+      await api.createCapsule(text, dateStr, `${dateStr}T00:00:00.000Z`, visibility);
     } catch (e: any) {
       setSubmitting(false);
       Alert.alert('', e.message);

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import {
   Modal,
   View,
@@ -14,6 +14,7 @@ import {
   Dimensions,
   InputAccessoryView,
   Platform,
+  FlatList,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -21,7 +22,8 @@ import { COLORS } from '../constants';
 import { api } from '../services/api';
 import { SpringPressable } from '../components/SpringPressable';
 import { storage } from '../utils/storage';
-import { formatPostmark } from '../utils/postmark';
+import { formatPostmark, toUtcIsoFromLocalParts, daysInMonth, localDateParts, friendlyTzName } from '../utils/postmark';
+import SealAnimation from '../components/SealAnimation';
 
 interface Props {
   visible: boolean;
@@ -30,27 +32,18 @@ interface Props {
   partnerName?: string;
 }
 
-// Multi-stage flow: 写 (compose) → 选送达方式 (kind) → 择日达细节 (only if
-// capsule) → 投递 (animation + API). All four stages live in one Modal so the
-// transition stays inside a single sheet — the user never feels like they
-// jumped to a different screen mid-write.
-type Stage = 'write' | 'kind' | 'capsuleDetails' | 'sending';
+// Multi-stage flow:
+//   写 (compose) → 封 (seal animation) → 选送达方式 (kind) → 择日达细节
+//   (only if capsule) → 投递 (delivery animation + API).
+// All stages live inside one Modal sheet so the transition feels like
+// pages of the same writing flow, never a screen jump.
+type Stage = 'write' | 'sealing' | 'kind' | 'capsuleDetails' | 'sending';
 
 type Recipient = 'self' | 'partner';
 
-// Preset future-date offsets keep the flow OTA-able (no native datepicker
-// dependency). Covers the typical "future letter" cadence — same-week
-// surprise, near-month milestone, anniversary-distance.
-const DAY_PRESETS = [
-  { label: '明天', days: 1 },
-  { label: '3 天后', days: 3 },
-  { label: '一周后', days: 7 },
-  { label: '半个月后', days: 14 },
-  { label: '一个月后', days: 30 },
-  { label: '三个月后', days: 90 },
-  { label: '半年后', days: 180 },
-  { label: '一年后', days: 365 },
-];
+// Which datetime field's picker is open in the capsuleDetails stage.
+// `null` = no picker open.
+type DateTimePart = 'year' | 'month' | 'day' | 'hour' | 'minute' | null;
 
 const SCREEN_H = Dimensions.get('window').height;
 // nativeID linking the editor's TextInput to its iOS InputAccessoryView. The
@@ -59,27 +52,21 @@ const SCREEN_H = Dimensions.get('window').height;
 // looking on the page.
 const KB_ACCESSORY_ID = 'writeLetterDoneBar';
 
-// Compute YYYY-MM-DD `daysAhead` days from today. Server validates the
-// unlock_date is strictly in the future, so days >= 1 is required.
-function computeFutureDate(daysAhead: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + daysAhead);
-  return d.toISOString().slice(0, 10);
-}
-
-// Pretty form for the date pill on the picker — "2026-05-07 · 一周后".
-function formatPickerDate(daysAhead: number): string {
-  const date = computeFutureDate(daysAhead);
-  const preset = DAY_PRESETS.find(p => p.days === daysAhead);
-  return preset ? `${date} · ${preset.label}` : date;
-}
+// nothing here — helpers moved to utils/postmark.ts
 
 export default function WriteLetterScreen({ visible, onClose, partnerName }: Props) {
   const insets = useSafeAreaInsets();
 
   const [stage, setStage] = useState<Stage>('write');
   const [content, setContent] = useState('');
-  const [daysAhead, setDaysAhead] = useState<number>(7);
+  // 5-part datetime in the SENDER'S timezone — converted to a UTC ISO at
+  // submit time so any recipient (regardless of tz) sees the same instant.
+  const [pickYear, setPickYear] = useState<number>(new Date().getFullYear());
+  const [pickMonth, setPickMonth] = useState<number>(1);
+  const [pickDay, setPickDay] = useState<number>(1);
+  const [pickHour, setPickHour] = useState<number>(9);
+  const [pickMinute, setPickMinute] = useState<number>(0);
+  const [datePart, setDatePart] = useState<DateTimePart>(null);
   const [recipient, setRecipient] = useState<Recipient>('partner');
   const [submitting, setSubmitting] = useState(false);
 
@@ -88,6 +75,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   // remark immediately reflects in the letter.
   const [myName, setMyName] = useState('');
   const [myTz, setMyTz] = useState('Asia/Shanghai');
+  const [partnerTz, setPartnerTz] = useState('Asia/Shanghai');
   const [partnerRemark, setPartnerRemark] = useState('');
   // 1-minute tick so the footer time keeps up with the wall clock if the
   // user lingers in the editor. Uses a state stub since we only need a
@@ -101,9 +89,9 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   useEffect(() => {
     if (visible) {
       setStage('write');
-      setDaysAhead(7);
       setRecipient('partner');
       setSubmitting(false);
+      setDatePart(null);
       // Reset animated values so the next sending stage starts fresh.
       letterY.setValue(0);
       letterScale.setValue(1);
@@ -111,17 +99,29 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       letterOpacity.setValue(1);
       mailboxBounce.setValue(0);
 
-      // Load saved draft + sender/partner identity bits.
+      // Load saved draft + sender/partner identity bits, then seed the
+      // datetime picker to "tomorrow 09:00" in the sender's timezone.
       Promise.all([
         storage.getWriteLetterDraft(),
         storage.getUserName(),
         storage.getTimezone(),
         storage.getPartnerRemark(),
-      ]).then(([savedDraft, n, tz, r]) => {
+        storage.getPartnerTimezone(),
+      ]).then(([savedDraft, n, tz, r, ptz]) => {
         setContent(savedDraft || '');
         if (n) setMyName(n);
-        if (tz) setMyTz(tz);
         if (r) setPartnerRemark(r);
+        if (ptz) setPartnerTz(ptz);
+        const userTz = tz || 'Asia/Shanghai';
+        if (tz) setMyTz(userTz);
+        const today = localDateParts(userTz);
+        // Tomorrow: roll today's date by +1 in UTC then read parts back.
+        const tmrUtc = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+        setPickYear(tmrUtc.getUTCFullYear());
+        setPickMonth(tmrUtc.getUTCMonth() + 1);
+        setPickDay(tmrUtc.getUTCDate());
+        setPickHour(9);
+        setPickMinute(0);
       }).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,14 +204,17 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
 
   // ── Stage handlers ────────────────────────────────────────────────────
 
+  // 去寄出 → run the seal animation (~1.3s) then drop into the kind picker.
+  // The seal animation lives in `stage='sealing'`; SealAnimation calls
+  // onComplete which advances to 'kind'.
   const handleSeal = () => {
     Keyboard.dismiss();
     if (!content.trim()) {
-      Alert.alert('', '写一些字再封存吧～');
+      Alert.alert('', '写一些字再寄吧～');
       return;
     }
     Haptics.selectionAsync();
-    setStage('kind');
+    setStage('sealing');
   };
 
   const handlePickKind = (kind: 'mailbox' | 'capsule') => {
@@ -233,6 +236,21 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   const runSubmit = useCallback(
     async (kind: 'mailbox' | 'capsule') => {
       if (submitting) return;
+      // Sender's tz-aware datetime → absolute UTC ISO. The recipient's
+      // client decodes this ISO into their own local clock at display
+      // time, so the letter "arrives" at the user-picked instant in real
+      // wall-clock terms regardless of recipient's tz.
+      let unlockAtIso = '';
+      let unlockDateLocal = '';
+      if (kind === 'capsule') {
+        unlockAtIso = toUtcIsoFromLocalParts(pickYear, pickMonth, pickDay, pickHour, pickMinute, myTz);
+        unlockDateLocal = `${pickYear}-${String(pickMonth).padStart(2, '0')}-${String(pickDay).padStart(2, '0')}`;
+        if (new Date(unlockAtIso).getTime() <= Date.now()) {
+          Alert.alert('', '挑个未来的时间吧～');
+          return;
+        }
+      }
+
       setSubmitting(true);
       setStage('sending');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -242,11 +260,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       if (kind === 'mailbox') {
         apiPromise = api.submitMailbox(content.trim());
       } else {
-        apiPromise = api.createCapsule(
-          content.trim(),
-          computeFutureDate(daysAhead),
-          recipient
-        );
+        apiPromise = api.createCapsule(content.trim(), unlockDateLocal, unlockAtIso, recipient);
       }
 
       try {
@@ -264,7 +278,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
         setSubmitting(false);
       }
     },
-    [submitting, content, daysAhead, recipient, runDeliveryAnimation, onClose]
+    [submitting, content, pickYear, pickMonth, pickDay, pickHour, pickMinute, myTz, recipient, runDeliveryAnimation, onClose]
   );
 
   // Pull-down / explicit cancel: ditch everything, close the modal.
@@ -318,7 +332,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
             <Text style={styles.pillSecondaryText}>不写了</Text>
           </SpringPressable>
           <SpringPressable onPress={handleSeal} style={[styles.pill, styles.pillPrimary]}>
-            <Text style={styles.pillPrimaryText}>封存</Text>
+            <Text style={styles.pillPrimaryText}>去寄出</Text>
           </SpringPressable>
         </View>
 
@@ -383,34 +397,58 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
     </>
   );
 
+  const clampedPickDay = useMemo(
+    () => Math.min(pickDay, daysInMonth(pickYear, pickMonth)),
+    [pickYear, pickMonth, pickDay]
+  );
+  const previewIso = useMemo(
+    () => toUtcIsoFromLocalParts(pickYear, pickMonth, clampedPickDay, pickHour, pickMinute, myTz),
+    [pickYear, pickMonth, clampedPickDay, pickHour, pickMinute, myTz]
+  );
+
   const renderCapsuleDetailsStage = () => (
     <>
       <View style={styles.headerRow}>
         <Text style={styles.title}>择日达</Text>
       </View>
       <View style={styles.bodyArea}>
-        <Text style={styles.fieldLabel}>什么时候送达？</Text>
-        <View style={styles.presetGrid}>
-          {DAY_PRESETS.map(p => {
-            const active = daysAhead === p.days;
-            return (
-              <TouchableOpacity
-                key={p.days}
-                activeOpacity={0.85}
-                style={[styles.presetChip, active && styles.presetChipActive]}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  setDaysAhead(p.days);
-                }}
-              >
-                <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
-                  {p.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        <Text style={styles.fieldLabel}>什么时候送达？（{friendlyTzName(myTz)}）</Text>
+        <View style={styles.dpRow}>
+          <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('year')}>
+            <Text style={styles.dpLabel}>年</Text>
+            <Text style={styles.dpValue}>{pickYear}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('month')}>
+            <Text style={styles.dpLabel}>月</Text>
+            <Text style={styles.dpValue}>{pickMonth}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('day')}>
+            <Text style={styles.dpLabel}>日</Text>
+            <Text style={styles.dpValue}>{clampedPickDay}</Text>
+          </TouchableOpacity>
         </View>
-        <Text style={styles.dateHint}>{formatPickerDate(daysAhead)}</Text>
+        <View style={[styles.dpRow, styles.dpRowTime]}>
+          <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('hour')}>
+            <Text style={styles.dpLabel}>时</Text>
+            <Text style={styles.dpValue}>{String(pickHour).padStart(2, '0')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.dpField} onPress={() => setDatePart('minute')}>
+            <Text style={styles.dpLabel}>分</Text>
+            <Text style={styles.dpValue}>{String(pickMinute).padStart(2, '0')}</Text>
+          </TouchableOpacity>
+        </View>
+        {/* Live preview shows the chosen instant rendered in BOTH the
+            sender's tz (their picker frame) and the recipient's tz
+            (`partnerTz` if known) so the writer can see how their
+            partner will read the timestamp. */}
+        <View style={styles.previewBlock}>
+          <Text style={styles.previewLine}>
+            我（{friendlyTzName(myTz)}）：{formatPostmark(previewIso, myTz).split(' ').slice(1).join(' ')}
+          </Text>
+          <Text style={styles.previewLineMuted}>
+            ta 那边收到时：{formatPostmark(previewIso, partnerTz)}
+          </Text>
+        </View>
 
         <View style={styles.fieldSpacer} />
 
@@ -457,6 +495,98 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       </View>
     </>
   );
+
+  // Inline picker for one of {year, month, day, hour, minute}. Mirrors the
+  // AnniversaryWishScreen pattern — bottom sheet with a snapping FlatList,
+  // tap a value to select. Day pickers reflow as year/month change so 2/30
+  // can't be selected.
+  const renderDateTimePickerModal = () => {
+    if (!datePart) return null;
+    let data: number[] = [];
+    let unit = '';
+    if (datePart === 'year') {
+      const cur = new Date().getFullYear();
+      // 6-year window: this year + next 5
+      data = Array.from({ length: 6 }, (_, i) => cur + i);
+      unit = '年';
+    } else if (datePart === 'month') {
+      data = Array.from({ length: 12 }, (_, i) => i + 1);
+      unit = '月';
+    } else if (datePart === 'day') {
+      data = Array.from({ length: daysInMonth(pickYear, pickMonth) }, (_, i) => i + 1);
+      unit = '日';
+    } else if (datePart === 'hour') {
+      data = Array.from({ length: 24 }, (_, i) => i);
+      unit = '时';
+    } else {
+      data = Array.from({ length: 60 }, (_, i) => i);
+      unit = '分';
+    }
+
+    const current = datePart === 'year' ? pickYear
+      : datePart === 'month' ? pickMonth
+      : datePart === 'day' ? clampedPickDay
+      : datePart === 'hour' ? pickHour
+      : pickMinute;
+    const initialIndex = Math.max(0, data.indexOf(current));
+    const titleText = datePart === 'year' ? '选择年份'
+      : datePart === 'month' ? '选择月份'
+      : datePart === 'day' ? '选择日'
+      : datePart === 'hour' ? '选择小时'
+      : '选择分钟';
+
+    return (
+      <Modal visible animationType="slide" transparent onRequestClose={() => setDatePart(null)}>
+        <View style={styles.pickerOverlay}>
+          <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 20 }]}>
+            <View style={styles.pickerHeader}>
+              <Text style={styles.pickerTitle}>{titleText}</Text>
+              <TouchableOpacity onPress={() => setDatePart(null)}>
+                <Text style={styles.pickerClose}>完成</Text>
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={data}
+              keyExtractor={item => String(item)}
+              initialScrollIndex={initialIndex}
+              getItemLayout={(_, index) => ({ length: 52, offset: 52 * index, index })}
+              renderItem={({ item }) => {
+                const active = item === current;
+                return (
+                  <TouchableOpacity
+                    style={[styles.pickerItem, active && styles.pickerItemActive]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      if (datePart === 'year') {
+                        setPickYear(item);
+                        setPickDay(d => Math.min(d, daysInMonth(item, pickMonth)));
+                      } else if (datePart === 'month') {
+                        setPickMonth(item);
+                        setPickDay(d => Math.min(d, daysInMonth(pickYear, item)));
+                      } else if (datePart === 'day') {
+                        setPickDay(item);
+                      } else if (datePart === 'hour') {
+                        setPickHour(item);
+                      } else {
+                        setPickMinute(item);
+                      }
+                      setDatePart(null);
+                    }}
+                  >
+                    <Text style={[styles.pickerItemText, active && styles.pickerItemTextActive]}>
+                      {datePart === 'hour' || datePart === 'minute'
+                        ? String(item).padStart(2, '0') + unit
+                        : `${item}${unit}`}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </View>
+      </Modal>
+    );
+  };
 
   const renderSendingStage = () => {
     const rotateInterp = letterRotate.interpolate({
@@ -505,9 +635,23 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
     >
       <View style={styles.container}>
         {stage === 'write' && renderWriteStage()}
+        {stage === 'sealing' && (
+          <>
+            <View style={styles.headerRow}>
+              <Text style={styles.title}>封信</Text>
+            </View>
+            <View style={styles.bodyArea}>
+              <SealAnimation
+                preview={content.trim()}
+                onComplete={() => setStage('kind')}
+              />
+            </View>
+          </>
+        )}
         {stage === 'kind' && renderKindStage()}
         {stage === 'capsuleDetails' && renderCapsuleDetailsStage()}
         {stage === 'sending' && renderSendingStage()}
+        {renderDateTimePickerModal()}
       </View>
     </Modal>
   );
@@ -697,37 +841,110 @@ const styles = StyleSheet.create({
   fieldSpacer: {
     height: 24,
   },
-  presetGrid: {
+  // 5-field datetime picker — 3 fields for date (年/月/日) + 2 for time
+  // (时/分). Each field opens a bottom-sheet FlatList.
+  dpRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 8,
+    marginTop: 8,
   },
-  presetChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 14,
+  dpRowTime: {
+    marginTop: 10,
+  },
+  dpField: {
+    flex: 1,
     backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
+    alignItems: 'center',
   },
-  presetChipActive: {
-    backgroundColor: COLORS.kiss,
-    borderColor: COLORS.kiss,
-  },
-  presetChipText: {
-    fontSize: 13,
+  dpLabel: {
+    fontSize: 11,
     color: COLORS.textLight,
-    fontWeight: '500',
+    marginBottom: 2,
   },
-  presetChipTextActive: {
-    color: COLORS.white,
+  dpValue: {
+    fontSize: 18,
     fontWeight: '700',
+    color: COLORS.text,
+    fontVariant: ['tabular-nums'],
   },
-  dateHint: {
+  // Live preview of the picked instant in both timezones — gives the
+  // sender immediate feedback on how the recipient will see it.
+  previewBlock: {
+    marginTop: 12,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 4,
+  },
+  previewLine: {
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  previewLineMuted: {
     fontSize: 12,
     color: COLORS.textLight,
-    marginTop: 8,
-    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  // Bottom-sheet picker overlay — same visual language as
+  // AnniversaryWishScreen's date picker, kept consistent across the app.
+  pickerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '70%',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  pickerClose: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.kiss,
+  },
+  pickerItem: {
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  pickerItemActive: {
+    backgroundColor: '#FFF0F3',
+  },
+  pickerItemText: {
+    fontSize: 16,
+    color: COLORS.text,
+    fontVariant: ['tabular-nums'],
+  },
+  pickerItemTextActive: {
+    color: COLORS.kiss,
+    fontWeight: '700',
   },
   recipientRow: {
     flexDirection: 'row',

@@ -1157,7 +1157,7 @@ describe('Inbox trash / restore / purge', () => {
     // Bob writes a capsule for alice with a past unlock_date so it's
     // immediately openable. Direct DB insert bypasses the API's future-date
     // guard (which is correct for normal flows but blocks this test setup).
-    const cap = dbOps.createCapsule(bob.user_id, alice.user_id, 'a letter from the past', '2020-01-01', 'partner');
+    const cap = dbOps.createCapsule(bob.user_id, alice.user_id, 'a letter from the past', '2020-01-01', '2020-01-01T00:00:00.000Z', 'partner');
 
     // First open succeeds (sanity check).
     const open1 = await request(app)
@@ -1209,7 +1209,7 @@ describe('Inbox trash / restore / purge', () => {
     const { alice, bob } = await registerPairedUsers(app);
 
     // Alice writes for bob (partner-vis).
-    const cap = dbOps.createCapsule(alice.user_id, bob.user_id, 'for bob', '2020-01-01', 'partner');
+    const cap = dbOps.createCapsule(alice.user_id, bob.user_id, 'for bob', '2020-01-01', '2020-01-01T00:00:00.000Z', 'partner');
 
     // Bob trashes it after first open.
     await request(app)

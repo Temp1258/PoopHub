@@ -308,6 +308,9 @@ export interface CapsuleItem {
   author: 'me' | 'partner';
   content: string | null;
   unlock_date: string;
+  // Full ISO unlock instant (UTC, minute precision). Computed on the client
+  // from the sender's tz-aware date+time picker.
+  unlock_at: string;
   is_unlockable: boolean;
   opened_at: string | null;
   visibility: 'self' | 'partner';
@@ -528,8 +531,8 @@ export const api = {
     return request(`/api/weekly-report${week ? `?week=${week}` : ''}`);
   },
 
-  createCapsule(content: string, unlockDate: string, visibility: 'self' | 'partner'): Promise<{ id: number }> {
-    return request('/api/capsules', { method: 'POST', body: JSON.stringify({ content, unlock_date: unlockDate, visibility }) });
+  createCapsule(content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): Promise<{ id: number }> {
+    return request('/api/capsules', { method: 'POST', body: JSON.stringify({ content, unlock_date: unlockDate, unlock_at: unlockAt, visibility }) });
   },
   getCapsules(): Promise<{ capsules: CapsuleItem[] }> {
     return request('/api/capsules');
