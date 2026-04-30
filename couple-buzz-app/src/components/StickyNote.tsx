@@ -149,12 +149,8 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
         <View>
           {blocks.map((block, i) => {
             const isFirst = i === 0;
-            const isLast = i === blocks.length - 1;
             const rawRot = block.layout_rotation || 0;
             const blockRot = isMine ? rawRot : -rawRot;
-            // Show a staple under this paper if there's another paper coming
-            // — either another committed block or my pending temp comment.
-            const hasNextPaper = !isLast || !!sticky.my_temp_block;
             return (
               <Animated.View
                 key={block.id}
@@ -164,12 +160,12 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
                     transform: paperTransform(blockRot),
                     opacity,
                     marginTop: isFirst ? 0 : -BLOCK_OVERLAP,
-                    // Older papers on top so each subsequent paper peeks out
-                    // *below* the one above it — like a real stack of stapled
-                    // sheets. Higher zIndex also keeps the staple (a child of
-                    // the upper paper) visually crossing the joint without
-                    // being hidden by the next paper.
-                    zIndex: blocks.length - i + 10,
+                    // Newer papers on top so each new comment visually covers
+                    // the bottom edge of the older paper at the joint —
+                    // matches "新的跟帖在主贴/旧的跟帖之上". The pin (child of
+                    // the upper paper) lands fully on the visible top layer
+                    // and clearly pierces both sheets.
+                    zIndex: i + 10,
                   },
                   selected && styles.paperSelected,
                 ]}
@@ -180,14 +176,17 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
                     <Text style={styles.unreadText}>未读</Text>
                   </View>
                 )}
-                <BlockText block={block} />
-                {hasNextPaper && (
-                  <View style={styles.stapleSlot} pointerEvents="none">
-                    <View style={styles.stapleTop} />
-                    <View style={styles.stapleLeg} />
-                    <View style={[styles.stapleLeg, styles.stapleLegRight]} />
+                {/* Round push-pin at the joint, only on papers that have a
+                    paper above them (i > 0). Pinhead extends 7pt above this
+                    paper's top edge — half-inside the previous paper's
+                    bottom overlap region, half-inside this paper's top. */}
+                {!isFirst && (
+                  <View style={styles.pinSlot} pointerEvents="none">
+                    <View style={styles.pinHead} />
+                    <View style={styles.pinHighlight} />
                   </View>
                 )}
+                <BlockText block={block} />
               </Animated.View>
             );
           })}
@@ -204,12 +203,22 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
                   transform: paperTransform(0),
                   opacity,
                   marginTop: -BLOCK_OVERLAP,
-                  zIndex: 1,
+                  // Pending paper is the newest — sits on top of all
+                  // committed blocks at the joint.
+                  zIndex: blocks.length + 10,
                 },
                 selected && styles.paperSelected,
               ]}
             >
               {selected && <View style={styles.selectedRing} pointerEvents="none" />}
+              {/* Pending paper also gets a pin at its top (it stacks below
+                  the last committed block). */}
+              {blocks.length > 0 && (
+                <View style={styles.pinSlot} pointerEvents="none">
+                  <View style={styles.pinHead} />
+                  <View style={styles.pinHighlight} />
+                </View>
+              )}
               <Text style={[styles.blockText, styles.pendingText]}>
                 {sticky.my_temp_block.content || '（继续写...）'}
               </Text>
@@ -280,41 +289,43 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text,
   },
-  // Staple visual at the joint between two papers. Three small rectangles
-  // form a "U" seen from above (top bar + two legs). Sits half-inside the
-  // upper paper's bottom and half-outside (where it lands inside the next
-  // paper's overlap region), and is a child of the upper paper which sits
-  // higher in z, so it visibly crosses both sheets.
-  stapleSlot: {
+  // Round push-pin at the joint between two papers (top edge of the upper
+  // paper). The upper paper sits highest in z, so the pin — its child —
+  // renders cleanly on top of the previous paper's overlap region.
+  pinSlot: {
     position: 'absolute',
-    bottom: -4,
+    top: -7,
     left: '50%',
-    marginLeft: -9,
-    width: 18,
-    height: 8,
+    marginLeft: -7,
+    width: 14,
+    height: 14,
     zIndex: 50,
   },
-  stapleTop: {
+  pinHead: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    height: 2,
-    backgroundColor: '#5A5A5A',
-    borderRadius: 1,
+    bottom: 0,
+    borderRadius: 7,
+    backgroundColor: '#C53D3D',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.4,
+    shadowRadius: 2,
+    elevation: 4,
   },
-  stapleLeg: {
+  // A small near-white blob in the upper-left of the pinhead suggests a
+  // light source above-left and gives the disk a 3D thumbtack feel without
+  // a real radial gradient.
+  pinHighlight: {
     position: 'absolute',
-    top: 2,
-    left: 0,
-    width: 2,
-    height: 6,
-    backgroundColor: '#5A5A5A',
-    borderRadius: 1,
-  },
-  stapleLegRight: {
-    left: undefined,
-    right: 0,
+    top: 3,
+    left: 3,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.6)',
   },
   // In-progress comment paper: dashed border + faintly different bg makes
   // the "draft" status read instantly. Only the author sees it.

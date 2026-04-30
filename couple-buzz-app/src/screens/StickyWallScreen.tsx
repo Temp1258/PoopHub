@@ -20,7 +20,7 @@ import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, StickyView, StickyTemp } from '../services/api';
 import { subscribe } from '../services/socket';
-import StickyNote, { INK_MINE, INK_PARTNER } from '../components/StickyNote';
+import StickyNote, { INK_MINE } from '../components/StickyNote';
 import { SpringPressable } from '../components/SpringPressable';
 
 // Wood-color base: warm light pine, applied as a flat backgroundColor on the
@@ -400,18 +400,19 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   };
 
   // Render the in-flight editor as a centered sticky-paper sheet over the
-  // wall. Comment mode shows the existing committed blocks above the input
-  // so the writer has context for what they're appending to.
+  // wall. Both 'new' and 'comment' modes use the same fresh-page UI — no
+  // existing blocks shown — so a long thread doesn't crowd out the writing
+  // surface ("更帖过多导致没有位置写新内容的问题"). Each commit appends a
+  // new paper to the thread; the user only writes one block at a time and
+  // doesn't need the running history in their face while writing it.
   const renderEditor = () => {
     if (!editor) return null;
-    const targetSticky = editor.kind === 'comment' ? wall.find(s => s.id === editor.stickyId) : null;
     const inkColor = INK_MINE; // editor is always "me"
     // Both the dim backdrop and the editor paper itself dismiss the keyboard
     // on tap. The TextInput naturally captures its own touches, so tapping
     // the input keeps focus while tapping anywhere else (paper padding,
-    // context blocks, count text, dimmed area) hides the keyboard. This is
-    // the only way the user can preview/post their note while the keyboard
-    // is up.
+    // count text, dimmed area) hides the keyboard. This is the only way the
+    // user can preview/post their note while the keyboard is up.
     return (
       <View
         style={[styles.editorOverlay, { top: insets.top + 48, bottom: insets.bottom + 96 }]}
@@ -424,26 +425,10 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             edges. The Pressable wrapper dismisses the keyboard on any tap
             outside the TextInput. */}
         <Pressable style={styles.editorSheet} onPress={Keyboard.dismiss}>
-          {targetSticky && (
-            <View style={styles.editorContextBlock}>
-              {targetSticky.blocks.map((b, i) => (
-                <View key={b.id}>
-                  {i > 0 && <View style={styles.divider} />}
-                  <Text
-                    style={[styles.editorContextText, { color: b.author_role === 'me' ? INK_MINE : INK_PARTNER }]}
-                    numberOfLines={3}
-                  >
-                    {b.content}
-                  </Text>
-                </View>
-              ))}
-              <View style={styles.divider} />
-            </View>
-          )}
           <TextInput
             value={editorText}
             onChangeText={setEditorText}
-            placeholder={editor.kind === 'new' ? '点这里开始写...' : '继续往下写...'}
+            placeholder="点这里开始写..."
             placeholderTextColor="rgba(92, 64, 51, 0.4)"
             multiline
             maxLength={1000}
@@ -706,20 +691,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.22,
     shadowRadius: 14,
     elevation: 10,
-  },
-  editorContextBlock: {
-    paddingBottom: 4,
-  },
-  editorContextText: {
-    fontSize: 14,
-    lineHeight: 20,
-    fontStyle: 'italic',
-    fontWeight: '500',
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(92, 64, 51, 0.22)',
-    marginVertical: 8,
   },
   editorInput: {
     flex: 1,
