@@ -90,12 +90,23 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   // reload after the animation completes (otherwise the row vanishes from
   // state mid-animation and the visual cuts off).
   const [tearingOffId, setTearingOffId] = useState<number | null>(null);
+  // Keyboard visibility — drives the 2-step "tap outside" semantic: first
+  // tap dismisses the keyboard so the toolbar pills become reachable; only
+  // when the keyboard is already down does a tap outside actually close the
+  // editor (preserving the draft on server). Without this gate, tapping
+  // outside while typing would close the editor before the user could see
+  // the 贴上去 / 就这样 pill that's hidden behind the keyboard.
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
+  // Last-tap tracker for sticky double-tap shortcut → 跟个帖. Records
+  // {id, time} on each tap; if the next tap on the same sticky lands within
+  // 300ms, we treat it as a double-tap and open the comment editor.
+  const lastStickyTapRef = useRef<{ id: number; time: number } | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -122,6 +133,14 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   }, []);
 
   useImperativeHandle(ref, () => ({ reload }), [reload]);
+
+  // Track keyboard visibility (iOS willShow/willHide are pre-animation, so
+  // the state is correct by the time tap handlers run).
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardWillShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardWillHide', () => setKeyboardVisible(false));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   useEffect(() => {
     if (!visible) return;
@@ -228,6 +247,28 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     reload();
   }, [editor, reload]);
 
+  // Soft dismiss — closes the editor visually but **keeps the temp on the
+  // server**, so the next 来一帖 / 跟个帖 (or auto-reopen on tab focus)
+  // restores whatever the user had typed. Used by tap-on-background, pageSheet
+  // swipe-down, etc. Force-flushes a save before closing so the last few
+  // characters typed within the autosave debounce window aren't lost.
+  const closeEditorPreserveDraft = useCallback(() => {
+    if (!editor) return;
+    const current = editor;
+    const text = editorText;
+    if (autosaveTimer.current) {
+      clearTimeout(autosaveTimer.current);
+      autosaveTimer.current = null;
+    }
+    if (current.kind === 'new') {
+      api.saveStickyTemp(text).catch(() => {});
+    } else {
+      api.saveStickyComment(current.stickyId, text).catch(() => {});
+    }
+    setEditor(null);
+    setEditorText('');
+  }, [editor, editorText]);
+
   const submitEditor = useCallback(async () => {
     if (!editor || submitting) return;
     const text = editorText.trim();
@@ -273,9 +314,27 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     onClose();
   }, [editor, cancelEditor, onClose]);
 
-  // ── Sticky tap → mark seen + select ────────────────────────────────────
+  // ── Sticky tap → mark seen + select; double-tap → 跟个帖 ────────────────
+
+  const DOUBLE_TAP_MS = 300;
 
   const handleStickyTap = useCallback(async (sticky: StickyView) => {
+    const now = Date.now();
+    const last = lastStickyTapRef.current;
+    const isDoubleTap = !!last && last.id === sticky.id && now - last.time < DOUBLE_TAP_MS;
+
+    if (isDoubleTap) {
+      // Reset the tracker, drop the just-set selection (so the brief 1.04
+      // scale doesn't linger when the editor opens), and dive straight into
+      // the comment editor. Saves the user one tap on a frequent action.
+      lastStickyTapRef.current = null;
+      setSelectedId(null);
+      startComment(sticky.id);
+      return;
+    }
+
+    lastStickyTapRef.current = { id: sticky.id, time: now };
+
     if (selectedId === sticky.id) {
       setSelectedId(null);
       return;
@@ -290,7 +349,30 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
         onUnreadChangeRef.current?.(wall.filter(s => s.id !== sticky.id).some(s => s.unread));
       } catch {}
     }
-  }, [selectedId, wall]);
+  }, [selectedId, wall, startComment]);
+
+  // Central handler for any tap on the background (anywhere not a sticky,
+  // pill, or the editor sheet itself). Two-step semantics so the user can
+  // still reach the toolbar pills while typing:
+  //   1. Keyboard up → just dismiss it (pills become reachable below)
+  //   2. Keyboard down + editor open → close editor + preserve draft
+  //   3. Editor closed + a sticky selected → deselect
+  //   4. Otherwise → close the wall
+  const onBackgroundTap = useCallback(() => {
+    if (keyboardVisible) {
+      Keyboard.dismiss();
+      return;
+    }
+    if (editor) {
+      closeEditorPreserveDraft();
+      return;
+    }
+    if (selectedId !== null) {
+      setSelectedId(null);
+      return;
+    }
+    handleClose();
+  }, [keyboardVisible, editor, selectedId, closeEditorPreserveDraft, handleClose]);
 
   const selectedSticky = useMemo(
     () => (selectedId ? wall.find(s => s.id === selectedId) ?? null : null),
@@ -418,12 +500,16 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
         style={[styles.editorOverlay, { top: insets.top + 48, bottom: insets.bottom + 96 }]}
         pointerEvents="box-none"
       >
-        <Pressable style={styles.editorBackdrop} onPress={Keyboard.dismiss} />
+        {/* Tap on the dim backdrop runs the same 2-step "background tap"
+            handler used by the wall area: keyboard up → just dismiss it,
+            keyboard down → soft-close the editor (preserving the draft on
+            server so the user can resume next time they tap 来一帖/跟个帖). */}
+        <Pressable style={styles.editorBackdrop} onPress={onBackgroundTap} />
         {/* Sheet is a centered, mid-sized sticky paper — not full-bleed, so
-            the wall (and its wood texture) breathes around it. Subtle tilt
-            keeps the "便利贴" vibe; soft shadow + 18pt radius rounds out the
-            edges. The Pressable wrapper dismisses the keyboard on any tap
-            outside the TextInput. */}
+            the wall (and its wood texture) breathes around it. Tapping the
+            sheet padding (the cream paper around the input) only dismisses
+            the keyboard; it does NOT close the editor — the spec excludes
+            the "帖子编辑区" itself from the close-on-tap target. */}
         <Pressable style={styles.editorSheet} onPress={Keyboard.dismiss}>
           <TextInput
             value={editorText}
@@ -448,28 +534,17 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
       <View style={styles.container}>
-        <View style={styles.headerRow}>
-          <Text style={styles.title}>📝 每日一帖</Text>
-        </View>
-
-        {/* Pressable around the wall area so tapping the wood (anywhere not
-            on a sticky / pill / editor) collapses the whole modal. While the
-            editor is open, editorBackdrop sits on top of this Pressable and
-            captures taps for Keyboard.dismiss instead. A first tap on the
-            background while a sticky is selected just deselects (so the user
-            doesn't accidentally close right after picking a sticky); the
-            next tap closes. */}
-        <Pressable
-          style={styles.wallTapTarget}
-          onPress={() => {
-            if (editor) return;
-            if (selectedId !== null) {
-              setSelectedId(null);
-              return;
-            }
-            handleClose();
-          }}
-        >
+        {/* One outer Pressable wraps both the title row and the wall area
+            so tapping ANYWHERE on the modal that isn't a sticky / pill /
+            editor sheet routes through the same `onBackgroundTap` handler.
+            That gives the user a consistent "tap outside" semantic across
+            the whole screen (header, wall, toolbar empty area), and lets
+            the editor close softly while preserving the draft. */}
+        <Pressable style={styles.wallTapTarget} onPress={onBackgroundTap}>
+          <View style={styles.headerRow}>
+            <Text style={styles.title}>📝 每日一帖</Text>
+          </View>
+          <View style={styles.wallArea}>
           {loading ? (
             <View style={styles.center}>
               <ActivityIndicator color={COLORS.kiss} />
@@ -492,6 +567,7 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
               keyboardDismissMode="on-drag"
             />
           )}
+          </View>
         </Pressable>
 
         {/* Title-edge soft fade — anchored right at the title's bottom edge so
@@ -563,9 +639,13 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
-  // Tap-to-close target around the wall content — flex-fills the space
-  // between header and bottom toolbar.
+  // Outer Pressable that owns "tap outside" semantics for the whole modal
+  // body (header + wall area). flex:1 fills the space between the modal's
+  // top safe-area and the absolute-positioned toolbar at the bottom.
   wallTapTarget: {
+    flex: 1,
+  },
+  wallArea: {
     flex: 1,
   },
   // Soft wood-to-transparent fade anchored right under the title so the blur
