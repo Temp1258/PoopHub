@@ -1957,6 +1957,35 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true, last_seen_block_id: max });
   });
 
+  // DELETE /api/stickies/:id/blocks/:blockId — 撕掉单条跟帖. Author-only +
+  // never the sticky's 原帖 (oldest committed block) — that path goes through
+  // tearing the whole sticky. Hard delete; partner sees it disappear via the
+  // sticky_update socket below.
+  router.delete('/stickies/:id/blocks/:blockId', (req: Request, res: Response) => {
+    const ctx = requirePair(req, res);
+    if (!ctx) return;
+    const sticky = loadStickyOrFail(req, res, ctx);
+    if (!sticky) return;
+    const blockId = parseId(req.params.blockId as string);
+    if (blockId === null) return res.status(400).json({ error: 'Invalid block ID' });
+
+    const result = dbOps.deleteCommittedBlock(sticky.id, blockId, ctx.userId);
+    if (!result.ok) {
+      if (result.reason === 'first_block') {
+        return res.status(400).json({ error: '原帖不能单独撕掉，请整张撕下来' });
+      }
+      return res.status(404).json({ error: 'Block not found' });
+    }
+
+    emitToCouple(ctx.userId, ctx.partnerId, 'sticky_update', {
+      from: ctx.userId,
+      kind: 'block_deleted',
+      sticky_id: sticky.id,
+      block_id: blockId,
+    });
+    res.json({ success: true });
+  });
+
   // DELETE /api/stickies/:id — 撕下来. Either side of the couple can rip a
   // sticky off the wall; this is a hard delete (no trash, no recovery), as
   // intended by spec. Cascades blocks + seen rows in one transaction. The

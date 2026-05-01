@@ -13,6 +13,9 @@ import {
   Alert,
   Pressable,
   Keyboard,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -50,6 +53,12 @@ type EditorMode =
   | null;
 
 const AUTOSAVE_DELAY_MS = 1200;
+
+// LayoutAnimation needs an opt-in flip on Android; iOS has it on by default.
+// Run once at module load — calling it on every animation is unnecessary.
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 function formatStickyDate(iso: string): string {
   // Render the floating header label in BJT-equivalent local form. Today /
@@ -90,6 +99,11 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   // reload after the animation completes (otherwise the row vanishes from
   // state mid-animation and the visual cuts off).
   const [tearingOffId, setTearingOffId] = useState<number | null>(null);
+  // Block id currently mid per-block tear (撕掉单条跟帖). The StickyNote
+  // plays the rip on just that paper; once the animation completes we fire
+  // the DELETE + reload, and the layout collapse below uses LayoutAnimation
+  // so the block(s) underneath glide up to pin at the previous block's spot.
+  const [tearingBlockId, setTearingBlockId] = useState<number | null>(null);
   // Keyboard visibility — drives the 2-step "tap outside" semantic: first
   // tap dismisses the keyboard so the toolbar pills become reachable; only
   // when the keyboard is already down does a tap outside actually close the
@@ -108,6 +122,8 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   // Timer that gates the actual delete API behind the tear animation. Same
   // unmount-safety reason as above.
   const tearOffTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Same idea but for the per-block tear.
+  const tearBlockTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
   // Last-tap tracker for sticky double-tap shortcut → 跟个帖. Records
@@ -119,7 +135,14 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   const editorRef = useRef<EditorMode>(null);
   const editorTextRef = useRef('');
 
-  const reload = useCallback(async () => {
+  // Auto-open editor only fires on the initial modal open (visible 0→1).
+  // Other reload triggers (socket sticky_update from partner, post-submit,
+  // post-tear) MUST NOT re-open an editor — that's how the "提交跟帖之后
+  // 又自动开了一次跟帖" bug appeared (a stale empty temp block on another
+  // sticky would yank the editor open after every commit). Caller passes
+  // `autoOpenEditor: true` only at the visible-edge effect.
+  const reload = useCallback(async (opts: { autoOpenEditor?: boolean } = {}) => {
+    const autoOpen = opts.autoOpenEditor === true;
     try {
       const res = await api.getStickies();
       setWall(res.stickies);
@@ -147,27 +170,47 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
         }
       }
 
-      // Auto-open editor only when there's NO active editor — otherwise we'd
-      // overwrite whatever the user is currently typing. Initial open has
-      // editor=null; subsequent reloads (socket sticky_update etc.) keep
-      // the user's in-progress draft intact.
-      if (!currentEditor) {
-        if (res.my_temp) {
+      // Initial-open auto-resume: only restore an editor if there's a draft
+      // with non-whitespace content. Empty drafts are ignored — they're
+      // either stale empty temp blocks left over from cancelled comment
+      // attempts or just the freshly-created (empty) temp from start*.
+      // Either way, popping the editor for nothing isn't useful.
+      if (autoOpen && !currentEditor) {
+        if (res.my_temp && res.my_temp.content.trim()) {
           setEditor({ kind: 'new' });
           setEditorText(res.my_temp.content);
         } else {
-          const stickyWithTempBlock = res.stickies.find(s => s.my_temp_block);
+          const stickyWithTempBlock = res.stickies.find(
+            s => s.my_temp_block && s.my_temp_block.content.trim()
+          );
           if (stickyWithTempBlock) {
             setEditor({ kind: 'comment', stickyId: stickyWithTempBlock.id });
             setEditorText(stickyWithTempBlock.my_temp_block!.content);
           }
         }
       }
+
+      // Best-effort cleanup of empty temp comment blocks left over on the
+      // server (a 跟个帖 tap that never got any text). They're invisible
+      // (StickyNote skips rendering empty drafts), but keeping them around
+      // means /stickies keeps returning them. Skip the sticky the user is
+      // currently editing — its temp may be momentarily empty mid-typing.
+      const editingStickyId = currentEditor?.kind === 'comment' ? currentEditor.stickyId : null;
+      const ghostStickyIds = res.stickies
+        .filter(s => s.my_temp_block && !s.my_temp_block.content.trim() && s.id !== editingStickyId)
+        .map(s => s.id);
+      if (ghostStickyIds.length > 0) {
+        for (const id of ghostStickyIds) {
+          api.cancelStickyComment(id).catch(() => {});
+        }
+      }
     } catch {}
     setLoading(false);
   }, []);
 
-  useImperativeHandle(ref, () => ({ reload }), [reload]);
+  // Public reload via ref keeps a no-arg signature so MailboxScreen's
+  // RefreshControl-driven pull can call it without thinking about auto-open.
+  useImperativeHandle(ref, () => ({ reload: () => reload() }), [reload]);
 
   // Keep refs in sync so reload()'s closure can read the latest values
   // without re-creating the callback on every keystroke.
@@ -190,12 +233,14 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     if (headerHideTimer.current) clearTimeout(headerHideTimer.current);
     if (justPostedClearTimer.current) clearTimeout(justPostedClearTimer.current);
     if (tearOffTimer.current) clearTimeout(tearOffTimer.current);
+    if (tearBlockTimer.current) clearTimeout(tearBlockTimer.current);
   }, []);
 
   useEffect(() => {
     if (!visible) return;
     setLoading(true);
-    reload();
+    // Only the initial-open path requests auto-open of an in-progress draft.
+    reload({ autoOpenEditor: true });
   }, [visible, reload]);
 
   // Live update from partner: post / append. Sender's own client filters
@@ -206,15 +251,22 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
       // We refresh on every event regardless of `from` because the wall row's
       // own state (e.g. layout_x assigned by server) is only known after the
       // round trip; sender benefits from the fresh server-canonical view too.
+      // Never auto-open here — it'd yank the editor open mid-typing whenever
+      // the partner posts.
       reload();
     });
   }, [visible, reload]);
 
-  // Autosave whatever the user types — but only when an editor is open. The
-  // server enforces "must already have a temp", so the first POST is done
-  // when the user taps 来一帖 / 再写点.
+  // Autosave whatever the user types — but only when an editor is open AND
+  // the content isn't blank. The server enforces "must already have a temp",
+  // so the first POST is done when the user taps 来一帖 / 再写点. Skipping
+  // empty content here means a freshly-opened comment editor that the user
+  // never types into won't persist anything; the lingering empty temp block
+  // gets cleaned up when the editor closes (closeEditorPreserveDraft) or is
+  // explicitly cancelled.
   useEffect(() => {
     if (!editor) return;
+    if (!editorText.trim()) return;
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     autosaveTimer.current = setTimeout(() => {
       (async () => {
@@ -298,22 +350,40 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   }, [editor, reload]);
 
   // Soft dismiss — closes the editor visually but **keeps the temp on the
-  // server**, so the next 来一帖 / 跟个帖 (or auto-reopen on tab focus)
-  // restores whatever the user had typed. Used by tap-on-background, pageSheet
-  // swipe-down, etc. Force-flushes a save before closing so the last few
-  // characters typed within the autosave debounce window aren't lost.
+  // server iff there's actual content**, so the next 来一帖 / 跟个帖 (or
+  // auto-reopen on modal open) restores whatever the user had typed. Used
+  // by tap-on-background, pageSheet swipe-down, etc. Force-flushes a save
+  // before closing so the last few characters typed within the autosave
+  // debounce window aren't lost.
+  //
+  // Empty content path: actively delete the server-side temp instead of
+  // PUT'ing a blank string. Without this, opening 跟个帖 then closing
+  // without typing would leave an empty temp block on the server that
+  // (combined with the old auto-open behavior) yanked the editor open
+  // every time the user reopened the wall — and there was no UI to clear
+  // it.
   const closeEditorPreserveDraft = useCallback(() => {
     if (!editor) return;
     const current = editor;
     const text = editorText;
+    const trimmed = text.trim();
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current);
       autosaveTimer.current = null;
     }
     if (current.kind === 'new') {
-      api.saveStickyTemp(text).catch(() => {});
+      if (trimmed) {
+        api.saveStickyTemp(text).catch(() => {});
+      } else {
+        api.cancelStickyTemp().catch(() => {});
+        setMyTemp(null);
+      }
     } else {
-      api.saveStickyComment(current.stickyId, text).catch(() => {});
+      if (trimmed) {
+        api.saveStickyComment(current.stickyId, text).catch(() => {});
+      } else {
+        api.cancelStickyComment(current.stickyId).catch(() => {});
+      }
     }
     setEditor(null);
     setEditorText('');
@@ -470,6 +540,53 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
     );
   }, [selectedSticky, reload]);
 
+  // 撕掉单条跟帖 — long-press on a non-原帖 block I authored. The block
+  // plays its own rip animation; once it finishes we DELETE + reload, with a
+  // LayoutAnimation queued so the stack underneath glides up to the
+  // departed block's slot (its pin lands on the previous block, matching
+  // the "钉到上一张的位置" intent).
+  const handleDeleteBlock = useCallback((stickyId: number, blockId: number) => {
+    Alert.alert(
+      '撕掉这条跟帖？',
+      '只撕这一条，不影响其它跟帖。撕掉后无法恢复。',
+      [
+        { text: '不撕了', style: 'cancel' },
+        {
+          text: '撕掉',
+          style: 'destructive',
+          onPress: () => {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            setTearingBlockId(blockId);
+            if (tearBlockTimer.current) clearTimeout(tearBlockTimer.current);
+            tearBlockTimer.current = setTimeout(async () => {
+              try {
+                await api.deleteStickyBlock(stickyId, blockId);
+                // Queue layout animation so the about-to-shorten stack
+                // glides instead of snapping. Configured *just before*
+                // setState that removes the row from `wall` (via reload's
+                // setWall), so RN captures the start frame from the
+                // current rendered tree.
+                LayoutAnimation.configureNext({
+                  duration: 280,
+                  update: { type: LayoutAnimation.Types.easeInEaseOut },
+                  delete: {
+                    type: LayoutAnimation.Types.easeInEaseOut,
+                    property: LayoutAnimation.Properties.opacity,
+                  },
+                });
+                setTearingBlockId(null);
+                await reload();
+              } catch (e: any) {
+                setTearingBlockId(null);
+                Alert.alert('', e.message || '撕除失败');
+              }
+            }, 320);
+          },
+        },
+      ]
+    );
+  }, [reload]);
+
   // ── Render ─────────────────────────────────────────────────────────────
 
   const renderItem = useCallback(({ item }: { item: StickyView }) => {
@@ -482,11 +599,13 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
           writingComment={writingComment}
           justPosted={justPostedId === item.id}
           tearingOff={tearingOffId === item.id}
+          tearingBlockId={tearingBlockId}
           onPress={() => handleStickyTap(item)}
+          onLongPressBlock={(blockId) => handleDeleteBlock(item.id, blockId)}
         />
       </View>
     );
-  }, [selectedId, editor, handleStickyTap, justPostedId, tearingOffId]);
+  }, [selectedId, editor, handleStickyTap, justPostedId, tearingOffId, tearingBlockId, handleDeleteBlock]);
 
   const renderToolbar = () => {
     if (editor) {

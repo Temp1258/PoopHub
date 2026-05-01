@@ -32,21 +32,31 @@ interface Props {
   // the animation duration so the visual completes before the row leaves
   // state.
   tearingOff?: boolean;
+  // Block id currently being torn off via the per-block path. Only one can
+  // animate at a time; siblings stay still and reflow under LayoutAnimation
+  // once the row vanishes from state.
+  tearingBlockId?: number | null;
   onPress: () => void;
+  // Long-press on a comment block (i >= 1, author_role === 'me') asks the
+  // parent to confirm + delete that single block. First block (原帖) and
+  // partner-authored blocks won't fire this — UI doesn't bind a handler.
+  onLongPressBlock?: (blockId: number) => void;
 }
 
 function inkColorFor(role: 'me' | 'partner') {
   return role === 'me' ? INK_MINE : INK_PARTNER;
 }
 
-function BlockText({ block }: { block: StickyBlockView }) {
-  const color = inkColorFor(block.author_role);
-  return (
-    <Text style={[styles.blockText, { color }]}>{block.content}</Text>
-  );
-}
-
-function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, onPress }: Props) {
+function StickyNote({
+  sticky,
+  selected,
+  writingComment,
+  justPosted,
+  tearingOff,
+  tearingBlockId,
+  onPress,
+  onLongPressBlock,
+}: Props) {
   const { width: screenW } = useWindowDimensions();
   const stickyW = Math.round(screenW * STICKY_WIDTH_RATIO);
 
@@ -96,9 +106,9 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
     }).start();
   }, [selected, selectScale]);
 
-  // Tear-off animation — short rip motion: shrink toward the wall, lift up,
-  // tilt off-axis, and fade out. Direction is randomized so consecutive
-  // tears don't all look identical.
+  // Whole-sticky tear-off animation — shared values driven on every paper so
+  // the stack rips together. Per-block tear (single comment delete) lives in
+  // BlockPaper itself.
   const tearScale = useRef(new Animated.Value(1)).current;
   const tearOpacity = useRef(new Animated.Value(1)).current;
   const tearRotate = useRef(new Animated.Value(0)).current;
@@ -122,115 +132,270 @@ function StickyNote({ sticky, selected, writingComment, justPosted, tearingOff, 
     [tearRotate]
   );
 
-  // Combined opacity = enter × tear. Animated.multiply yields a derived node
-  // both animations can drive without one clobbering the other.
+  const showUnreadIsland = sticky.unread && !writingComment;
+
+  return (
+    <View style={{ marginLeft: leftPx + 16, width: stickyW }}>
+      {blocks.map((block, i) => {
+        const isFirst = i === 0;
+        const rawRot = block.layout_rotation || 0;
+        const blockRot = isMine ? rawRot : -rawRot;
+        // Long-press only enabled on non-原帖 blocks I authored. First block
+        // is the post itself; partner-authored blocks aren't mine to tear.
+        const canTearBlock = !isFirst && block.author_role === 'me' && !!onLongPressBlock;
+        return (
+          <BlockPaper
+            key={block.id}
+            block={block}
+            isFirst={isFirst}
+            blockRot={blockRot}
+            zIndex={i + 10}
+            selected={selected}
+            showUnreadIsland={isFirst && showUnreadIsland}
+            tearing={tearingBlockId === block.id}
+            enterScale={enterScale}
+            enterY={enterY}
+            enterOpacity={enterOpacity}
+            selectScale={selectScale}
+            tearScale={tearScale}
+            tearY={tearY}
+            tearOpacity={tearOpacity}
+            tearRotateDeg={tearRotateDeg}
+            onPress={onPress}
+            onLongPress={canTearBlock ? () => onLongPressBlock!(block.id) : undefined}
+          />
+        );
+      })}
+
+      {/* My in-progress comment renders as its own dashed-border paper at
+          the bottom of the thread — visually part of the stack but
+          clearly "draft". Partner can't see this. We only render it when
+          the draft has actual content; an empty temp block on the server
+          (e.g. from a 跟个帖 tap that was abandoned without typing) would
+          otherwise show a ghost "（继续写...）" sheet that the user has
+          no way to dismiss. */}
+      {sticky.my_temp_block && sticky.my_temp_block.content.trim().length > 0 && (
+        <PendingPaper
+          content={sticky.my_temp_block.content}
+          showPin={blocks.length > 0}
+          zIndex={blocks.length + 10}
+          selected={selected}
+          enterScale={enterScale}
+          enterY={enterY}
+          enterOpacity={enterOpacity}
+          selectScale={selectScale}
+          tearScale={tearScale}
+          tearY={tearY}
+          tearOpacity={tearOpacity}
+          tearRotateDeg={tearRotateDeg}
+          onPress={onPress}
+        />
+      )}
+    </View>
+  );
+}
+
+export default React.memo(StickyNote);
+
+interface BlockPaperProps {
+  block: StickyBlockView;
+  isFirst: boolean;
+  blockRot: number;
+  zIndex: number;
+  selected: boolean;
+  showUnreadIsland: boolean;
+  tearing: boolean;
+  enterScale: Animated.Value;
+  enterY: Animated.Value;
+  enterOpacity: Animated.Value;
+  selectScale: Animated.Value;
+  tearScale: Animated.Value;
+  tearY: Animated.Value;
+  tearOpacity: Animated.Value;
+  tearRotateDeg: Animated.AnimatedInterpolation<string>;
+  onPress: () => void;
+  onLongPress?: () => void;
+}
+
+// One paper in the stapled sticky stack. Owns its own per-block tear
+// animation (single comment delete) so siblings stay still while one block
+// rips off. The shared values from the parent drive whole-sticky entry +
+// select + global tear together.
+function BlockPaper({
+  block,
+  isFirst,
+  blockRot,
+  zIndex,
+  selected,
+  showUnreadIsland,
+  tearing,
+  enterScale,
+  enterY,
+  enterOpacity,
+  selectScale,
+  tearScale,
+  tearY,
+  tearOpacity,
+  tearRotateDeg,
+  onPress,
+  onLongPress,
+}: BlockPaperProps) {
+  const blockTearScale = useRef(new Animated.Value(1)).current;
+  const blockTearOpacity = useRef(new Animated.Value(1)).current;
+  const blockTearRotate = useRef(new Animated.Value(0)).current;
+  const blockTearY = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!tearing) return;
+    const direction = Math.random() > 0.5 ? 1 : -1;
+    Animated.parallel([
+      Animated.timing(blockTearScale, { toValue: 0.32, duration: 320, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(blockTearOpacity, { toValue: 0, duration: 300, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(blockTearRotate, { toValue: direction * 22, duration: 320, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(blockTearY, { toValue: -36, duration: 320, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+    ]).start();
+  }, [tearing, blockTearScale, blockTearOpacity, blockTearRotate, blockTearY]);
+
+  const blockTearRotateDeg = useMemo(
+    () => blockTearRotate.interpolate({ inputRange: [-360, 360], outputRange: ['-360deg', '360deg'] }),
+    [blockTearRotate]
+  );
+
+  // Combined opacity = sticky-level enter × sticky-level tear × this-block
+  // tear. Animated.multiply chains nodes so each animation can drive
+  // independently without one clobbering the other.
+  const opacity = useMemo(
+    () => Animated.multiply(Animated.multiply(enterOpacity, tearOpacity), blockTearOpacity),
+    [enterOpacity, tearOpacity, blockTearOpacity]
+  );
+
+  const transform = [
+    { translateY: enterY },
+    { translateY: tearY },
+    { translateY: blockTearY },
+    { scale: enterScale },
+    { scale: selectScale },
+    { scale: tearScale },
+    { scale: blockTearScale },
+    { rotate: tearRotateDeg },
+    { rotate: blockTearRotateDeg },
+    { rotate: `${blockRot}deg` },
+  ];
+
+  const inkColor = inkColorFor(block.author_role);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={350}
+      style={{
+        marginTop: isFirst ? 0 : -BLOCK_OVERLAP,
+        // Newer papers on top so each new comment visually covers the bottom
+        // edge of the older paper at the joint. The pin (child of the upper
+        // paper) lands fully on the visible top layer and clearly pierces
+        // both sheets.
+        zIndex,
+      }}
+    >
+      <Animated.View
+        style={[
+          styles.paper,
+          { transform, opacity },
+          selected && styles.paperSelected,
+        ]}
+      >
+        {selected && <View style={styles.selectedRing} pointerEvents="none" />}
+        {showUnreadIsland && (
+          <View style={styles.unreadIsland} pointerEvents="none">
+            <Text style={styles.unreadText}>未读</Text>
+          </View>
+        )}
+        {!isFirst && (
+          <View style={styles.pinSlot} pointerEvents="none">
+            <View style={styles.pinHead} />
+            <View style={styles.pinHighlight} />
+          </View>
+        )}
+        <Text style={[styles.blockText, { color: inkColor }]}>{block.content}</Text>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+interface PendingPaperProps {
+  content: string;
+  showPin: boolean;
+  zIndex: number;
+  selected: boolean;
+  enterScale: Animated.Value;
+  enterY: Animated.Value;
+  enterOpacity: Animated.Value;
+  selectScale: Animated.Value;
+  tearScale: Animated.Value;
+  tearY: Animated.Value;
+  tearOpacity: Animated.Value;
+  tearRotateDeg: Animated.AnimatedInterpolation<string>;
+  onPress: () => void;
+}
+
+// Draft paper at the bottom of the stack — only the author sees it, no
+// per-block tear since drafts don't exist server-side as committed blocks.
+function PendingPaper({
+  content,
+  showPin,
+  zIndex,
+  selected,
+  enterScale,
+  enterY,
+  enterOpacity,
+  selectScale,
+  tearScale,
+  tearY,
+  tearOpacity,
+  tearRotateDeg,
+  onPress,
+}: PendingPaperProps) {
   const opacity = useMemo(
     () => Animated.multiply(enterOpacity, tearOpacity),
     [enterOpacity, tearOpacity]
   );
-
-  // Build a transform array for one paper given its own rotation. The shared
-  // animated values (enter / select / tear) drive ALL papers in the thread
-  // together so the whole stack moves as one cohesive unit, while each paper
-  // gets its own per-block tilt for the "scattered" stapled look.
-  const paperTransform = (rotDeg: number) => [
+  const transform = [
     { translateY: enterY },
     { translateY: tearY },
     { scale: enterScale },
     { scale: selectScale },
     { scale: tearScale },
     { rotate: tearRotateDeg },
-    { rotate: `${rotDeg}deg` },
+    { rotate: '0deg' },
   ];
-
   return (
-    <View style={{ marginLeft: leftPx + 16, width: stickyW }}>
-      <Pressable onPress={onPress}>
-        <View>
-          {blocks.map((block, i) => {
-            const isFirst = i === 0;
-            const rawRot = block.layout_rotation || 0;
-            const blockRot = isMine ? rawRot : -rawRot;
-            return (
-              <Animated.View
-                key={block.id}
-                style={[
-                  styles.paper,
-                  {
-                    transform: paperTransform(blockRot),
-                    opacity,
-                    marginTop: isFirst ? 0 : -BLOCK_OVERLAP,
-                    // Newer papers on top so each new comment visually covers
-                    // the bottom edge of the older paper at the joint —
-                    // matches "新的跟帖在主贴/旧的跟帖之上". The pin (child of
-                    // the upper paper) lands fully on the visible top layer
-                    // and clearly pierces both sheets.
-                    zIndex: i + 10,
-                  },
-                  selected && styles.paperSelected,
-                ]}
-              >
-                {selected && <View style={styles.selectedRing} pointerEvents="none" />}
-                {isFirst && sticky.unread && !writingComment && (
-                  <View style={styles.unreadIsland} pointerEvents="none">
-                    <Text style={styles.unreadText}>未读</Text>
-                  </View>
-                )}
-                {/* Round push-pin at the joint, only on papers that have a
-                    paper above them (i > 0). Pinhead extends 7pt above this
-                    paper's top edge — half-inside the previous paper's
-                    bottom overlap region, half-inside this paper's top. */}
-                {!isFirst && (
-                  <View style={styles.pinSlot} pointerEvents="none">
-                    <View style={styles.pinHead} />
-                    <View style={styles.pinHighlight} />
-                  </View>
-                )}
-                <BlockText block={block} />
-              </Animated.View>
-            );
-          })}
-
-          {/* My in-progress comment renders as its own dashed-border paper at
-              the bottom of the thread — visually part of the stack but
-              clearly "draft". Partner can't see this. */}
-          {sticky.my_temp_block && (
-            <Animated.View
-              style={[
-                styles.paper,
-                styles.paperPending,
-                {
-                  transform: paperTransform(0),
-                  opacity,
-                  marginTop: -BLOCK_OVERLAP,
-                  // Pending paper is the newest — sits on top of all
-                  // committed blocks at the joint.
-                  zIndex: blocks.length + 10,
-                },
-                selected && styles.paperSelected,
-              ]}
-            >
-              {selected && <View style={styles.selectedRing} pointerEvents="none" />}
-              {/* Pending paper also gets a pin at its top (it stacks below
-                  the last committed block). */}
-              {blocks.length > 0 && (
-                <View style={styles.pinSlot} pointerEvents="none">
-                  <View style={styles.pinHead} />
-                  <View style={styles.pinHighlight} />
-                </View>
-              )}
-              <Text style={[styles.blockText, styles.pendingText]}>
-                {sticky.my_temp_block.content || '（继续写...）'}
-              </Text>
-            </Animated.View>
-          )}
-        </View>
-      </Pressable>
-    </View>
+    <Pressable
+      onPress={onPress}
+      style={{ marginTop: -BLOCK_OVERLAP, zIndex }}
+    >
+      <Animated.View
+        style={[
+          styles.paper,
+          styles.paperPending,
+          { transform, opacity },
+          selected && styles.paperSelected,
+        ]}
+      >
+        {selected && <View style={styles.selectedRing} pointerEvents="none" />}
+        {showPin && (
+          <View style={styles.pinSlot} pointerEvents="none">
+            <View style={styles.pinHead} />
+            <View style={styles.pinHighlight} />
+          </View>
+        )}
+        <Text style={[styles.blockText, styles.pendingText]}>
+          {content || '（继续写...）'}
+        </Text>
+      </Animated.View>
+    </Pressable>
   );
 }
-
-export default React.memo(StickyNote);
 
 const styles = StyleSheet.create({
   paper: {

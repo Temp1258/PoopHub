@@ -618,4 +618,7 @@ export const api = {
   deleteSticky(stickyId: number): Promise<{ success: boolean }> {
     return request(`/api/stickies/${stickyId}`, { method: 'DELETE' });
   },
+  deleteStickyBlock(stickyId: number, blockId: number): Promise<{ success: boolean }> {
+    return request(`/api/stickies/${stickyId}/blocks/${blockId}`, { method: 'DELETE' });
+  },
 };

@@ -307,6 +307,11 @@ export interface DbOps {
   // per-recipient seen rows. Either side of the couple can tear; the route
   // checks couple membership upstream.
   deleteSticky(stickyId: number, userId: string, partnerId: string): boolean;
+  // Delete a single committed comment block. Restricted to the block's own
+  // author and never the sticky's first (oldest) committed block — the spec
+  // forbids removing the original post via the per-block path; users have to
+  // tear the whole sticky for that.
+  deleteCommittedBlock(stickyId: number, blockId: number, authorId: string): { ok: boolean; reason?: 'not_found' | 'first_block' };
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -1139,6 +1144,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtDeleteStickySeenRows = db.prepare('DELETE FROM sticky_seen WHERE sticky_id = ?');
   const stmtDeleteStickyNote = db.prepare('DELETE FROM sticky_notes WHERE id = ?');
 
+  // Per-block delete: oldest committed block on a sticky is the "原帖" and
+  // can't go via this path (deleteCommittedBlock returns first_block).
+  const stmtFirstCommittedBlockId = db.prepare(
+    "SELECT id FROM sticky_blocks WHERE sticky_id = ? AND status = 'committed' ORDER BY committed_at ASC, id ASC LIMIT 1"
+  );
+  const stmtDeleteCommittedBlockById = db.prepare(
+    "DELETE FROM sticky_blocks WHERE id = ? AND sticky_id = ? AND author_id = ? AND status = 'committed'"
+  );
+
   const dbOps: DbOps = {
     createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void {
       insertUser.run(id, name, passwordHash, pairCode, timezone);
@@ -1724,6 +1738,27 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         stmtDeleteStickySeenRows.run(stickyId);
         stmtDeleteStickyNote.run(stickyId);
         return true;
+      })();
+    },
+
+    deleteCommittedBlock(stickyId, blockId, authorId): { ok: boolean; reason?: 'not_found' | 'first_block' } {
+      return db.transaction(() => {
+        const block = stmtGetBlockById.get(blockId) as StickyBlock | undefined;
+        if (
+          !block ||
+          block.sticky_id !== stickyId ||
+          block.author_id !== authorId ||
+          block.status !== 'committed'
+        ) {
+          return { ok: false, reason: 'not_found' as const };
+        }
+        const first = stmtFirstCommittedBlockId.get(stickyId) as { id: number } | undefined;
+        if (first?.id === blockId) {
+          return { ok: false, reason: 'first_block' as const };
+        }
+        const result = stmtDeleteCommittedBlockById.run(blockId, stickyId, authorId);
+        if (result.changes === 0) return { ok: false, reason: 'not_found' as const };
+        return { ok: true };
       })();
     },
   };
