@@ -101,12 +101,23 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Timer that clears the just-posted entry-animation flag. Kept in a ref
+  // so a fast modal close can cancel it on unmount instead of firing
+  // setState into a void.
+  const justPostedClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Timer that gates the actual delete API behind the tear animation. Same
+  // unmount-safety reason as above.
+  const tearOffTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onUnreadChangeRef = useRef(onUnreadChange);
   onUnreadChangeRef.current = onUnreadChange;
   // Last-tap tracker for sticky double-tap shortcut → 跟个帖. Records
   // {id, time} on each tap; if the next tap on the same sticky lands within
   // 300ms, we treat it as a double-tap and open the comment editor.
   const lastStickyTapRef = useRef<{ id: number; time: number } | null>(null);
+  // Mirror of editor + editorText so reload() (which has [] deps for
+  // stability) can read the latest values without stale-closure pitfalls.
+  const editorRef = useRef<EditorMode>(null);
+  const editorTextRef = useRef('');
 
   const reload = useCallback(async () => {
     try {
@@ -114,18 +125,42 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
       setWall(res.stickies);
       setMyTemp(res.my_temp);
       onUnreadChangeRef.current?.(res.stickies.some(s => s.unread));
-      // Auto-open editor in this priority: an unposted new sticky first,
-      // then any in-flight comment. Both kinds resume seamlessly after a
-      // tab switch / app background, per the "still on the unfinished
-      // sticky's screen" requirement.
-      if (res.my_temp) {
-        setEditor({ kind: 'new' });
-        setEditorText(res.my_temp.content);
-      } else {
-        const stickyWithTempBlock = res.stickies.find(s => s.my_temp_block);
-        if (stickyWithTempBlock) {
-          setEditor({ kind: 'comment', stickyId: stickyWithTempBlock.id });
-          setEditorText(stickyWithTempBlock.my_temp_block!.content);
+
+      const currentEditor = editorRef.current;
+      // If we're mid-comment on a sticky and the partner just tore it off,
+      // close the editor with a heads-up. Without this guard the user would
+      // hit "就这样" and bounce off a 404 — and lose whatever they'd typed.
+      if (currentEditor?.kind === 'comment') {
+        const stillExists = res.stickies.some(s => s.id === currentEditor.stickyId);
+        if (!stillExists) {
+          const draftText = editorTextRef.current.trim();
+          setEditor(null);
+          setEditorText('');
+          const tail = draftText.length > 60 ? `${draftText.slice(0, 60)}…` : draftText;
+          Alert.alert(
+            '对方撕掉了这张便利贴',
+            draftText
+              ? `你刚才写的内容：\n\n${tail}\n\n（编辑器已关闭，复制走可以贴到新便利贴里）`
+              : '编辑器已关闭。'
+          );
+          return; // skip auto-open below — there's no editor to resume
+        }
+      }
+
+      // Auto-open editor only when there's NO active editor — otherwise we'd
+      // overwrite whatever the user is currently typing. Initial open has
+      // editor=null; subsequent reloads (socket sticky_update etc.) keep
+      // the user's in-progress draft intact.
+      if (!currentEditor) {
+        if (res.my_temp) {
+          setEditor({ kind: 'new' });
+          setEditorText(res.my_temp.content);
+        } else {
+          const stickyWithTempBlock = res.stickies.find(s => s.my_temp_block);
+          if (stickyWithTempBlock) {
+            setEditor({ kind: 'comment', stickyId: stickyWithTempBlock.id });
+            setEditorText(stickyWithTempBlock.my_temp_block!.content);
+          }
         }
       }
     } catch {}
@@ -134,12 +169,27 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
 
   useImperativeHandle(ref, () => ({ reload }), [reload]);
 
+  // Keep refs in sync so reload()'s closure can read the latest values
+  // without re-creating the callback on every keystroke.
+  editorRef.current = editor;
+  editorTextRef.current = editorText;
+
   // Track keyboard visibility (iOS willShow/willHide are pre-animation, so
   // the state is correct by the time tap handlers run).
   useEffect(() => {
     const showSub = Keyboard.addListener('keyboardWillShow', () => setKeyboardVisible(true));
     const hideSub = Keyboard.addListener('keyboardWillHide', () => setKeyboardVisible(false));
     return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
+
+  // Unmount cleanup — clear any pending timers so they don't fire setState
+  // after the modal closes. React 18 silent-no-ops these, but explicit
+  // cleanup is cheaper and signals intent.
+  useEffect(() => () => {
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    if (headerHideTimer.current) clearTimeout(headerHideTimer.current);
+    if (justPostedClearTimer.current) clearTimeout(justPostedClearTimer.current);
+    if (tearOffTimer.current) clearTimeout(tearOffTimer.current);
   }, []);
 
   useEffect(() => {
@@ -290,8 +340,10 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         setJustPostedId(r.sticky_id);
         // Clear the entry-anim flag well after the animation finishes so a
-        // late re-render doesn't replay it.
-        setTimeout(() => setJustPostedId(null), 1200);
+        // late re-render doesn't replay it. Stored in a ref so an unmount
+        // before 1.2s elapses can clean it up.
+        if (justPostedClearTimer.current) clearTimeout(justPostedClearTimer.current);
+        justPostedClearTimer.current = setTimeout(() => setJustPostedId(null), 1200);
       } else {
         await api.commitStickyComment(current.stickyId, text);
       }
@@ -399,7 +451,9 @@ const StickyWallScreen = forwardRef<StickyWallHandle, Props>(({ visible, onClose
             const id = selectedSticky.id;
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
             setTearingOffId(id);
-            setTimeout(async () => {
+            // Stored in a ref so an unmount before 360ms cleans it up.
+            if (tearOffTimer.current) clearTimeout(tearOffTimer.current);
+            tearOffTimer.current = setTimeout(async () => {
               try {
                 await api.deleteSticky(id);
                 setSelectedId(null);

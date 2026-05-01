@@ -98,6 +98,10 @@ export interface TimeCapsule {
   unlock_at: string;
   opened_at: string | null;
   visibility: 'self' | 'partner';
+  // ISO timestamp when the unlock push was sent. NULL = not yet pushed.
+  // Persisted across server restarts so a `pm2 restart` mid-window can't
+  // re-send the same notification.
+  notified_at: string | null;
   created_at: string;
 }
 
@@ -217,6 +221,11 @@ export interface DbOps {
   insertRefreshToken(userId: string, tokenHash: string, expiresAt: string): void;
   getRefreshToken(tokenHash: string): RefreshToken | undefined;
   deleteRefreshToken(tokenHash: string): void;
+  // Atomic delete-old + insert-new for refresh-token rotation. Without the
+  // transaction, a crash between the two ops could revoke the user's old
+  // token without storing the new one — locking them out of their session
+  // until they re-login.
+  rotateRefreshToken(oldHash: string, userId: string, newHash: string, expiresAt: string): void;
   deleteAllRefreshTokens(userId: string): void;
   incrementTokenVersion(userId: string): void;
   getStreak(userId: string, partnerId: string): number;
@@ -251,10 +260,12 @@ export interface DbOps {
   createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule;
   getCapsules(userId: string, partnerId: string): TimeCapsule[];
   openCapsule(id: number): boolean;
-  // `nowIso` is the cutoff: any capsule with unlock_at <= nowIso (and not
-  // yet opened) is due. Replaces the old date-only check with minute
-  // precision now that the picker lets the sender choose hour:minute.
+  // `nowIso` is the cutoff: any capsule with unlock_at <= nowIso, not yet
+  // opened, and not yet notified is due for a push.
   getUnlockableCapsules(nowIso: string): TimeCapsule[];
+  // Mark a batch of capsules as "notification already sent" so a server
+  // restart mid-window doesn't re-push. Persists the dedup state.
+  markCapsulesNotified(capsuleIds: number[], nowIso: string): void;
   // Bucket List
   createBucketItem(userId: string, partnerId: string, title: string, category: string | null): BucketItem;
   getBucketItems(userId: string, partnerId: string): BucketItem[];
@@ -408,6 +419,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       unlock_at TEXT NOT NULL DEFAULT '',
       opened_at DATETIME DEFAULT NULL,
       visibility TEXT NOT NULL DEFAULT 'partner',
+      notified_at TEXT DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -504,6 +516,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE INDEX IF NOT EXISTS idx_rituals_user_date ON rituals(user_id, ritual_date);
     CREATE INDEX IF NOT EXISTS idx_mailbox_week ON mailbox(week_key);
     CREATE INDEX IF NOT EXISTS idx_capsules_unlock ON time_capsules(unlock_date);
+    -- Scheduler scans unlock_at + opened_at + notified_at every 5 min;
+    -- without this index that turns into a full table scan.
+    CREATE INDEX IF NOT EXISTS idx_capsules_unlock_at ON time_capsules(unlock_at);
     CREATE INDEX IF NOT EXISTS idx_bucket_couple ON bucket_items(user_id, partner_id);
     CREATE INDEX IF NOT EXISTS idx_snaps_date ON daily_snaps(snap_date);
     CREATE INDEX IF NOT EXISTS idx_daily_reactions_lookup ON daily_reactions(reactor_id, target_user_id, target_date, target_type);
@@ -597,6 +612,21 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     db.exec("ALTER TABLE time_capsules ADD COLUMN unlock_at TEXT NOT NULL DEFAULT ''");
     // Backfill: empty unlock_at gets unlock_date + 'T00:00:00.000Z'.
     db.exec("UPDATE time_capsules SET unlock_at = unlock_date || 'T00:00:00.000Z' WHERE unlock_at = ''");
+  }
+
+  // Migration: add notified_at to dedupe capsule_unlock pushes across
+  // server restarts. The previous in-memory `lastTriggered` Map cleared on
+  // every restart, so a pm2 restart mid 5-min window would re-push the same
+  // capsule. Backfill any already-due capsule as "already notified" — those
+  // recipients have presumably seen their notification by now (or it never
+  // came through because of the original bug; either way we don't want to
+  // re-spam them on next deploy).
+  if (capsuleCols.length > 0 && !capsuleCols.some((c) => c.name === 'notified_at')) {
+    db.exec('ALTER TABLE time_capsules ADD COLUMN notified_at TEXT DEFAULT NULL');
+    const nowIso = new Date().toISOString();
+    db.prepare(
+      'UPDATE time_capsules SET notified_at = unlock_at WHERE unlock_at <= ? AND notified_at IS NULL'
+    ).run(nowIso);
   }
 
   // Migration: add layout_rotation column to sticky_blocks. Each committed
@@ -922,7 +952,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'UPDATE time_capsules SET opened_at = CURRENT_TIMESTAMP WHERE id = ? AND opened_at IS NULL'
   );
   const stmtUnlockableCapsules = db.prepare(
-    'SELECT * FROM time_capsules WHERE unlock_at <= ? AND opened_at IS NULL'
+    'SELECT * FROM time_capsules WHERE unlock_at <= ? AND opened_at IS NULL AND notified_at IS NULL'
+  );
+  const stmtMarkCapsuleNotified = db.prepare(
+    'UPDATE time_capsules SET notified_at = ? WHERE id = ?'
   );
 
   // Bucket list statements
@@ -1220,6 +1253,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtDeleteRefreshToken.run(tokenHash);
     },
 
+    rotateRefreshToken(oldHash, userId, newHash, expiresAt): void {
+      db.transaction(() => {
+        stmtDeleteRefreshToken.run(oldHash);
+        stmtInsertRefreshToken.run(userId, newHash, expiresAt);
+      })();
+    },
+
     deleteAllRefreshTokens(userId: string): void {
       stmtDeleteAllRefreshTokens.run(userId);
     },
@@ -1425,6 +1465,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     getUnlockableCapsules(nowIso: string): TimeCapsule[] {
       return stmtUnlockableCapsules.all(nowIso) as TimeCapsule[];
+    },
+
+    markCapsulesNotified(capsuleIds: number[], nowIso: string): void {
+      if (capsuleIds.length === 0) return;
+      const tx = db.transaction((ids: number[]) => {
+        for (const id of ids) stmtMarkCapsuleNotified.run(nowIso, id);
+      });
+      tx(capsuleIds);
     },
 
     // Bucket List

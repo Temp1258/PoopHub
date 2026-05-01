@@ -78,6 +78,13 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   const [myTz, setMyTz] = useState('Asia/Shanghai');
   const [partnerTz, setPartnerTz] = useState('Asia/Shanghai');
   const [partnerRemark, setPartnerRemark] = useState('');
+
+  // Tracks mount state so deferred callbacks (SealAnimation onComplete,
+  // delivery animation timers) don't try to advance stage on an already-
+  // unmounted component. React 18 silent-no-ops these, but the guard is
+  // explicit, costs nothing, and keeps the intent clear.
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   // 1-minute tick so the footer time keeps up with the wall clock if the
   // user lingers in the editor. Uses a state stub since we only need a
   // re-render trigger, not the value.
@@ -282,11 +289,22 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
     [submitting, content, pickYear, pickMonth, pickDay, pickHour, pickMinute, myTz, recipient, runDeliveryAnimation, onClose]
   );
 
-  // Pull-down / explicit cancel: ditch everything, close the modal.
+  // Pull-down / explicit cancel: close the modal but preserve the draft.
+  // Force-flushes a save right now in case the autosave debounce (400ms)
+  // hadn't fired yet — without this, the last characters typed could be
+  // lost on a fast close. Fire-and-forget so the close animation isn't
+  // blocked on the network.
   const handleCancel = useCallback(() => {
     Keyboard.dismiss();
+    if (draftSaveTimer.current) {
+      clearTimeout(draftSaveTimer.current);
+      draftSaveTimer.current = null;
+    }
+    if (stage === 'write' || stage === 'kind' || stage === 'capsuleDetails') {
+      storage.setWriteLetterDraft(content).catch(() => {});
+    }
     onClose();
-  }, [onClose]);
+  }, [stage, content, onClose]);
 
   // ── Stage-specific renders ────────────────────────────────────────────
 
@@ -661,7 +679,9 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
               <View style={styles.bodyArea}>
                 <SealAnimation
                   preview={content.trim()}
-                  onComplete={() => setStage('kind')}
+                  onComplete={() => {
+                    if (mountedRef.current) setStage('kind');
+                  }}
                 />
               </View>
             </>

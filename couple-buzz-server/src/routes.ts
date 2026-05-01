@@ -296,11 +296,15 @@ export function createPublicRouter(dbOps: DbOps): Router {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Rotate: delete old, issue new
-    dbOps.deleteRefreshToken(tokenHash);
-    const tokens = issueTokens(dbOps, user.id, user.token_version);
+    // Rotate atomically: delete old + insert new in a single transaction.
+    // If the insert ever fails, the delete rolls back too — the user keeps
+    // their existing refresh token instead of being locked out.
+    const accessToken = generateAccessToken(user.id, user.token_version);
+    const refreshToken = generateRefreshToken();
+    const expiresAt = getRefreshTokenExpiresAt();
+    dbOps.rotateRefreshToken(tokenHash, user.id, hashToken(refreshToken), expiresAt);
 
-    res.json(tokens);
+    res.json({ access_token: accessToken, refresh_token: refreshToken });
   });
 
   return router;

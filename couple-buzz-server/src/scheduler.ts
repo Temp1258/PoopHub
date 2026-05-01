@@ -74,13 +74,19 @@ async function broadcastPush(dbOps: DbOps, pushFn: SendPushFn, type: string): Pr
 
 async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<void> {
   const now = new Date();
-  // Only push for capsules that crossed their unlock_at within the last
-  // ~5min (one scheduler tick). Without this filter, every 5-min tick
-  // would re-push every still-unlockable capsule until the recipient
-  // opens it — that's spammy.
-  const cutoffIso = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
-  const capsules = dbOps.getUnlockableCapsules(now.toISOString())
-    .filter(c => c.unlock_at > cutoffIso);
+  const nowIso = now.toISOString();
+  // `getUnlockableCapsules` now filters `notified_at IS NULL` server-side,
+  // so each capsule appears here exactly once across the lifetime of the
+  // process — no more 5-min cutoff filter needed, and no duplicate pushes
+  // across pm2 restarts.
+  const capsules = dbOps.getUnlockableCapsules(nowIso);
+  if (capsules.length === 0) return;
+
+  // Mark notified BEFORE pushing. If the push then fails (network, APNs
+  // outage), we miss ONE push for that capsule — preferable to retrying
+  // every 5min forever and spamming the recipient if their token is dead.
+  dbOps.markCapsulesNotified(capsules.map(c => c.id), nowIso);
+
   const notified = new Set<string>();
 
   for (const capsule of capsules) {

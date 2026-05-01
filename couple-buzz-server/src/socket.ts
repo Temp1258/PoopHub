@@ -116,6 +116,15 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     const partnerId = user.partner_id;
     const key = coupleKey(userId, partnerId);
 
+    // Rolling-window rate limit on this socket's `touch_start` emits — at
+    // most 5 events per 1s window. Holding a finger down only fires ONE
+    // touch_start (until release+re-press), so legit hold-to-touch is
+    // unaffected. Caps DoS via amplified APNs pushes when a buggy or
+    // malicious client emits faster than humanly possible.
+    const TOUCH_MAX = 5;
+    const TOUCH_WINDOW_MS = 1000;
+    let touchTimestamps: number[] = [];
+
     if (!presenceMap.has(key)) {
       presenceMap.set(key, {
         sockets: new Map(),
@@ -170,6 +179,14 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
     socket.data.isTouching = false;
 
     socket.on('touch_start', () => {
+      // Drop entries older than the window, then check if we're at cap.
+      const now = Date.now();
+      touchTimestamps = touchTimestamps.filter(t => now - t < TOUCH_WINDOW_MS);
+      if (touchTimestamps.length >= TOUCH_MAX) {
+        return; // silently drop — protects partner-side battery + APNs cost
+      }
+      touchTimestamps.push(now);
+
       socket.data.isTouching = true;
       socket.to(key).emit('touch_start', { from: userId });
 
@@ -236,24 +253,33 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
 
       // Gate offline-side-effects on whether the user actually has zero
       // remaining sockets. The Set + size==0 cleanup above makes
-      // `presence.sockets.has(userId)` the right signal whether we're the
-      // last device to drop or one of several.
-      const userStillOnline = presence.sockets.has(userId);
-      if (!userStillOnline) {
-        if (presence.bothOnlineTimer) {
-          clearTimeout(presence.bothOnlineTimer);
-          presence.bothOnlineTimer = undefined;
-        }
+      // `presence.sockets.has(userId)` the right signal.
+      //
+      // Cancel the both-online timer immediately (it was about TO emit
+      // both-online; we no longer want that). The OFFLINE emits, however,
+      // are deferred — a quick reconnect (AppState foreground / wifi
+      // hiccup) typically re-registers within ~1s. Without the defer the
+      // partner sees a "对方掉线 → 对方在线" flicker. Symmetric to the
+      // 1.0.2 "presence_single 残留" fix.
+      if (!presence.sockets.has(userId) && presence.bothOnlineTimer) {
+        clearTimeout(presence.bothOnlineTimer);
+        presence.bothOnlineTimer = undefined;
+      }
+
+      const RECONNECT_GRACE_MS = 1500;
+      setTimeout(() => {
+        // Re-check after the grace window — the user may have reconnected
+        // (a new socket would have re-added them to presence.sockets).
+        if (presence.sockets.has(userId)) return;
         socket.to(key).emit('partner_online', { online: false });
         if (presence.bothEmitted) {
           io.to(key).emit('presence_single');
           presence.bothEmitted = false;
         }
-      }
-
-      if (presence.sockets.size === 0) {
-        presenceMap.delete(key);
-      }
+        if (presence.sockets.size === 0 && presenceMap.get(key) === presence) {
+          presenceMap.delete(key);
+        }
+      }, RECONNECT_GRACE_MS);
     });
   });
 

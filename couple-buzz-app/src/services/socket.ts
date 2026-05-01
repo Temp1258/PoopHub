@@ -23,6 +23,10 @@ export function subscribe(event: string, fn: Listener): () => void {
 export async function connectSocket(): Promise<void> {
   if (socket?.connected || connecting) return;
   connecting = true;
+  // Reset retry counter for this fresh attempt — important when a previous
+  // attempt exhausted retries (e.g. session was revoked) and the user has
+  // since re-logged-in / re-paired.
+  ticketRetries = 0;
 
   try {
     const { ticket } = await api.getWsTicket();
@@ -57,7 +61,19 @@ export async function connectSocket(): Promise<void> {
 
     socket.on('connect_error', async (err) => {
       if (err.message === 'invalid_ticket' || err.message === 'missing_ticket') {
-        if (ticketRetries >= MAX_TICKET_RETRIES) return;
+        if (ticketRetries >= MAX_TICKET_RETRIES) {
+          // Session is genuinely gone (server-side token revoked / unpair).
+          // Stop the underlying socket.io reconnection loop — without this
+          // it would keep reconnecting forever with the now-bad ticket,
+          // burning battery + bandwidth in the background. The next
+          // explicit connectSocket() call (post re-login / app foreground)
+          // will start fresh with the retry counter reset.
+          if (socket) {
+            socket.disconnect();
+            socket = null;
+          }
+          return;
+        }
         ticketRetries++;
         try {
           const { ticket: newTicket } = await api.getWsTicket();
@@ -65,7 +81,11 @@ export async function connectSocket(): Promise<void> {
             socket.auth = { ticket: newTicket };
             socket.connect();
           }
-        } catch {}
+        } catch {
+          // getWsTicket itself failed (e.g. session-level 401). The next
+          // reconnect attempt will land here again and eventually exhaust
+          // ticketRetries → trigger the disconnect path above.
+        }
       }
     });
   } catch {}
