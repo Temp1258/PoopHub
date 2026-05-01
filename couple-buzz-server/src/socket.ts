@@ -268,15 +268,21 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
 
       const RECONNECT_GRACE_MS = 1500;
       setTimeout(() => {
-        // Re-check after the grace window — the user may have reconnected
-        // (a new socket would have re-added them to presence.sockets).
+        // If the map slot has been replaced (e.g. both users went offline →
+        // map deleted → someone reconnected → fresh presence created), the
+        // new connection handler is already authoritative. Our closure's
+        // `presence` is now stale; bail before emitting anything to the
+        // room or the new session would get a phantom "对方掉线" signal.
+        if (presenceMap.get(key) !== presence) return;
+        // Re-check user's online state after the grace window — they may
+        // have reconnected and re-registered into THIS same presence.
         if (presence.sockets.has(userId)) return;
         socket.to(key).emit('partner_online', { online: false });
         if (presence.bothEmitted) {
           io.to(key).emit('presence_single');
           presence.bothEmitted = false;
         }
-        if (presence.sockets.size === 0 && presenceMap.get(key) === presence) {
+        if (presence.sockets.size === 0) {
           presenceMap.delete(key);
         }
       }, RECONNECT_GRACE_MS);

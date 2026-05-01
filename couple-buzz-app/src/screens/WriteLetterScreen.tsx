@@ -300,7 +300,12 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       clearTimeout(draftSaveTimer.current);
       draftSaveTimer.current = null;
     }
-    if (stage === 'write' || stage === 'kind' || stage === 'capsuleDetails') {
+    // Save in any stage where content is still meaningful as a draft —
+    // i.e. anywhere except 'sending', where the API has already taken the
+    // content and `clearWriteLetterDraft` will run on success. Saving in
+    // 'sending' would race the clear and could resurrect a sent letter as
+    // a draft on next open.
+    if (stage !== 'sending') {
       storage.setWriteLetterDraft(content).catch(() => {});
     }
     onClose();
