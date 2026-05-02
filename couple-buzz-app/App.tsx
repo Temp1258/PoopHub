@@ -17,6 +17,7 @@ import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
 import { api, AuthError } from './src/services/api';
 import { connectSocket, disconnectSocket, subscribe } from './src/services/socket';
+import { hasUnreadInboxItems } from './src/utils/inboxUnread';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -561,6 +562,41 @@ export default function App() {
       setUnreadForTab(tabForActionType(data?.actionType));
     });
     return () => sub.remove();
+  }, [appState, setUnreadForTab]);
+
+  // 信箱 tab 红点 — push-driven path covers foreground-receive and tap, but
+  // misses three cases: cold launch via app icon (push consumed by OS, no
+  // listener fires), foreground+online (server skips push when socket alive,
+  // emits sticky_update only), and background→foreground without tapping the
+  // notification. Mirror MailboxScreen's own refresh triggers here so the tab
+  // dot reflects sticky/inbox unread independently of the push pipeline.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+
+    const check = async () => {
+      try {
+        const [stickyRes, inboxUnread] = await Promise.all([
+          api.getStickies().catch(() => null),
+          hasUnreadInboxItems().catch(() => false),
+        ]);
+        const stickyUnread = stickyRes?.stickies.some(s => s.unread) ?? false;
+        if (stickyUnread || inboxUnread) setUnreadForTab('Mailbox');
+      } catch {}
+    };
+
+    check();
+    const appSub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') check();
+    });
+    const unsubSocket = subscribe('sticky_update', (data: { from?: string }) => {
+      if (data?.from && data.from === myUserIdRef.current) return;
+      check();
+    });
+
+    return () => {
+      appSub.remove();
+      unsubSocket();
+    };
   }, [appState, setUnreadForTab]);
 
   const handleDailyTabFocus = useCallback(async () => {
