@@ -248,7 +248,13 @@ export interface DbOps {
   // Mailbox
   submitMailboxMessage(userId: string, weekKey: string, content: string): boolean;
   getMailboxMessages(weekKey: string, userId: string, partnerId: string): { mine?: MailboxMessage; partner?: MailboxMessage };
+  // Per-letter archive — each row is one partner-authored mailbox letter
+  // visible to `userId`. `my_content` is always null at this layer; the
+  // sender uses the dedicated outbox endpoint to see their own pending mail.
   getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[];
+  // Outbox: my mailbox letters in a single session (typically the current
+  // session, before reveal). Used to render the 发件箱.
+  getMyMailboxInSession(userId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[];
   getAllPairedUserTokens(): { device_token: string }[];
   // Weekly Report
   getWeeklyReportData(userId: string, partnerId: string, weekStart: string, weekEnd: string): {
@@ -403,6 +409,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       UNIQUE(user_id, ritual_type, ritual_date)
     );
 
+    -- Multi-letter mailbox: per session, both users may submit any number
+    -- of letters, all sealed at insert and revealed at the next session
+    -- boundary together. (No UNIQUE on (user_id, week_key) — see the
+    -- corresponding migration block below for the legacy-DB rebuild path.)
     CREATE TABLE IF NOT EXISTS mailbox (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
@@ -411,9 +421,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       locked INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id),
-      UNIQUE(user_id, week_key)
+      FOREIGN KEY (user_id) REFERENCES users(id)
     );
+    CREATE INDEX IF NOT EXISTS idx_mailbox_user_week ON mailbox(user_id, week_key);
+    CREATE INDEX IF NOT EXISTS idx_mailbox_week_created ON mailbox(week_key, created_at);
 
     CREATE TABLE IF NOT EXISTS time_capsules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -599,6 +610,39 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (mailboxCols.length > 0 && !mailboxCols.some((c) => c.name === 'locked')) {
     db.exec('ALTER TABLE mailbox ADD COLUMN locked INTEGER NOT NULL DEFAULT 0');
     db.exec('UPDATE mailbox SET locked = 1');
+  }
+
+  // Migration: drop UNIQUE(user_id, week_key) on mailbox so the user can
+  // ship multiple 次日达 within the same session (the original "one letter
+  // per session" cap surfaced as "本场的信已封存，不能再修改"). The reveal
+  // cadence still groups by session_key — every letter written in the
+  // current session opens at the next session boundary on the recipient
+  // side. SQLite can't drop a UNIQUE constraint in place; rebuild the
+  // table.
+  const mailboxTableDef = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='mailbox'"
+  ).get() as { sql: string } | undefined;
+  if (mailboxTableDef?.sql.includes('UNIQUE(user_id, week_key)') ||
+      mailboxTableDef?.sql.includes('UNIQUE (user_id, week_key)')) {
+    db.exec(`
+      CREATE TABLE mailbox_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        week_key TEXT NOT NULL,
+        content TEXT NOT NULL,
+        locked INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+      INSERT INTO mailbox_new (id, user_id, week_key, content, locked, created_at, updated_at)
+        SELECT id, user_id, week_key, content, locked, created_at, updated_at FROM mailbox;
+      DROP TABLE mailbox;
+      ALTER TABLE mailbox_new RENAME TO mailbox;
+      CREATE INDEX IF NOT EXISTS idx_mailbox_user_week ON mailbox(user_id, week_key);
+      CREATE INDEX IF NOT EXISTS idx_mailbox_week_created ON mailbox(week_key, created_at);
+    `);
+    console.log('[Migration] Dropped UNIQUE(user_id, week_key) on mailbox — multi-letter sends per session are now allowed');
   }
 
   // Migration: add visibility column to time_capsules. Pre-existing capsules
@@ -896,31 +940,43 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
 
   // Mailbox statements
-  // Seal-on-submit: row is inserted with locked=1 and never updated; re-submits are ignored.
+  // Multiple letters per (user, session) are allowed — the UNIQUE
+  // constraint that used to enforce "one letter per session" was dropped.
+  // Each row is sealed at insert (locked=1) and never updated.
   const stmtSubmitMailbox = db.prepare(
-    'INSERT OR IGNORE INTO mailbox (user_id, week_key, content, locked) VALUES (?, ?, ?, 1)'
+    'INSERT INTO mailbox (user_id, week_key, content, locked) VALUES (?, ?, ?, 1)'
   );
+  // Returns all rows from a session for both users — caller picks the
+  // mine/partner split. Ordered by id so the latest of each user is the
+  // last seen during iteration.
   const stmtGetMailboxMessages = db.prepare(
-    'SELECT * FROM mailbox WHERE week_key = ? AND user_id IN (?, ?)'
+    'SELECT * FROM mailbox WHERE week_key = ? AND user_id IN (?, ?) ORDER BY id ASC'
   );
-  // LEFT JOIN inbox_actions on partner side so trashed/purged messages are
-  // hidden (content + id NULL) for the current user only — sender's archive
-  // view of their own outgoing content is unaffected. partner_created_at is
-  // surfaced so the inbox can show the actual time the partner submitted.
+  // Per-letter archive: one row per partner-authored mailbox letter that
+  // hasn't been trashed/purged by the current viewer. Each row carries its
+  // own session_key, message id, and created_at — the inbox renders one
+  // card per letter (no longer aggregated by session).
   const stmtGetMailboxArchive = db.prepare(`
-    SELECT m.week_key,
-      MAX(CASE WHEN m.user_id = ? THEN m.content END) as my_content,
-      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.content END) as partner_content,
-      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.id END) as partner_message_id,
-      MAX(CASE WHEN m.user_id = ? AND ia.id IS NULL THEN m.created_at END) as partner_created_at
+    SELECT m.id as partner_message_id,
+      m.week_key,
+      m.content as partner_content,
+      m.created_at as partner_created_at
     FROM mailbox m
     LEFT JOIN inbox_actions ia
       ON ia.user_id = ? AND ia.kind = 'mailbox' AND ia.ref_id = m.id
         AND ia.status IN ('trashed', 'purged')
-    WHERE m.user_id IN (?, ?)
-    GROUP BY m.week_key
-    ORDER BY m.week_key DESC
+    WHERE m.user_id = ? AND ia.id IS NULL
+    ORDER BY m.created_at DESC, m.id DESC
     LIMIT ?
+  `);
+  // Outbox: my own mailbox letters from a single session (typically
+  // current session, before reveal). Lets the sender see what they've
+  // queued + when each lands.
+  const stmtGetMyMailboxInSession = db.prepare(`
+    SELECT id, week_key, content, created_at
+    FROM mailbox
+    WHERE user_id = ? AND week_key = ?
+    ORDER BY created_at ASC, id ASC
   `);
   const stmtGetAllPairedTokens = db.prepare(
     'SELECT device_token FROM users WHERE partner_id IS NOT NULL AND device_token IS NOT NULL'
@@ -1411,19 +1467,24 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[] {
-      // Args ordered to match query: my_content user_id, partner_content user_id,
-      // partner_message_id user_id, partner_created_at user_id, ia.user_id (viewer),
-      // then mailbox.user_id IN (?, ?), limit.
-      return stmtGetMailboxArchive.all(
-        userId,         // my_content branch
-        partnerId,      // partner_content branch
-        partnerId,      // partner_message_id branch
-        partnerId,      // partner_created_at branch
-        userId,         // ia.user_id (current viewer for trash filter)
-        userId,         // m.user_id IN (?,
-        partnerId,      //              ?)
+      // One row per partner-authored letter, soft-delete filtered. Pad in
+      // `my_content: null` so the response shape stays the same as before.
+      const rows = stmtGetMailboxArchive.all(
+        userId,         // ia.user_id (viewer's trash state)
+        partnerId,      // m.user_id (partner-authored only)
         limit
-      ) as any[];
+      ) as { week_key: string; partner_content: string; partner_message_id: number; partner_created_at: string }[];
+      return rows.map(r => ({
+        week_key: r.week_key,
+        my_content: null,
+        partner_content: r.partner_content,
+        partner_message_id: r.partner_message_id,
+        partner_created_at: r.partner_created_at,
+      }));
+    },
+
+    getMyMailboxInSession(userId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[] {
+      return stmtGetMyMailboxInSession.all(userId, weekKey) as any[];
     },
 
     getAllPairedUserTokens(): { device_token: string }[] {

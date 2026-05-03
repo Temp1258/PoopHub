@@ -277,6 +277,29 @@ export interface MailboxArchiveResponse {
   }[];
 }
 
+// Sender-side view of mail in transit. Mailbox letters disappear from
+// pending once the session reveals; capsules drop off once `unlock_at`
+// elapses.
+export interface OutboxMailboxItem {
+  id: number;
+  week_key: string;
+  content: string;
+  created_at: string;
+  reveal_at: string;
+}
+export interface OutboxCapsuleItem {
+  id: number;
+  content: string;
+  unlock_date: string;
+  unlock_at: string;
+  visibility: 'self' | 'partner';
+  created_at: string;
+}
+export interface OutboxResponse {
+  mailbox_pending: OutboxMailboxItem[];
+  capsule_pending: OutboxCapsuleItem[];
+}
+
 export interface TrashedInboxItem {
   kind: 'mailbox' | 'capsule';
   ref_id: number;
@@ -525,6 +548,10 @@ export const api = {
 
   getMailboxArchive(limit = 10): Promise<MailboxArchiveResponse> {
     return request(`/api/mailbox/archive?limit=${limit}`);
+  },
+
+  getOutbox(): Promise<OutboxResponse> {
+    return request('/api/outbox');
   },
 
   getWeeklyReport(week?: string): Promise<WeeklyReportResponse> {

@@ -59,3 +59,19 @@ export function useBeijing7amCountdown(): Countdown {
   if (nextMid === shifted) nextMid += DAY_MS;
   return compute(nextMid - BJT_7AM_SHIFT_MS, now);
 }
+
+// Absolute UTC ms of the next 7am Beijing time (= next daily-question /
+// snap refresh boundary). Re-evaluated each minute so it rolls forward
+// across the boundary without needing per-second ticks.
+export function useNextDailyRefreshAt(): number {
+  const [tickMs, setTickMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setTickMs(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const shifted = tickMs + BJT_7AM_SHIFT_MS;
+  let nextMid = Math.ceil(shifted / DAY_MS) * DAY_MS;
+  if (nextMid <= shifted) nextMid += DAY_MS;
+  return nextMid - BJT_7AM_SHIFT_MS;
+}

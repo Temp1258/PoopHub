@@ -55,6 +55,10 @@ export default function SettingsScreen() {
   const [originalPartnerRemark, setOriginalPartnerRemark] = useState('');
   const [saving, setSaving] = useState(false);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
+  // Tap on a tz row only updates this draft; the change is committed (and
+  // sent to the server) when the user explicitly taps "完成". Lets the
+  // user browse options without each tap firing a save round-trip.
+  const [pendingTimezone, setPendingTimezone] = useState<string>('');
   const [userId, setUserId] = useState('');
   const [partnerId, setPartnerId] = useState('');
 
@@ -167,16 +171,27 @@ export default function SettingsScreen() {
     }
   };
 
-  const handlePickTimezone = async (tz: string) => {
+  const openTimezoneModal = (target: 'my' | 'partner') => {
+    // Seed the draft with the currently-saved value so the user sees their
+    // current selection highlighted on open.
+    setPendingTimezone(target === 'my' ? timezone : partnerTimezone);
+    setModalTarget(target);
+  };
+
+  const handleConfirmTimezone = async () => {
     const target = modalTarget;
+    const tz = pendingTimezone;
     setModalTarget(null);
-    if (!target) return;
+    if (!target || !tz) return;
+    const current = target === 'my' ? timezone : partnerTimezone;
+    if (tz === current) return; // no-op confirm
     try {
       if (target === 'my') {
         await persistProfile({ timezone: tz });
       } else {
         await persistProfile({ partnerTimezone: tz });
       }
+      Alert.alert('', '已保存');
     } catch (error: any) {
       Alert.alert('保存失败', error.message);
     }
@@ -187,7 +202,9 @@ export default function SettingsScreen() {
     return found ? `${found.label} (${found.offset})` : tz;
   };
 
-  const activeValue = modalTarget === 'my' ? timezone : partnerTimezone;
+  // Highlight the in-modal selection (the draft), not the saved value, so
+  // the row the user just tapped immediately reflects their pick.
+  const activeValue = pendingTimezone;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
@@ -277,27 +294,32 @@ export default function SettingsScreen() {
 
       <Text style={[styles.sectionTitle, { marginTop: 40 }]}>时区</Text>
       <View style={styles.tzPairRow}>
-        <TouchableOpacity style={styles.tzCard} onPress={() => setModalTarget('my')}>
+        <TouchableOpacity style={styles.tzCard} onPress={() => openTimezoneModal('my')}>
           <Text style={styles.tzCardLabel}>我的时区</Text>
           <Text style={styles.tzCardValue} numberOfLines={1}>{formatTzDisplay(timezone)}</Text>
         </TouchableOpacity>
         <View style={styles.tzPairLink}>
           <Text style={styles.tzPairLinkIcon}>🕐</Text>
         </View>
-        <TouchableOpacity style={styles.tzCard} onPress={() => setModalTarget('partner')}>
+        <TouchableOpacity style={styles.tzCard} onPress={() => openTimezoneModal('partner')}>
           <Text style={styles.tzCardLabel}>ta 的时区</Text>
           <Text style={styles.tzCardValue} numberOfLines={1}>{formatTzDisplay(partnerTimezone)}</Text>
         </TouchableOpacity>
       </View>
 
-      <Modal visible={modalTarget !== null} animationType="slide" transparent>
+      <Modal
+        visible={modalTarget !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setModalTarget(null)}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
                 {modalTarget === 'my' ? '我的时区' : '对方时区'}
               </Text>
-              <TouchableOpacity onPress={() => setModalTarget(null)}>
+              <TouchableOpacity onPress={handleConfirmTimezone}>
                 <Text style={styles.modalClose}>完成</Text>
               </TouchableOpacity>
             </View>
@@ -307,7 +329,7 @@ export default function SettingsScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.tzItem, item.value === activeValue && styles.tzItemActive]}
-                  onPress={() => handlePickTimezone(item.value)}
+                  onPress={() => setPendingTimezone(item.value)}
                 >
                   <Text style={[styles.tzLabel, item.value === activeValue && styles.tzLabelActive]}>
                     {item.label}

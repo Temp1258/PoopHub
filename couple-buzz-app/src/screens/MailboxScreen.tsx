@@ -5,6 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import InboxScreen, { InboxHandle } from './InboxScreen';
+import OutboxScreen, { OutboxHandle } from './OutboxScreen';
 import TrashScreen, { TrashHandle } from './TrashScreen';
 import StickyWallScreen, { StickyWallHandle } from './StickyWallScreen';
 import WriteLetterScreen from './WriteLetterScreen';
@@ -18,6 +19,7 @@ export default function MailboxScreen() {
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
+  const [outboxOpen, setOutboxOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [stickyOpen, setStickyOpen] = useState(false);
   const [writeOpen, setWriteOpen] = useState(false);
@@ -25,6 +27,7 @@ export default function MailboxScreen() {
   const [stickyHasUnread, setStickyHasUnread] = useState(false);
   const [partnerName, setPartnerName] = useState<string>('');
   const inboxRef = useRef<InboxHandle>(null);
+  const outboxRef = useRef<OutboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
   const stickyRef = useRef<StickyWallHandle>(null);
 
@@ -87,6 +90,7 @@ export default function MailboxScreen() {
     try {
       await Promise.all([
         inboxRef.current?.reload(),
+        outboxRef.current?.reload(),
         trashRef.current?.reload(),
         refreshUnreadFlag(),
         refreshStickyFlag({ autoOpenIfTemp: false }),
@@ -125,6 +129,19 @@ export default function MailboxScreen() {
             <Text style={styles.entrySub}>已送达的次日达 · 已开启的择日达</Text>
           </View>
           {inboxHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
+          <Text style={styles.entryArrow}>›</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.entry}
+          onPress={() => setOutboxOpen(true)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.entryEmoji}>📤</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.entryTitle}>发件箱</Text>
+            <Text style={styles.entrySub}>在途的次日达 · 待解锁的择日达</Text>
+          </View>
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
 
@@ -197,6 +214,12 @@ export default function MailboxScreen() {
           // clear immediately after the user closes it.
           refreshUnreadFlag();
         }}
+      />
+      <OutboxScreen
+        ref={outboxRef}
+        visible={outboxOpen}
+        onClose={() => setOutboxOpen(false)}
+        partnerName={partnerName}
       />
       <TrashScreen
         ref={trashRef}

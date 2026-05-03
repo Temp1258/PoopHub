@@ -998,19 +998,20 @@ describe('Mailbox API', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
 
-      // Verify it's stored & sealed (in-transit: own content not returned)
+      // Pre-reveal, the writer can't peek their own letter, but the box
+      // is no longer "sealed shut" — they can keep submitting more.
       const getRes = await request(app)
         .get('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`);
       expect(getRes.body.my_message).toBeNull();
-      expect(getRes.body.my_sealed).toBe(true);
-      expect(getRes.body.can_edit).toBe(false);
+      expect(getRes.body.my_sealed).toBe(false);
+      expect(getRes.body.can_edit).toBe(true);
     }
   });
 
-  it('should seal mailbox message on first submit and reject re-writes', async () => {
+  it('should accept multiple mailbox letters within the same session', async () => {
     const { app } = createTestApp();
-    const { alice } = await registerPairedUsers(app);
+    const { alice, bob } = await registerPairedUsers(app);
 
     const statusRes = await request(app)
       .get('/api/mailbox')
@@ -1020,22 +1021,29 @@ describe('Mailbox API', () => {
       const first = await request(app)
         .post('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`)
-        .send({ content: '第一版' });
+        .send({ content: '第一封' });
       expect(first.status).toBe(200);
 
+      // Second submit in the same session is now permitted — the daily
+      // cap that produced "本场的信已封存" was lifted.
       const second = await request(app)
         .post('/api/mailbox')
         .set('Authorization', `Bearer ${alice.access_token}`)
-        .send({ content: '修改版' });
-      expect(second.status).toBe(400);
+        .send({ content: '第二封' });
+      expect(second.status).toBe(200);
 
-      const getRes = await request(app)
-        .get('/api/mailbox')
+      // Both letters should appear on Bob's archive AFTER reveal (not
+      // testable here without time-travel), but Bob's outbox-side state
+      // is irrelevant; we just confirm Alice's outbox sees both pending.
+      const outbox = await request(app)
+        .get('/api/outbox')
         .set('Authorization', `Bearer ${alice.access_token}`);
-      // Sealed in writing phase — content not returned, only the sealed flag.
-      expect(getRes.body.my_message).toBeNull();
-      expect(getRes.body.my_sealed).toBe(true);
-      expect(getRes.body.can_edit).toBe(false);
+      expect(outbox.status).toBe(200);
+      expect(outbox.body.mailbox_pending.length).toBe(2);
+      // Reference bob to keep the lint-friendly "used" semantics for the
+      // destructure (it pairs Alice with a partner so the mailbox flow is
+      // even allowed to write).
+      expect(bob.user_id).toBeDefined();
     }
   });
 

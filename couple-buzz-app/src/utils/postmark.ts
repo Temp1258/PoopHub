@@ -47,13 +47,54 @@ export function formatPostmark(iso: string, tz: string): string {
   }
 }
 
+// Returns the offset (in minutes) such that
+//   (UTC ms) + offset*60_000 = (local ms in `tz`)
+// Computed by formatting the date in the target tz, parsing the resulting
+// y/m/d/h/m/s back as UTC, and diffing with the original UTC ms. Avoids
+// `timeZoneName: 'shortOffset'`, which Hermes/older RN runtimes don't
+// always honor — when the regex fell through, the picked time silently
+// got treated as UTC, which was the source of the "18:00 NY shows as
+// 14:00 NY" preview bug.
+function tzOffsetMinutes(date: Date, tz: string): number {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(date);
+    const obj: Record<string, string> = {};
+    for (const p of parts) obj[p.type] = p.value;
+    // Some runtimes report midnight as "24" instead of "00" — normalize.
+    const hour = obj.hour === '24' ? 0 : Number(obj.hour);
+    const asUtc = Date.UTC(
+      Number(obj.year),
+      Number(obj.month) - 1,
+      Number(obj.day),
+      hour,
+      Number(obj.minute),
+      Number(obj.second || 0),
+    );
+    return Math.round((asUtc - date.getTime()) / 60000);
+  } catch {
+    return 0;
+  }
+}
+
 // Convert "year/month/day/hour/minute interpreted in `tz`" to an absolute
 // UTC ISO instant. Used by the 择日达 picker — the sender chooses a
 // hour:minute in their own local clock, and we send the equivalent UTC
 // instant so the recipient (in any tz) sees the same moment.
 //
-// DST-aware via `formatToParts` which returns the offset that would apply
-// at the picked instant, not "today's" offset.
+// Two-pass: first guess the offset at the naive UTC point, then refine
+// once after applying it so the result stays correct across DST
+// boundaries (the offset at the candidate UTC instant may differ from
+// the offset at the naive instant).
 export function toUtcIsoFromLocalParts(
   year: number,
   month: number,    // 1-12
@@ -62,20 +103,14 @@ export function toUtcIsoFromLocalParts(
   minute: number,
   tz: string
 ): string {
-  // Treat the inputs as if they were already UTC, then subtract the tz
-  // offset to land on the real UTC instant.
   const naiveMs = Date.UTC(year, month - 1, day, hour, minute);
-  try {
-    const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' });
-    const offsetStr = fmt.formatToParts(new Date(naiveMs)).find(p => p.type === 'timeZoneName')?.value || 'GMT+0';
-    const m = offsetStr.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-    if (!m) return new Date(naiveMs).toISOString();
-    const sign = m[1] === '+' ? 1 : -1;
-    const offsetMin = sign * (parseInt(m[2]) * 60 + (m[3] ? parseInt(m[3]) : 0));
-    return new Date(naiveMs - offsetMin * 60 * 1000).toISOString();
-  } catch {
-    return new Date(naiveMs).toISOString();
+  const offset1 = tzOffsetMinutes(new Date(naiveMs), tz);
+  let utcMs = naiveMs - offset1 * 60_000;
+  const offset2 = tzOffsetMinutes(new Date(utcMs), tz);
+  if (offset2 !== offset1) {
+    utcMs = naiveMs - offset2 * 60_000;
   }
+  return new Date(utcMs).toISOString();
 }
 
 // Days in (year, month). month is 1-12. Day-of-month picker uses this to

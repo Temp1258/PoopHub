@@ -113,6 +113,16 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
               <Text style={styles.placeholderText}>📷</Text>
             </View>
           )}
+          {/* Reaction stamped directly under the photo it's about — ta's
+              reaction belongs under MY photo (it's about my snap). Empty
+              slot keeps both columns the same vertical height. */}
+          <View style={styles.reactionUnderPhoto}>
+            {data.my_snapped && data.partner_snapped && data.partner_reaction_to_me ? (
+              <Text style={styles.reactionEmojiLg}>
+                {data.partner_reaction_to_me === 'up' ? '👍' : '👎'}
+              </Text>
+            ) : null}
+          </View>
         </View>
         <View style={styles.photoBox}>
           <Text style={styles.photoLabel}>ta</Text>
@@ -123,6 +133,48 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
               <Text style={styles.placeholderText}>{data.partner_snapped ? '🔒' : '📷'}</Text>
             </View>
           )}
+          <View style={styles.reactionUnderPhoto}>
+            {data.my_snapped && data.partner_snapped ? (
+              data.my_reaction_to_partner ? (
+                <Text style={styles.reactionEmojiLg}>
+                  {data.my_reaction_to_partner === 'up' ? '👍' : '👎'}
+                </Text>
+              ) : (
+                <View style={styles.reactRowInline}>
+                  <TouchableOpacity
+                    style={[styles.reactBtnInline, styles.reactUp]}
+                    onPress={async () => {
+                      if (reacting || data.my_reaction_to_partner) return;
+                      setReacting(true);
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setData(prev => prev ? { ...prev, my_reaction_to_partner: 'up' } : prev);
+                      try { await api.dailyReaction('snap', 'up'); }
+                      catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
+                      finally { setReacting(false); }
+                    }}
+                    disabled={reacting}
+                  >
+                    <Text style={styles.reactEmoji}>👍</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.reactBtnInline, styles.reactDown]}
+                    onPress={async () => {
+                      if (reacting || data.my_reaction_to_partner) return;
+                      setReacting(true);
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setData(prev => prev ? { ...prev, my_reaction_to_partner: 'down' } : prev);
+                      try { await api.dailyReaction('snap', 'down'); }
+                      catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
+                      finally { setReacting(false); }
+                    }}
+                    disabled={reacting}
+                  >
+                    <Text style={styles.reactEmoji}>👎</Text>
+                  </TouchableOpacity>
+                </View>
+              )
+            ) : null}
+          </View>
         </View>
       </View>
 
@@ -166,64 +218,7 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
       )}
 
       {data.my_snapped && data.partner_snapped && (
-        <>
-          <Text style={styles.both}>今天的快照已完成！</Text>
-
-          {/* Partner's reaction to my snap (read-only) */}
-          {data.partner_reaction_to_me ? (
-            <View style={styles.reactedBlock}>
-              <Text style={styles.reactedEmoji}>
-                {data.partner_reaction_to_me === 'up' ? '👍' : '👎'}
-              </Text>
-              <Text style={styles.reactedText}>ta 对我的快照的评价</Text>
-            </View>
-          ) : (
-            <Text style={styles.waitingForReact}>ta 还没评价你的快照</Text>
-          )}
-
-          {/* My reaction to partner's snap (interactive once, then read-only) */}
-          {data.my_reaction_to_partner ? (
-            <View style={styles.reactedBlock}>
-              <Text style={styles.reactedEmoji}>
-                {data.my_reaction_to_partner === 'up' ? '👍' : '👎'}
-              </Text>
-              <Text style={styles.reactedText}>我对 ta 的快照的评价</Text>
-            </View>
-          ) : (
-            <View style={styles.reactRow}>
-              <TouchableOpacity
-                style={[styles.reactBtn, styles.reactUp]}
-                onPress={async () => {
-                  if (reacting || data.my_reaction_to_partner) return;
-                  setReacting(true);
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setData(prev => prev ? { ...prev, my_reaction_to_partner: 'up' } : prev);
-                  try { await api.dailyReaction('snap', 'up'); }
-                  catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
-                  finally { setReacting(false); }
-                }}
-                disabled={reacting}
-              >
-                <Text style={styles.reactEmoji}>👍</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.reactBtn, styles.reactDown]}
-                onPress={async () => {
-                  if (reacting || data.my_reaction_to_partner) return;
-                  setReacting(true);
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setData(prev => prev ? { ...prev, my_reaction_to_partner: 'down' } : prev);
-                  try { await api.dailyReaction('snap', 'down'); }
-                  catch (e: any) { load(); Alert.alert('', e.message || '操作失败'); }
-                  finally { setReacting(false); }
-                }}
-                disabled={reacting}
-              >
-                <Text style={styles.reactEmoji}>👎</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </>
+        <Text style={styles.both}>今天的快照已完成！</Text>
       )}
     </View>
   );
@@ -248,13 +243,14 @@ const styles = StyleSheet.create({
   urgeBtn: { height: 44, backgroundColor: COLORS.kiss, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginTop: 12 },
   urgeBtnDisabled: { opacity: 0.4 },
   urgeText: { fontSize: 16, fontWeight: '600', color: COLORS.white },
-  reactRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  reactBtn: { flex: 1, height: 38, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1 },
+  // Reaction slot under each photo. Fixed height so both columns stay
+  // aligned even when one side has buttons and the other an emoji (or
+  // an empty placeholder while ta hasn't reacted yet).
+  reactionUnderPhoto: { height: 36, marginTop: 8, justifyContent: 'center', alignItems: 'center' },
+  reactionEmojiLg: { fontSize: 26 },
+  reactRowInline: { flexDirection: 'row', gap: 8 },
+  reactBtnInline: { width: 44, height: 32, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1 },
   reactUp: { borderColor: '#B8E6CF', backgroundColor: '#F0FBF5' },
   reactDown: { borderColor: '#FFC2C2', backgroundColor: '#FFF0F0' },
-  reactEmoji: { fontSize: 20 },
-  reactedBlock: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12, paddingVertical: 8, backgroundColor: COLORS.background, borderRadius: 10 },
-  reactedEmoji: { fontSize: 22 },
-  reactedText: { fontSize: 13, color: COLORS.textLight, fontWeight: '500' },
-  waitingForReact: { fontSize: 12, color: COLORS.textLight, textAlign: 'center', marginTop: 10, fontStyle: 'italic' },
+  reactEmoji: { fontSize: 18 },
 });

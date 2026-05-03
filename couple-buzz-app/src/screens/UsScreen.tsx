@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, RefreshControl, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -6,7 +6,9 @@ import { COLORS } from '../constants';
 import RitualButton from '../components/RitualButton';
 import DailyQuestionCard from '../components/DailyQuestionCard';
 import DailySnapCard from '../components/DailySnapCard';
-import { useBeijing7amCountdown } from '../utils/countdown';
+import { useNextDailyRefreshAt } from '../utils/countdown';
+import { storage } from '../utils/storage';
+import { friendlyTzName } from '../utils/postmark';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -16,7 +18,28 @@ export default function DailyScreen() {
   const ritualRef = useRef<Reloadable>(null);
   const questionRef = useRef<Reloadable>(null);
   const snapRef = useRef<Reloadable>(null);
-  const cd = useBeijing7amCountdown();
+  const nextRefreshAt = useNextDailyRefreshAt();
+  const [myTz, setMyTz] = useState('Asia/Shanghai');
+  useEffect(() => {
+    storage.getTimezone().then(tz => { if (tz) setMyTz(tz); }).catch(() => {});
+  }, []);
+  // Render the daily refresh moment as wall-clock time in the user's tz —
+  // e.g. "下次更新于 纽约时间 18:00:00". The instant itself is fixed (next
+  // 7am BJT), so the displayed value only changes across DST or a tz
+  // setting change.
+  const refreshClock = (() => {
+    try {
+      return new Date(nextRefreshAt).toLocaleTimeString('en-GB', {
+        timeZone: myTz,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
+    } catch {
+      return '';
+    }
+  })();
   // Scroll-bound fade: invisible at rest (so the topmost card's edge is
   // fully visible), fades in to mask content as the user scrolls up.
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -64,7 +87,7 @@ export default function DailyScreen() {
         <DailyQuestionCard ref={questionRef} />
         <DailySnapCard ref={snapRef} />
         <Text style={styles.refreshHint}>
-          {cd.done ? '即将刷新' : `距下次刷新 ${cd.hh}:${cd.mm}:${cd.ss}`}
+          {refreshClock ? `下次更新于 ${friendlyTzName(myTz)} ${refreshClock}` : ''}
         </Text>
       </Animated.ScrollView>
       {/* Scroll-bound fade: invisible at rest, fades in once the user

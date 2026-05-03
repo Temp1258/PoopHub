@@ -950,20 +950,23 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const phase = now >= revealAt ? 'revealed' : 'writing';
 
     const messages = dbOps.getMailboxMessages(sessionKey, userId, user.partner_id);
-    const mySealed = !!messages.mine && phase === 'writing';
 
+    // Multi-letter sends per session are allowed; the writer can keep
+    // shipping until reveal time. `my_sealed` / `can_edit` are kept in the
+    // response shape for backward compatibility with old clients but always
+    // report "not sealed / can edit" during the writing phase.
     res.json({
       week_key: sessionKey,
       phase,
-      // Once written but not yet revealed, the letter is "in transit" — even
-      // the author cannot peek at their own content. Only on reveal does the
-      // server return both messages.
+      // Latest of each user (loop in getMailboxMessages assigns last-row-
+      // wins; statement orders ASC so the most recent ends up returned).
+      // Pre-reveal the writer still doesn't see anyone's content.
       my_message: phase === 'revealed' ? (messages.mine?.content ?? null) : null,
-      my_sealed: mySealed,
+      my_sealed: false,
       partner_message: phase === 'revealed' ? (messages.partner?.content ?? null) : null,
       partner_wrote: phase === 'revealed' ? !!messages.partner : undefined,
       reveal_at: revealAt.toISOString(),
-      can_edit: phase === 'writing' && !messages.mine,
+      can_edit: phase === 'writing',
     });
   });
 
@@ -990,10 +993,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Writing period has ended' });
     }
 
-    const saved = dbOps.submitMailboxMessage(userId, sessionKey, content.trim());
-    if (!saved) {
-      return res.status(400).json({ error: '本场的信已封存，不能再修改' });
-    }
+    // Multiple letters per session are allowed — every send produces a new
+    // sealed row that opens at the next reveal boundary alongside the rest.
+    dbOps.submitMailboxMessage(userId, sessionKey, content.trim());
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
@@ -1012,18 +1014,62 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ weeks: [] });
 
-    // Only return sessions whose reveal time has passed
-    const allWeeks = dbOps.getMailboxArchive(userId, user.partner_id, Math.min(limit, 50));
+    // One row per partner-authored letter. Hide rows whose session reveal
+    // time hasn't arrived yet — those are still in transit on the
+    // recipient's side.
+    const allLetters = dbOps.getMailboxArchive(userId, user.partner_id, Math.min(limit, 50));
     const now = new Date();
-    const currentSessionKey = getCurrentSessionKey();
-    const weeks = allWeeks.filter(w => {
-      if (w.week_key === currentSessionKey) {
-        return now >= getRevealTime(currentSessionKey);
-      }
-      return true; // Past sessions are always revealed
-    });
+    const weeks = allLetters.filter(w => now >= getRevealTime(w.week_key));
 
     res.json({ weeks });
+  });
+
+  // GET /api/outbox — sender-side view of letters in transit.
+  // Mailbox: my submissions in the current session that haven't reveal-
+  // passed yet. Capsule: my capsules whose unlock_at is in the future.
+  // Once a letter "arrives" (reveal time / unlock time elapses), it
+  // disappears from the outbox automatically.
+  router.get('/outbox', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const user = dbOps.getUser(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user.partner_id) return res.json({ mailbox_pending: [], capsule_pending: [] });
+
+    const now = new Date();
+    const sessionKey = getCurrentSessionKey();
+    const revealAt = getRevealTime(sessionKey);
+
+    // Mailbox: only the current session can hold pre-reveal letters
+    // (past sessions are always already revealed by the time the user
+    // could request them). If we're already past this session's reveal
+    // moment, return none.
+    let mailbox_pending: { id: number; week_key: string; content: string; created_at: string; reveal_at: string }[] = [];
+    if (now < revealAt) {
+      mailbox_pending = dbOps.getMyMailboxInSession(userId, sessionKey).map(r => ({
+        id: r.id,
+        week_key: r.week_key,
+        content: r.content,
+        created_at: r.created_at,
+        reveal_at: revealAt.toISOString(),
+      }));
+    }
+
+    // Capsule: my capsules with a future unlock instant. Includes both
+    // partner-bound and self-bound — the user wrote them, so seeing them
+    // in their own outbox is the expected mental model.
+    const nowIso = now.toISOString();
+    const capsule_pending = dbOps.getCapsules(userId, user.partner_id)
+      .filter(c => c.user_id === userId && c.unlock_at > nowIso && !c.opened_at)
+      .map(c => ({
+        id: c.id,
+        content: c.content,
+        unlock_date: c.unlock_date,
+        unlock_at: c.unlock_at,
+        visibility: c.visibility,
+        created_at: c.created_at,
+      }));
+
+    res.json({ mailbox_pending, capsule_pending });
   });
 
   // Inbox soft-delete endpoints — used by the inbox & trash views.
