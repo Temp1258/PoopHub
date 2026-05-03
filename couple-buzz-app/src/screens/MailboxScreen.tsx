@@ -238,8 +238,9 @@ export default function MailboxScreen() {
         onClose={async () => {
           setOutboxOpen(false);
           // Opening the outbox marks all currently-pending letters as
-          // seen — clears the 🚩 + 信箱 tab dot until the next send.
-          await storage.setOutboxLastSeen(new Date().toISOString()).catch(() => {});
+          // seen on the server — clears the 🚩 + 信箱 tab dot until the
+          // next send. Server-side state survives logout / reinstall.
+          await api.markOutboxSeen().catch(() => {});
           refreshUnreadFlag();
         }}
         partnerName={partnerName}

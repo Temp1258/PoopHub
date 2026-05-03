@@ -55,6 +55,18 @@ export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
       await fireOnce('weekly_report', () => broadcastPush(dbOps, pushFn, 'weekly_report'));
     }
 
+    // 03:00 UTC daily — TTL sweep for couples whose ended_at + 90d have
+    // elapsed. Hard-deletes all data tagged with that pair_id. Cheap on
+    // small datasets; idempotent (only matches still-expired rows).
+    if (utcHour === 3 && utcMin === 0) {
+      await fireOnce('couples_ttl_cleanup', async () => {
+        const deleted = dbOps.couplesCleanupExpired();
+        if (deleted.length > 0) {
+          console.log(`[TTL] Hard-deleted ${deleted.length} expired couple(s): ${deleted.join(', ')}`);
+        }
+      });
+    }
+
     // Capsule unlock pushes — fire every 5 minutes so the recipient gets
     // notified within ~5min of the picked unlock_at instant. The minute
     // bucket is part of the dedup key so each tick is a distinct event.
@@ -90,17 +102,18 @@ async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<vo
   const notified = new Set<string>();
 
   for (const capsule of capsules) {
-    for (const uid of [capsule.user_id, capsule.partner_id]) {
-      // Self-vis capsules are private to the author — never notify the
-      // partner about them or we leak their existence (and send a fake
-      // notification the partner can never act on).
-      if (capsule.visibility === 'self' && uid !== capsule.user_id) continue;
-      if (notified.has(uid)) continue;
-      notified.add(uid);
-      const user = dbOps.getUser(uid);
-      if (user?.device_token) {
-        await pushFn(user.device_token, 'capsule_unlock', '');
-      }
+    // Notify only the RECIPIENT of the capsule:
+    //   self-vis  → author (it's a letter to their future self)
+    //   partner-vis → partner (the author already knows they sent it; the
+    //                 inbox view also filters their own outgoing partner-vis
+    //                 capsules out, so a "your capsule unlocked" push to the
+    //                 author would land on an empty inbox)
+    const recipientId = capsule.visibility === 'self' ? capsule.user_id : capsule.partner_id;
+    if (notified.has(recipientId)) continue;
+    notified.add(recipientId);
+    const user = dbOps.getUser(recipientId);
+    if (user?.device_token) {
+      await pushFn(user.device_token, 'capsule_unlock', '');
     }
   }
 }

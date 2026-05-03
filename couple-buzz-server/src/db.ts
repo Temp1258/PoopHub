@@ -1,8 +1,27 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { randomInt } from 'crypto';
 
 const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'app.db');
+
+// pair_id charset — 6 letters then 4 digits, all unambiguous (no I/L/O,
+// no 0/1) so users reading the code aloud don't trip over look-alikes.
+// Total space ≈ 23^6 × 8^4 ≈ 6.0×10^11. With ~10^6 couples, P(collision)
+// is < 10^-5; we still guard with a UNIQUE PK + retry loop on insert.
+const PAIR_ID_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ'; // 23 chars
+const PAIR_ID_DIGITS = '23456789';                 // 8 chars
+function generatePairId(): string {
+  let s = '';
+  for (let i = 0; i < 6; i++) s += PAIR_ID_LETTERS[randomInt(PAIR_ID_LETTERS.length)];
+  for (let i = 0; i < 4; i++) s += PAIR_ID_DIGITS[randomInt(PAIR_ID_DIGITS.length)];
+  return s;
+}
+
+// Lex-sorted form of (a, b) — couples.user_a_id is always the smaller id.
+function sortedPair(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a];
+}
 
 export interface User {
   id: string;
@@ -16,7 +35,32 @@ export interface User {
   partner_timezone: string;
   partner_remark: string;
   last_read_action_id: number;
+  // Marker advanced when the user opens the 发件箱 (OutboxScreen). Any
+  // pending letter with created_at > this value is considered "fresh"
+  // (drives the 🚩 next to 发件箱 + the 信箱 tab dot). Stored
+  // server-side so it survives logout / reinstall / device handoff.
+  // SQLite default datetime format ('YYYY-MM-DD HH:MM:SS') so lex
+  // comparison against `created_at` of mailbox / time_capsules works.
+  outbox_last_seen: string | null;
   created_at: string;
+}
+
+// Stable identity for a relationship between two users. The `pair_id` is
+// the user-visible 10-char handle (e.g. "KMRPQT4729") that all of the
+// couple's data hangs off — when a couple unpairs, ended_at fires the
+// 90-day TTL clock; if the same two users re-pair before the timer
+// elapses, ended_at is cleared and every row tagged with this pair_id
+// becomes visible again.
+export interface Couple {
+  pair_id: string;
+  // Lex-sorted: user_a_id < user_b_id. This is how we look up the row
+  // by the unordered pair {a,b} without storing two rows.
+  user_a_id: string;
+  user_b_id: string;
+  started_at: string;
+  // NULL = currently active pairing. Non-NULL = unpaired; data is in
+  // the 90-day grace window awaiting re-pair or TTL cleanup.
+  ended_at: string | null;
 }
 
 export interface Action {
@@ -64,6 +108,10 @@ export interface RefreshToken {
   user_id: string;
   token_hash: string;
   expires_at: string;
+  // ISO timestamp set when this token has been rotated. NULL = fresh.
+  // The token remains valid for a brief grace window after this is set
+  // so a network failure mid-rotate doesn't strand the client.
+  superseded_at: string | null;
   created_at: string;
 }
 
@@ -201,6 +249,19 @@ export interface DbOps {
   getUserByPairCode(pairCode: string): User | undefined;
   pairUsers(userId: string, partnerId: string): void;
   unpairUsers(userId: string, partnerId: string): void;
+  // Look up the active pair_id for {a, b}; returns null if not currently
+  // paired (the row may exist with ended_at set — that's not active).
+  couplesGetActivePairId(userIdA: string, userIdB: string): string | null;
+  // Find existing pair (any state) or create a new one. Revives a DORMANT
+  // row whose ended_at + 90d > now (clears ended_at). If the row is past
+  // TTL, hard-deletes the stale data and creates a fresh pair_id.
+  couplesGetOrCreatePair(userIdA: string, userIdB: string): { pair_id: string; revived: boolean };
+  // Mark the current active pair as ended; starts the 90-day TTL.
+  couplesEndPair(userIdA: string, userIdB: string): void;
+  // Hard-delete every couples row + all data tagged with that pair_id
+  // when the row's ended_at + 90 days have elapsed. Returns the deleted
+  // pair_ids for logging / observability.
+  couplesCleanupExpired(): string[];
   updatePairCode(userId: string, pairCode: string): void;
   updateProfile(userId: string, name: string, timezone: string, partnerTimezone: string, partnerRemark: string): void;
   setDeviceToken(userId: string, token: string): void;
@@ -211,60 +272,87 @@ export interface DbOps {
   setLastReadActionId(userId: string, actionId: number): void;
   getUnreadActionCount(userId: string, partnerId: string): number;
   getLatestPartnerActionId(userId: string, partnerId: string): number;
-  addAction(userId: string, actionType: string, senderTimezone: string, senderName: string): void;
+  addAction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string): void;
   getAction(actionId: number): Action | undefined;
-  addReaction(userId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number;
+  addReaction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number;
   getReaction(actionId: number, userId: string): Action | undefined;
   updateReaction(reactionId: number, actionType: string): void;
-  getHistory(userId: string, limit: number): Action[];
-  getHistoryReactions(userId: string): Action[];
+  // pair_id-scoped: only returns actions for the requested relationship,
+  // so a re-pair after a different intermediate relationship doesn't
+  // leak earlier-pair history.
+  getHistory(pairId: string, limit: number): Action[];
+  getHistoryReactions(pairId: string): Action[];
   insertRefreshToken(userId: string, tokenHash: string, expiresAt: string): void;
   getRefreshToken(tokenHash: string): RefreshToken | undefined;
   deleteRefreshToken(tokenHash: string): void;
-  // Atomic delete-old + insert-new for refresh-token rotation. Without the
-  // transaction, a crash between the two ops could revoke the user's old
-  // token without storing the new one — locking them out of their session
-  // until they re-login.
+  // Rotate by marking the old hash as `superseded_at = now` and inserting
+  // a fresh token row. Old hash stays valid for a 10s grace window so a
+  // mid-rotation network failure doesn't lock the client out — the retry
+  // re-rotates and issues another fresh pair. Atomic in a transaction so
+  // a partial failure can't leak.
   rotateRefreshToken(oldHash: string, userId: string, newHash: string, expiresAt: string): void;
+  // Cleanup: drop expired tokens AND tokens whose grace window has
+  // elapsed. Called opportunistically on every rotation; cheap when the
+  // table is small.
+  pruneRefreshTokens(): void;
   deleteAllRefreshTokens(userId: string): void;
   incrementTokenVersion(userId: string): void;
   getStreak(userId: string, partnerId: string): number;
-  createImportantDate(userId: string, partnerId: string, title: string, date: string, recurring: boolean): ImportantDate;
-  getImportantDates(userId: string, partnerId: string): ImportantDate[];
-  updateImportantDate(id: number, title: string, date: string, recurring: boolean, userId: string, partnerId: string): boolean;
-  deleteImportantDate(id: number, userId: string, partnerId: string): boolean;
-  pinImportantDate(id: number, userId: string, partnerId: string): void;
-  submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void;
-  getDailyAnswers(questionDate: string, userId: string, partnerId: string): { mine?: DailyAnswer; partner?: DailyAnswer };
-  getQuestionAssignment(questionDate: string): number | null;
-  setQuestionAssignment(questionDate: string, questionIndex: number): void;
-  getCompletedQuestionIndexes(userId: string, partnerId: string): Set<number>;
-  getStats(userId: string, partnerId: string): StatsData;
+  createImportantDate(userId: string, partnerId: string, pairId: string, title: string, date: string, recurring: boolean): ImportantDate;
+  getImportantDates(pairId: string): ImportantDate[];
+  updateImportantDate(id: number, title: string, date: string, recurring: boolean, pairId: string): boolean;
+  deleteImportantDate(id: number, pairId: string): boolean;
+  pinImportantDate(id: number, pairId: string): void;
+  submitDailyAnswer(userId: string, pairId: string, questionDate: string, questionIndex: number, answer: string): void;
+  getDailyAnswers(questionDate: string, pairId: string, userId: string): { mine?: DailyAnswer; partner?: DailyAnswer };
+  getQuestionAssignment(pairId: string, questionDate: string): number | null;
+  setQuestionAssignment(pairId: string, questionDate: string, questionIndex: number): void;
+  getCompletedQuestionIndexes(pairId: string): Set<number>;
+  getStats(pairId: string, userId: string): StatsData;
   // Rituals
   submitRitual(userId: string, ritualType: 'morning' | 'evening', ritualDate: string): boolean;
   getRituals(ritualDate: string, userId: string, partnerId: string): Ritual[];
   getRitualsByDates(myDate: string, partnerDate: string, userId: string, partnerId: string): { myMorning: boolean; myEvening: boolean; partnerMorning: boolean; partnerEvening: boolean };
-  getDailyRecap(userId: string, partnerId: string, date: string): { total_interactions: number; top_action: string | null };
+  // Range is two UTC ISO instants — the route layer computes them from the
+  // user's tz so the recap counts the right local-day window.
+  getDailyRecap(userId: string, partnerId: string, startUtcIso: string, endUtcIso: string): { total_interactions: number; top_action: string | null };
   // Mailbox
-  submitMailboxMessage(userId: string, weekKey: string, content: string): boolean;
-  getMailboxMessages(weekKey: string, userId: string, partnerId: string): { mine?: MailboxMessage; partner?: MailboxMessage };
+  submitMailboxMessage(userId: string, pairId: string, weekKey: string, content: string): boolean;
+  getMailboxMessages(weekKey: string, pairId: string, userId: string): { mine?: MailboxMessage; partner?: MailboxMessage };
   // Per-letter archive — each row is one partner-authored mailbox letter
-  // visible to `userId`. `my_content` is always null at this layer; the
-  // sender uses the dedicated outbox endpoint to see their own pending mail.
-  getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[];
+  // visible to `userId` within the current pair_id. `my_content` is
+  // always null; the sender uses the dedicated outbox endpoint to see
+  // their own pending mail.
+  getMailboxArchive(userId: string, pairId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[];
   // Outbox: my mailbox letters in a single session (typically the current
-  // session, before reveal). Used to render the 发件箱.
-  getMyMailboxInSession(userId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[];
+  // session, before reveal), scoped to the current pair_id.
+  getMyMailboxInSession(userId: string, pairId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[];
+  // Advance the user's outbox-last-seen marker to "now". Drives the 🚩
+  // freshness check against pending letters' created_at. Stored
+  // server-side so the marker survives logout / reinstall / device hop.
+  markOutboxSeen(userId: string): void;
   getAllPairedUserTokens(): { device_token: string }[];
-  // Weekly Report
-  getWeeklyReportData(userId: string, partnerId: string, weekStart: string, weekEnd: string): {
+  // Weekly Report.
+  //   weekStart/weekEnd  — date-only YYYY-MM-DD strings (used for the
+  //     question_date / ritual_date comparisons; those columns are stored
+  //     as date-only already).
+  //   actionsStart/actionsEnd — the SAME local-midnight boundaries
+  //     converted to SQLite-format UTC strings ('YYYY-MM-DD HH:MM:SS').
+  //     Used for `created_at` comparisons in the actions table so a NY
+  //     user's "this week" lines up with their wall-clock Monday-Sunday
+  //     instead of UTC's.
+  getWeeklyReportData(
+    userId: string, partnerId: string,
+    weekStart: string, weekEnd: string,
+    actionsStart: string, actionsEnd: string,
+  ): {
     total: number; lastWeekTotal: number; myCount: number; partnerCount: number;
     topActions: { action_type: string; count: number }[];
     dailyQuestionDays: number; ritualMorningDays: number; ritualEveningDays: number;
   };
   // Time Capsules
-  createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule;
-  getCapsules(userId: string, partnerId: string): TimeCapsule[];
+  createCapsule(userId: string, partnerId: string, pairId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule;
+  getCapsules(pairId: string): TimeCapsule[];
   openCapsule(id: number): boolean;
   // `nowIso` is the cutoff: any capsule with unlock_at <= nowIso, not yet
   // opened, and not yet notified is due for a push.
@@ -273,8 +361,8 @@ export interface DbOps {
   // restart mid-window doesn't re-push. Persists the dedup state.
   markCapsulesNotified(capsuleIds: number[], nowIso: string): void;
   // Bucket List
-  createBucketItem(userId: string, partnerId: string, title: string, category: string | null): BucketItem;
-  getBucketItems(userId: string, partnerId: string): BucketItem[];
+  createBucketItem(userId: string, partnerId: string, pairId: string, title: string, category: string | null): BucketItem;
+  getBucketItems(pairId: string): BucketItem[];
   completeBucketItem(id: number, userId: string): boolean;
   uncompleteBucketItem(id: number): boolean;
   deleteBucketItem(id: number, userId: string, partnerId: string): boolean;
@@ -283,9 +371,9 @@ export interface DbOps {
   getSnap(userId: string, snapDate: string): DailySnap | undefined;
   getSnaps(userId: string, partnerId: string, month: string): { snap_date: string; user_photo: string | null; partner_photo: string | null }[];
   // Daily Reactions (👍/👎 on partner's daily question answer or daily snap)
-  setDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap', reaction: 'up' | 'down'): void;
+  setDailyReaction(reactorId: string, targetUserId: string, pairId: string, targetDate: string, targetType: 'question' | 'snap', reaction: 'up' | 'down'): void;
   // Inbox actions — per-recipient soft delete state for mailbox/capsule.
-  setInboxAction(userId: string, kind: 'mailbox' | 'capsule', refId: number, status: 'trashed' | 'purged'): void;
+  setInboxAction(userId: string, pairId: string, kind: 'mailbox' | 'capsule', refId: number, status: 'trashed' | 'purged'): void;
   clearInboxAction(userId: string, kind: 'mailbox' | 'capsule', refId: number): void;
   getInboxActionStatus(userId: string, kind: 'mailbox' | 'capsule', refId: number): 'trashed' | 'purged' | null;
   getTrashedInboxItems(userId: string, partnerId: string): TrashedInboxItem[];
@@ -294,12 +382,12 @@ export interface DbOps {
   getDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap'): 'up' | 'down' | null;
   // Sticky notes (每日一帖)
   getTempSticky(userId: string): StickyNote | undefined;
-  createTempSticky(userId: string, partnerId: string): { sticky: StickyNote; block: StickyBlock };
+  createTempSticky(userId: string, partnerId: string, pairId: string): { sticky: StickyNote; block: StickyBlock };
   updateTempStickyContent(userId: string, content: string): boolean;
   deleteTempSticky(userId: string): boolean;
   postSticky(userId: string, content: string, layoutX: number, layoutRotation: number): { sticky: StickyNote; block: StickyBlock } | null;
-  getStickyForCouple(stickyId: number, userId: string, partnerId: string): StickyNote | undefined;
-  listWallStickies(userId: string, partnerId: string, limit: number): StickyNote[];
+  getStickyForCouple(stickyId: number, pairId: string): StickyNote | undefined;
+  listWallStickies(pairId: string, limit: number): StickyNote[];
   listCommittedBlocksForStickies(stickyIds: number[]): StickyBlock[];
   listSeenForStickies(userId: string, stickyIds: number[]): Map<number, number>;
   maxCommittedBlockIdOnSticky(stickyId: number): number;
@@ -318,6 +406,270 @@ export interface DbOps {
   // forbids removing the original post via the per-block path; users have to
   // tear the whole sticky for that.
   deleteCommittedBlock(stickyId: number, blockId: number, authorId: string): { ok: boolean; reason?: 'not_found' | 'first_block' };
+}
+
+// One-shot D+ backfill: tags every legacy couple-scoped row with a
+// pair_id using the strategies decided in design:
+//
+//   1. ACTIVE pairs: read from users.partner_id; one couples row per
+//      currently-paired (a, b); UPDATE all matching data rows.
+//   2. HISTORICAL pairs reconstructable from rows that carry both
+//      user_id + partner_id (capsules / sticky_notes / bucket_items /
+//      daily_reactions / important_dates). For each unique (a, b) tuple
+//      not already an active pair, synthesize a couples row with
+//      ended_at = now (TTL clock starts on migration day; that's the
+//      one accepted migration imperfection).
+//   3. USER-ID-ONLY tables (actions / mailbox / daily_answers): time-
+//      bucket attribution. For each row, find the couple whose data
+//      window [min(created_at), max(created_at)] (computed from
+//      partner_id-bearing tables) contains the row's created_at.
+//   4. ORPHANS we still can't attribute → hard delete.
+//
+// Wraps each phase in a transaction; the whole thing aborts on error
+// rather than leaving the DB partly migrated.
+function runPairIdBackfill(db: DatabaseType): void {
+  // ─ helpers ─
+  const insertCouple = db.prepare(
+    'INSERT OR IGNORE INTO couples (pair_id, user_a_id, user_b_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?)'
+  );
+  const couplesByUsers = db.prepare(
+    'SELECT pair_id FROM couples WHERE user_a_id = ? AND user_b_id = ?'
+  );
+  function freshPairId(): string {
+    for (let i = 0; i < 16; i++) {
+      const candidate = generatePairId();
+      const taken = db.prepare('SELECT 1 FROM couples WHERE pair_id = ?').get(candidate);
+      if (!taken) return candidate;
+    }
+    throw new Error('pair_id collision storm during backfill');
+  }
+  function getOrCreateCouple(a: string, b: string, ended: string | null): string {
+    const [u, v] = sortedPair(a, b);
+    const existing = couplesByUsers.get(u, v) as { pair_id: string } | undefined;
+    if (existing) return existing.pair_id;
+    const pid = freshPairId();
+    insertCouple.run(pid, u, v, new Date().toISOString().slice(0, 19).replace('T', ' '), ended);
+    return pid;
+  }
+
+  // Phase 1: Active pairs. users.partner_id is bidirectional once paired,
+  // so we collect each couple by lex-sorting and deduping.
+  const pairedUsers = db.prepare(
+    "SELECT id, partner_id FROM users WHERE partner_id IS NOT NULL"
+  ).all() as { id: string; partner_id: string }[];
+  const activePairs = new Set<string>();
+  const activePairMap = new Map<string, string>(); // key="a:b" → pair_id
+  db.transaction(() => {
+    for (const u of pairedUsers) {
+      const [a, b] = sortedPair(u.id, u.partner_id);
+      const key = `${a}:${b}`;
+      if (activePairs.has(key)) continue;
+      activePairs.add(key);
+      const pid = getOrCreateCouple(a, b, null);
+      activePairMap.set(key, pid);
+    }
+  })();
+
+  // Phase 2: Historical pairs from tables with explicit (user_id, partner_id).
+  const historicalPairsSql: { table: string; sql: string }[] = [
+    { table: 'time_capsules',  sql: 'SELECT DISTINCT user_id, partner_id FROM time_capsules' },
+    { table: 'sticky_notes',   sql: 'SELECT DISTINCT user_id, partner_id FROM sticky_notes' },
+    { table: 'bucket_items',   sql: 'SELECT DISTINCT user_id, partner_id FROM bucket_items' },
+    { table: 'important_dates',sql: 'SELECT DISTINCT user_id, partner_id FROM important_dates' },
+  ];
+  db.transaction(() => {
+    const nowSqlite = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    for (const q of historicalPairsSql) {
+      const rows = db.prepare(q.sql).all() as { user_id: string; partner_id: string }[];
+      for (const r of rows) {
+        if (!r.partner_id) continue;
+        const [a, b] = sortedPair(r.user_id, r.partner_id);
+        const key = `${a}:${b}`;
+        if (activePairs.has(key)) continue;
+        // Synthesize DORMANT couple row.
+        getOrCreateCouple(a, b, nowSqlite);
+      }
+    }
+    // daily_reactions encodes (reactor, target) — same pair semantics.
+    const reactRows = db.prepare(
+      'SELECT DISTINCT reactor_id, target_user_id FROM daily_reactions'
+    ).all() as { reactor_id: string; target_user_id: string }[];
+    for (const r of reactRows) {
+      const [a, b] = sortedPair(r.reactor_id, r.target_user_id);
+      const key = `${a}:${b}`;
+      if (activePairs.has(key)) continue;
+      getOrCreateCouple(a, b, nowSqlite);
+    }
+  })();
+
+  // Phase 2b: tag rows in tables-with-partner_id by their own (user_id, partner_id).
+  db.transaction(() => {
+    db.exec(`
+      UPDATE time_capsules SET pair_id = (
+        SELECT pair_id FROM couples
+        WHERE (user_a_id = MIN(time_capsules.user_id, time_capsules.partner_id)
+           AND user_b_id = MAX(time_capsules.user_id, time_capsules.partner_id))
+      ) WHERE pair_id IS NULL;
+      UPDATE sticky_notes SET pair_id = (
+        SELECT pair_id FROM couples
+        WHERE (user_a_id = MIN(sticky_notes.user_id, sticky_notes.partner_id)
+           AND user_b_id = MAX(sticky_notes.user_id, sticky_notes.partner_id))
+      ) WHERE pair_id IS NULL;
+      UPDATE bucket_items SET pair_id = (
+        SELECT pair_id FROM couples
+        WHERE (user_a_id = MIN(bucket_items.user_id, bucket_items.partner_id)
+           AND user_b_id = MAX(bucket_items.user_id, bucket_items.partner_id))
+      ) WHERE pair_id IS NULL;
+      UPDATE important_dates SET pair_id = (
+        SELECT pair_id FROM couples
+        WHERE (user_a_id = MIN(important_dates.user_id, important_dates.partner_id)
+           AND user_b_id = MAX(important_dates.user_id, important_dates.partner_id))
+      ) WHERE pair_id IS NULL;
+      UPDATE daily_reactions SET pair_id = (
+        SELECT pair_id FROM couples
+        WHERE (user_a_id = MIN(daily_reactions.reactor_id, daily_reactions.target_user_id)
+           AND user_b_id = MAX(daily_reactions.reactor_id, daily_reactions.target_user_id))
+      ) WHERE pair_id IS NULL;
+    `);
+  })();
+
+  // Phase 3: time-bucket attribution for user-id-only tables.
+  // Build per-user [pair_id, min_dt, max_dt] windows from already-tagged
+  // rows (capsules, stickies, buckets, dates, reactions). Then walk
+  // actions / mailbox / daily_answers and pick the window each row's
+  // created_at falls into.
+  type Window = { pair_id: string; min_dt: string; max_dt: string };
+  const windowsByUser = new Map<string, Window[]>();
+  const winRows = db.prepare(`
+    SELECT user_id, pair_id, MIN(created_at) AS min_dt, MAX(created_at) AS max_dt FROM (
+      SELECT user_id, pair_id, created_at FROM time_capsules WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT partner_id AS user_id, pair_id, created_at FROM time_capsules WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT user_id, pair_id, created_at FROM sticky_notes WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT partner_id AS user_id, pair_id, created_at FROM sticky_notes WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT user_id, pair_id, created_at FROM bucket_items WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT partner_id AS user_id, pair_id, created_at FROM bucket_items WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT user_id, pair_id, created_at FROM important_dates WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT partner_id AS user_id, pair_id, created_at FROM important_dates WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT reactor_id AS user_id, pair_id, created_at FROM daily_reactions WHERE pair_id IS NOT NULL
+      UNION ALL
+      SELECT target_user_id AS user_id, pair_id, created_at FROM daily_reactions WHERE pair_id IS NOT NULL
+    )
+    GROUP BY user_id, pair_id
+  `).all() as { user_id: string; pair_id: string; min_dt: string; max_dt: string }[];
+  for (const r of winRows) {
+    const arr = windowsByUser.get(r.user_id) ?? [];
+    arr.push({ pair_id: r.pair_id, min_dt: r.min_dt, max_dt: r.max_dt });
+    windowsByUser.set(r.user_id, arr);
+  }
+
+  // For currently-paired users, fall through to their active pair_id when
+  // no window matches (fallback).
+  const userActivePair = new Map<string, string>();
+  for (const u of pairedUsers) {
+    const [a, b] = sortedPair(u.id, u.partner_id);
+    const pid = activePairMap.get(`${a}:${b}`);
+    if (pid) userActivePair.set(u.id, pid);
+  }
+
+  function attributeRow(userId: string, createdAt: string): string | null {
+    const windows = windowsByUser.get(userId);
+    if (!windows || windows.length === 0) {
+      return userActivePair.get(userId) ?? null;
+    }
+    // Find window containing createdAt
+    for (const w of windows) {
+      if (createdAt >= w.min_dt && createdAt <= w.max_dt) return w.pair_id;
+    }
+    // No exact containment — pick nearest by min_dt distance
+    let best: Window | null = null;
+    let bestDist = Infinity;
+    for (const w of windows) {
+      const dist = createdAt < w.min_dt
+        ? Date.parse(w.min_dt + 'Z') - Date.parse(createdAt + 'Z')
+        : Date.parse(createdAt + 'Z') - Date.parse(w.max_dt + 'Z');
+      if (dist < bestDist) { bestDist = dist; best = w; }
+    }
+    if (best) return best.pair_id;
+    return userActivePair.get(userId) ?? null;
+  }
+
+  db.transaction(() => {
+    const tagOne = (table: string, idCol: string, userCol: string) => {
+      const updateStmt = db.prepare(`UPDATE ${table} SET pair_id = ? WHERE ${idCol} = ?`);
+      const deleteStmt = db.prepare(`DELETE FROM ${table} WHERE ${idCol} = ?`);
+      const rows = db.prepare(
+        `SELECT ${idCol} AS id, ${userCol} AS uid, created_at FROM ${table} WHERE pair_id IS NULL`
+      ).all() as { id: number; uid: string; created_at: string }[];
+      let tagged = 0; let dropped = 0;
+      for (const r of rows) {
+        const pid = attributeRow(r.uid, r.created_at);
+        if (pid) { updateStmt.run(pid, r.id); tagged++; }
+        else { deleteStmt.run(r.id); dropped++; }
+      }
+      if (tagged || dropped) console.log(`[Backfill] ${table}: tagged ${tagged}, dropped ${dropped}`);
+    };
+    tagOne('actions', 'id', 'user_id');
+    tagOne('mailbox', 'id', 'user_id');
+    tagOne('daily_answers', 'id', 'user_id');
+  })();
+
+  // Phase 4: inbox_actions tag from referenced row's pair_id.
+  db.transaction(() => {
+    db.exec(`
+      UPDATE inbox_actions SET pair_id = (
+        SELECT m.pair_id FROM mailbox m WHERE m.id = inbox_actions.ref_id
+      ) WHERE pair_id IS NULL AND kind = 'mailbox';
+      UPDATE inbox_actions SET pair_id = (
+        SELECT c.pair_id FROM time_capsules c WHERE c.id = inbox_actions.ref_id
+      ) WHERE pair_id IS NULL AND kind = 'capsule';
+      DELETE FROM inbox_actions WHERE pair_id IS NULL;
+    `);
+  })();
+
+  // Phase 5: daily_question_assignments — re-seed today's question per
+  // currently-active couple from the snapshot we took during the table
+  // rebuild, so users who already answered today's question see the
+  // matching prompt. New days get re-randomized per couple via the
+  // route's lazy assignment.
+  const snap = (db as any).__migrationDqaSnapshot as { question_date: string; question_index: number } | undefined;
+  if (snap && activePairMap.size > 0) {
+    const insAssign = db.prepare(
+      'INSERT OR IGNORE INTO daily_question_assignments (pair_id, question_date, question_index) VALUES (?, ?, ?)'
+    );
+    db.transaction(() => {
+      for (const pid of activePairMap.values()) {
+        insAssign.run(pid, snap.question_date, snap.question_index);
+      }
+    })();
+    delete (db as any).__migrationDqaSnapshot;
+  }
+
+  // Phase 6: drop any remaining un-attributed orphans in user-id-only
+  // tables. After phase 3 these should be ~zero, but a tiny number of
+  // extreme-edge rows can survive (e.g., user with NO data in any
+  // partner_id-table whatsoever). Hard-delete satisfies the "no NULL
+  // pair_id rows survive migration" requirement.
+  db.transaction(() => {
+    db.exec(`
+      DELETE FROM actions WHERE pair_id IS NULL;
+      DELETE FROM mailbox WHERE pair_id IS NULL;
+      DELETE FROM daily_answers WHERE pair_id IS NULL;
+      DELETE FROM time_capsules WHERE pair_id IS NULL;
+      DELETE FROM sticky_notes WHERE pair_id IS NULL;
+      DELETE FROM bucket_items WHERE pair_id IS NULL;
+      DELETE FROM important_dates WHERE pair_id IS NULL;
+      DELETE FROM daily_reactions WHERE pair_id IS NULL;
+      DELETE FROM inbox_actions WHERE pair_id IS NULL;
+    `);
+  })();
 }
 
 export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOps } {
@@ -352,12 +704,33 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       FOREIGN KEY (partner_id) REFERENCES users(id)
     );
 
+    -- Stable identity for each historical (and current) relationship
+    -- between two users. The pair_id is a 10-char user-facing handle
+    -- (6 letters + 4 digits, like KMRPQT4729). Every couple-scoped row
+    -- in the system is keyed off this id; when ended_at fires, that row
+    -- (and all data tagged with this pair_id) lives in a 90-day grace
+    -- window. Re-pairing the same two users clears ended_at and the
+    -- data resurfaces as if nothing happened.
+    CREATE TABLE IF NOT EXISTS couples (
+      pair_id TEXT PRIMARY KEY,
+      user_a_id TEXT NOT NULL,
+      user_b_id TEXT NOT NULL,
+      started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      ended_at DATETIME DEFAULT NULL,
+      FOREIGN KEY (user_a_id) REFERENCES users(id),
+      FOREIGN KEY (user_b_id) REFERENCES users(id),
+      UNIQUE(user_a_id, user_b_id),
+      CHECK(user_a_id < user_b_id)
+    );
+
     CREATE TABLE IF NOT EXISTS actions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
+      pair_id TEXT,
       action_type TEXT NOT NULL,
       sender_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
       sender_name TEXT NOT NULL DEFAULT '',
+      reply_to INTEGER REFERENCES actions(id),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -367,6 +740,11 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       user_id TEXT NOT NULL,
       token_hash TEXT NOT NULL UNIQUE,
       expires_at DATETIME NOT NULL,
+      -- When this token was rotated. Within a brief grace window after
+      -- rotation the same token is still accepted (so a network glitch
+      -- mid-rotate doesn't lock the user out — they'll just receive a new
+      -- pair on the retry). NULL means the token has not been rotated yet.
+      superseded_at DATETIME DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -375,6 +753,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       partner_id TEXT NOT NULL,
+      pair_id TEXT,
       title TEXT NOT NULL,
       date TEXT NOT NULL,
       recurring INTEGER NOT NULL DEFAULT 0,
@@ -383,14 +762,21 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
+    -- daily_question_assignments — keyed by (pair_id, question_date) so
+    -- each couple gets their OWN question per day (different couples
+    -- cannot accidentally share a question, and a couple's "no repeat"
+    -- promise actually holds).
     CREATE TABLE IF NOT EXISTS daily_question_assignments (
-      question_date TEXT PRIMARY KEY,
-      question_index INTEGER NOT NULL
+      pair_id TEXT NOT NULL,
+      question_date TEXT NOT NULL,
+      question_index INTEGER NOT NULL,
+      PRIMARY KEY (pair_id, question_date)
     );
 
     CREATE TABLE IF NOT EXISTS daily_answers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
+      pair_id TEXT,
       question_date TEXT NOT NULL,
       question_index INTEGER NOT NULL,
       answer TEXT NOT NULL,
@@ -416,6 +802,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE TABLE IF NOT EXISTS mailbox (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
+      pair_id TEXT,
       week_key TEXT NOT NULL,
       content TEXT NOT NULL,
       locked INTEGER NOT NULL DEFAULT 0,
@@ -430,6 +817,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       partner_id TEXT NOT NULL,
+      pair_id TEXT,
       content TEXT NOT NULL,
       unlock_date TEXT NOT NULL,
       unlock_at TEXT NOT NULL DEFAULT '',
@@ -444,6 +832,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       partner_id TEXT NOT NULL,
+      pair_id TEXT,
       title TEXT NOT NULL,
       category TEXT DEFAULT NULL,
       completed INTEGER NOT NULL DEFAULT 0,
@@ -467,6 +856,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       reactor_id TEXT NOT NULL,
       target_user_id TEXT NOT NULL,
+      pair_id TEXT,
       target_date TEXT NOT NULL,
       target_type TEXT NOT NULL CHECK(target_type IN ('question', 'snap')),
       reaction TEXT NOT NULL CHECK(reaction IN ('up', 'down')),
@@ -482,6 +872,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE TABLE IF NOT EXISTS inbox_actions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
+      pair_id TEXT,
       kind TEXT NOT NULL CHECK(kind IN ('mailbox', 'capsule')),
       ref_id INTEGER NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('trashed', 'purged')),
@@ -497,6 +888,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       partner_id TEXT NOT NULL,
+      pair_id TEXT,
       status TEXT NOT NULL CHECK(status IN ('temp', 'posted')),
       layout_x REAL NOT NULL DEFAULT 0,
       layout_rotation REAL NOT NULL DEFAULT 0,
@@ -566,6 +958,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (!userCols.some((c) => c.name === 'last_read_action_id')) {
     db.exec('ALTER TABLE users ADD COLUMN last_read_action_id INTEGER NOT NULL DEFAULT 0');
   }
+  if (!userCols.some((c) => c.name === 'outbox_last_seen')) {
+    db.exec('ALTER TABLE users ADD COLUMN outbox_last_seen TEXT DEFAULT NULL');
+  }
 
   const actionCols = db.pragma('table_info(actions)') as { name: string }[];
   if (!actionCols.some((c) => c.name === 'sender_timezone')) {
@@ -610,6 +1005,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (mailboxCols.length > 0 && !mailboxCols.some((c) => c.name === 'locked')) {
     db.exec('ALTER TABLE mailbox ADD COLUMN locked INTEGER NOT NULL DEFAULT 0');
     db.exec('UPDATE mailbox SET locked = 1');
+  }
+
+  // Migration: add superseded_at to refresh_tokens for the rotation
+  // grace window (network-flicker-safe).
+  const refreshCols = db.pragma('table_info(refresh_tokens)') as { name: string }[];
+  if (refreshCols.length > 0 && !refreshCols.some((c) => c.name === 'superseded_at')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN superseded_at DATETIME DEFAULT NULL');
   }
 
   // Migration: drop UNIQUE(user_id, week_key) on mailbox so the user can
@@ -758,6 +1160,85 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     }
   }
 
+  // ─── Phase B migrations: pair_id columns ─────────────────────────────────
+  // Add pair_id TEXT to every couple-scoped table. Idempotent — only runs
+  // when the column doesn't yet exist. Backfill happens in a separate pass
+  // below, gated on the couples table being empty (= first deploy of the
+  // pair_id model).
+  const ensurePairIdCol = (table: string) => {
+    const cols = db.pragma(`table_info(${table})`) as { name: string }[];
+    if (!cols.some(c => c.name === 'pair_id')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN pair_id TEXT`);
+    }
+  };
+  for (const t of ['actions', 'mailbox', 'time_capsules', 'bucket_items',
+                   'sticky_notes', 'daily_answers', 'daily_reactions',
+                   'important_dates', 'inbox_actions']) {
+    ensurePairIdCol(t);
+  }
+
+  // pair_id-keyed indexes. Run AFTER the ALTER TABLE migrations above so
+  // legacy databases (where pair_id was just added) have the column to
+  // index. Fresh DBs already have the column from CREATE TABLE; the IF
+  // NOT EXISTS guard makes both paths idempotent.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_couples_active ON couples(user_a_id, user_b_id) WHERE ended_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_couples_ttl ON couples(ended_at) WHERE ended_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_actions_pair ON actions(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_mailbox_pair ON mailbox(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_capsules_pair ON time_capsules(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_bucket_pair ON bucket_items(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_dates_pair ON important_dates(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_answers_pair ON daily_answers(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_reactions_pair ON daily_reactions(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_sticky_pair ON sticky_notes(pair_id);
+    CREATE INDEX IF NOT EXISTS idx_inbox_actions_pair ON inbox_actions(pair_id);
+  `);
+
+  // Migration: rebuild daily_question_assignments with new PK
+  // (pair_id, question_date). The old global PK question_date can't be
+  // ALTERed in place. Drop + recreate; the data backfill below seeds
+  // today's per-couple assignment from the old global one so users who
+  // already answered today's question don't see a mismatched question
+  // string (one-shot UX hack on migration day).
+  const dqaCols = db.pragma('table_info(daily_question_assignments)') as { name: string }[];
+  const dqaHasPairId = dqaCols.some(c => c.name === 'pair_id');
+  if (dqaCols.length > 0 && !dqaHasPairId) {
+    // Snapshot today's old global assignment so we can re-seed per couple.
+    const todaySnapshotRow = db.prepare(
+      "SELECT question_date, question_index FROM daily_question_assignments WHERE question_date = (SELECT MAX(question_date) FROM daily_question_assignments)"
+    ).get() as { question_date: string; question_index: number } | undefined;
+
+    db.exec(`
+      CREATE TABLE daily_question_assignments_new (
+        pair_id TEXT NOT NULL,
+        question_date TEXT NOT NULL,
+        question_index INTEGER NOT NULL,
+        PRIMARY KEY (pair_id, question_date)
+      );
+      DROP TABLE daily_question_assignments;
+      ALTER TABLE daily_question_assignments_new RENAME TO daily_question_assignments;
+    `);
+    if (todaySnapshotRow) {
+      // Stash for later use during backfill (we need couple_id which
+      // doesn't exist yet at this point).
+      (db as any).__migrationDqaSnapshot = todaySnapshotRow;
+    }
+    console.log('[Migration] Rebuilt daily_question_assignments with (pair_id, question_date) PK');
+  }
+
+  // ─── D+ backfill: tag every couple-scoped legacy row with a pair_id ─────
+  // Runs ONCE on the first deploy that adds the couples table (couples is
+  // empty + at least one user has partner_id ≠ NULL). Subsequent boots
+  // see a non-empty couples table and skip the entire pass.
+  const couplesEmpty = (db.prepare('SELECT COUNT(*) AS n FROM couples').get() as { n: number }).n === 0;
+  const anyPaired = (db.prepare('SELECT COUNT(*) AS n FROM users WHERE partner_id IS NOT NULL').get() as { n: number }).n > 0;
+  if (couplesEmpty && anyPaired) {
+    console.log('[Migration] First-deploy backfill of pair_id starting...');
+    runPairIdBackfill(db);
+    console.log('[Migration] First-deploy backfill of pair_id complete.');
+  }
+
   const insertUser = db.prepare(
     'INSERT INTO users (id, name, password_hash, pair_code, timezone) VALUES (?, ?, ?, ?, ?)'
   );
@@ -767,6 +1248,70 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const clearPartner = db.prepare('UPDATE users SET partner_id = NULL WHERE id = ?');
   const stmtUpdatePairCode = db.prepare('UPDATE users SET pair_code = ? WHERE id = ?');
   const stmtUpdateProfile = db.prepare('UPDATE users SET name = ?, timezone = ?, partner_timezone = ?, partner_remark = ? WHERE id = ?');
+  // Stored in SQLite-default datetime format so lex comparison against
+  // `created_at` (also stored in that format) works without any conversion.
+  const stmtSetOutboxSeen = db.prepare('UPDATE users SET outbox_last_seen = ? WHERE id = ?');
+
+  // ─── couples ops ─────────────────────────────────────────────────────────
+  const stmtGetCoupleByUsers = db.prepare(
+    'SELECT * FROM couples WHERE user_a_id = ? AND user_b_id = ?'
+  );
+  const stmtGetActivePairId = db.prepare(
+    'SELECT pair_id FROM couples WHERE user_a_id = ? AND user_b_id = ? AND ended_at IS NULL'
+  );
+  const stmtInsertCouple = db.prepare(
+    'INSERT INTO couples (pair_id, user_a_id, user_b_id) VALUES (?, ?, ?)'
+  );
+  const stmtClearCoupleEnded = db.prepare(
+    'UPDATE couples SET ended_at = NULL WHERE pair_id = ?'
+  );
+  const stmtSetCoupleEnded = db.prepare(
+    'UPDATE couples SET ended_at = CURRENT_TIMESTAMP WHERE pair_id = ? AND ended_at IS NULL'
+  );
+  const stmtDeleteCouple = db.prepare(
+    'DELETE FROM couples WHERE pair_id = ?'
+  );
+  // 90-day TTL: couples whose ended_at is more than 90 days ago. datetime()
+  // normalizes both formats so the comparison is well-defined regardless of
+  // whether ended_at was written via CURRENT_TIMESTAMP (SQLite default
+  // 'YYYY-MM-DD HH:MM:SS') or a manually-set ISO string.
+  const stmtExpiredCouples = db.prepare(
+    "SELECT pair_id, user_a_id, user_b_id, ended_at FROM couples WHERE ended_at IS NOT NULL AND datetime(ended_at, '+90 days') < datetime('now')"
+  );
+  // Hard-cleanup: every couple-scoped row that carries this pair_id is
+  // deleted, then the couples row itself. inbox_actions is wiped first
+  // because its ref_ids point into mailbox / time_capsules. sticky_blocks
+  // are walked via their parent sticky_notes' pair_id.
+  const stmtDelInboxActionsByPair = db.prepare('DELETE FROM inbox_actions WHERE pair_id = ?');
+  const stmtDelStickyBlocksByPair = db.prepare(
+    'DELETE FROM sticky_blocks WHERE sticky_id IN (SELECT id FROM sticky_notes WHERE pair_id = ?)'
+  );
+  const stmtDelStickySeenByPair = db.prepare(
+    'DELETE FROM sticky_seen WHERE sticky_id IN (SELECT id FROM sticky_notes WHERE pair_id = ?)'
+  );
+  const stmtDelStickyNotesByPair = db.prepare('DELETE FROM sticky_notes WHERE pair_id = ?');
+  const stmtDelMailboxByPair = db.prepare('DELETE FROM mailbox WHERE pair_id = ?');
+  const stmtDelCapsulesByPair = db.prepare('DELETE FROM time_capsules WHERE pair_id = ?');
+  const stmtDelBucketByPair = db.prepare('DELETE FROM bucket_items WHERE pair_id = ?');
+  const stmtDelDatesByPair = db.prepare('DELETE FROM important_dates WHERE pair_id = ?');
+  const stmtDelDailyAnswersByPair = db.prepare('DELETE FROM daily_answers WHERE pair_id = ?');
+  const stmtDelDailyReactionsByPair = db.prepare('DELETE FROM daily_reactions WHERE pair_id = ?');
+  const stmtDelDailyAssignByPair = db.prepare('DELETE FROM daily_question_assignments WHERE pair_id = ?');
+  const stmtDelActionsByPair = db.prepare('DELETE FROM actions WHERE pair_id = ?');
+  function deleteCoupleData(pairId: string): void {
+    stmtDelInboxActionsByPair.run(pairId);
+    stmtDelStickyBlocksByPair.run(pairId);
+    stmtDelStickySeenByPair.run(pairId);
+    stmtDelStickyNotesByPair.run(pairId);
+    stmtDelMailboxByPair.run(pairId);
+    stmtDelCapsulesByPair.run(pairId);
+    stmtDelBucketByPair.run(pairId);
+    stmtDelDatesByPair.run(pairId);
+    stmtDelDailyAnswersByPair.run(pairId);
+    stmtDelDailyReactionsByPair.run(pairId);
+    stmtDelDailyAssignByPair.run(pairId);
+    stmtDelActionsByPair.run(pairId);
+  }
   const updateDeviceToken = db.prepare('UPDATE users SET device_token = ? WHERE id = ?');
   const stmtClearDeviceToken = db.prepare('UPDATE users SET device_token = NULL WHERE id = ?');
   // Revokes a token from any user currently holding it (except the one being updated).
@@ -796,14 +1341,16 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'SELECT IFNULL(MAX(id), 0) AS id FROM actions WHERE user_id = ? AND reply_to IS NULL'
   );
   const insertAction = db.prepare(
-    'INSERT INTO actions (user_id, action_type, sender_timezone, sender_name) VALUES (?, ?, ?, ?)'
+    'INSERT INTO actions (user_id, pair_id, action_type, sender_timezone, sender_name) VALUES (?, ?, ?, ?, ?)'
   );
+  // pair_id-scoped history: returns ONLY actions tied to the current
+  // relationship (re-pair scenarios don't leak earlier-pair actions).
   const getHistoryStmt = db.prepare(`
     SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
            CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
     FROM actions a
     JOIN users u ON a.user_id = u.id
-    WHERE (a.user_id = ? OR a.user_id = (SELECT partner_id FROM users WHERE id = ?))
+    WHERE a.pair_id = ?
       AND a.reply_to IS NULL
     ORDER BY a.created_at DESC, a.id DESC
     LIMIT ?
@@ -814,7 +1361,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     FROM actions a JOIN users u ON a.user_id = u.id WHERE a.id = ?
   `);
   const insertReaction = db.prepare(
-    'INSERT INTO actions (user_id, action_type, sender_timezone, sender_name, reply_to) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO actions (user_id, pair_id, action_type, sender_timezone, sender_name, reply_to) VALUES (?, ?, ?, ?, ?, ?)'
   );
   const stmtGetReaction = db.prepare(`
     SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
@@ -829,7 +1376,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     FROM actions a
     JOIN users u ON a.user_id = u.id
     WHERE a.reply_to IS NOT NULL
-      AND (a.user_id = ? OR a.user_id = (SELECT partner_id FROM users WHERE id = ?))
+      AND a.pair_id = ?
     ORDER BY a.created_at DESC
     LIMIT 500
   `);
@@ -839,6 +1386,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetRefreshToken = db.prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?');
   const stmtDeleteRefreshToken = db.prepare('DELETE FROM refresh_tokens WHERE token_hash = ?');
   const stmtDeleteAllRefreshTokens = db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?');
+  const stmtMarkRefreshTokenSuperseded = db.prepare(
+    'UPDATE refresh_tokens SET superseded_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND superseded_at IS NULL'
+  );
+  // datetime() normalizes both formats so we can compare an ISO param
+  // against the SQLite-default timestamp the column was written with.
+  const stmtPruneRefreshTokens = db.prepare(
+    "DELETE FROM refresh_tokens WHERE datetime(expires_at) < datetime('now') OR (superseded_at IS NOT NULL AND datetime(superseded_at, '+10 seconds') < datetime('now'))"
+  );
   const stmtIncrementTokenVersion = db.prepare(
     'UPDATE users SET token_version = token_version + 1 WHERE id = ?'
   );
@@ -869,57 +1424,57 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   `);
 
   const stmtInsertDate = db.prepare(
-    'INSERT INTO important_dates (user_id, partner_id, title, date, recurring) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO important_dates (user_id, partner_id, pair_id, title, date, recurring) VALUES (?, ?, ?, ?, ?, ?)'
   );
   const stmtGetDateById = db.prepare('SELECT * FROM important_dates WHERE id = ?');
   const stmtGetDates = db.prepare(
-    'SELECT * FROM important_dates WHERE user_id IN (?, ?) ORDER BY date ASC'
+    'SELECT * FROM important_dates WHERE pair_id = ? ORDER BY date ASC'
   );
   const stmtUpdateDate = db.prepare(
-    'UPDATE important_dates SET title = ?, date = ?, recurring = ? WHERE id = ? AND user_id IN (?, ?)'
+    'UPDATE important_dates SET title = ?, date = ?, recurring = ? WHERE id = ? AND pair_id = ?'
   );
   const stmtDeleteDate = db.prepare(
-    'DELETE FROM important_dates WHERE id = ? AND user_id IN (?, ?)'
+    'DELETE FROM important_dates WHERE id = ? AND pair_id = ?'
   );
   const stmtUnpinAll = db.prepare(
-    'UPDATE important_dates SET pinned = 0 WHERE user_id IN (?, ?)'
+    'UPDATE important_dates SET pinned = 0 WHERE pair_id = ?'
   );
   const stmtPinDate = db.prepare(
-    'UPDATE important_dates SET pinned = 1 WHERE id = ? AND user_id IN (?, ?)'
+    'UPDATE important_dates SET pinned = 1 WHERE id = ? AND pair_id = ?'
   );
 
   const stmtSubmitAnswer = db.prepare(
-    'INSERT OR REPLACE INTO daily_answers (user_id, question_date, question_index, answer) VALUES (?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO daily_answers (user_id, pair_id, question_date, question_index, answer) VALUES (?, ?, ?, ?, ?)'
   );
   const stmtGetDailyAnswers = db.prepare(
-    'SELECT * FROM daily_answers WHERE question_date = ? AND user_id IN (?, ?)'
+    'SELECT * FROM daily_answers WHERE question_date = ? AND pair_id = ?'
   );
   const stmtGetAssignment = db.prepare(
-    'SELECT question_index FROM daily_question_assignments WHERE question_date = ?'
+    'SELECT question_index FROM daily_question_assignments WHERE pair_id = ? AND question_date = ?'
   );
   const stmtSetAssignment = db.prepare(
-    'INSERT OR IGNORE INTO daily_question_assignments (question_date, question_index) VALUES (?, ?)'
+    'INSERT OR IGNORE INTO daily_question_assignments (pair_id, question_date, question_index) VALUES (?, ?, ?)'
   );
   const stmtCompletedIndexes = db.prepare(`
-    SELECT DISTINCT a1.question_index FROM daily_answers a1
-    JOIN daily_answers a2 ON a1.question_date = a2.question_date AND a1.user_id != a2.user_id
-    WHERE a1.user_id IN (?, ?) AND a2.user_id IN (?, ?)
+    SELECT DISTINCT question_index FROM daily_answers WHERE pair_id = ?
   `);
 
+  // Stats: pair_id-scoped so re-pair scenarios don't dilute the current
+  // relationship's numbers with leftover counts from a past pairing.
   const stmtStatsTotalByUser = db.prepare(
-    'SELECT user_id, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY user_id'
+    'SELECT user_id, COUNT(*) as count FROM actions WHERE pair_id = ? AND reply_to IS NULL GROUP BY user_id'
   );
   const stmtStatsTopActions = db.prepare(
-    'SELECT action_type, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY action_type ORDER BY count DESC LIMIT 10'
+    'SELECT action_type, COUNT(*) as count FROM actions WHERE pair_id = ? AND reply_to IS NULL GROUP BY action_type ORDER BY count DESC LIMIT 10'
   );
   const stmtStatsHourly = db.prepare(
-    "SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY hour ORDER BY hour"
+    "SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count FROM actions WHERE pair_id = ? AND reply_to IS NULL GROUP BY hour ORDER BY hour"
   );
   const stmtStatsMonthly = db.prepare(
-    "SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL GROUP BY month ORDER BY month DESC LIMIT 12"
+    "SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count FROM actions WHERE pair_id = ? AND reply_to IS NULL GROUP BY month ORDER BY month DESC LIMIT 12"
   );
   const stmtStatsFirstDate = db.prepare(
-    'SELECT MIN(created_at) as first_date FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL'
+    'SELECT MIN(created_at) as first_date FROM actions WHERE pair_id = ? AND reply_to IS NULL'
   );
 
   // Ritual statements
@@ -932,11 +1487,16 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetRitualsMultiDate = db.prepare(
     'SELECT * FROM rituals WHERE ((ritual_date = ? AND user_id = ?) OR (ritual_date = ? AND user_id = ?))'
   );
+  // Daily recap counts interactions in a user-tz local-day window. The
+  // window is passed as a UTC ISO range (start inclusive, end exclusive)
+  // computed by the route layer — `created_at` is stored in UTC and
+  // compared lexicographically as ISO strings here, which matches
+  // chronological order for the same SQLite default timestamp format.
   const stmtDailyRecapCount = db.prepare(
-    "SELECT COUNT(*) as total FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND DATE(created_at) = ?"
+    "SELECT COUNT(*) as total FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ?"
   );
   const stmtDailyRecapTop = db.prepare(
-    "SELECT action_type, COUNT(*) as cnt FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND DATE(created_at) = ? GROUP BY action_type ORDER BY cnt DESC LIMIT 1"
+    "SELECT action_type, COUNT(*) as cnt FROM actions WHERE user_id IN (?, ?) AND reply_to IS NULL AND created_at >= ? AND created_at < ? GROUP BY action_type ORDER BY cnt DESC LIMIT 1"
   );
 
   // Mailbox statements
@@ -944,18 +1504,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   // constraint that used to enforce "one letter per session" was dropped.
   // Each row is sealed at insert (locked=1) and never updated.
   const stmtSubmitMailbox = db.prepare(
-    'INSERT INTO mailbox (user_id, week_key, content, locked) VALUES (?, ?, ?, 1)'
+    'INSERT INTO mailbox (user_id, pair_id, week_key, content, locked) VALUES (?, ?, ?, ?, 1)'
   );
-  // Returns all rows from a session for both users — caller picks the
-  // mine/partner split. Ordered by id so the latest of each user is the
-  // last seen during iteration.
+  // Returns all rows in a session that belong to this couple (filtered by
+  // pair_id, not user_id IN tuple). Caller picks mine/partner via user_id.
   const stmtGetMailboxMessages = db.prepare(
-    'SELECT * FROM mailbox WHERE week_key = ? AND user_id IN (?, ?) ORDER BY id ASC'
+    'SELECT * FROM mailbox WHERE week_key = ? AND pair_id = ? ORDER BY id ASC'
   );
-  // Per-letter archive: one row per partner-authored mailbox letter that
-  // hasn't been trashed/purged by the current viewer. Each row carries its
-  // own session_key, message id, and created_at — the inbox renders one
-  // card per letter (no longer aggregated by session).
+  // Per-letter archive: pair_id-scoped, partner-authored, soft-delete
+  // filtered. Re-pair safety: a re-pair revives this couple's pair_id so
+  // their full archive resurfaces; a different intermediate pair has its
+  // own pair_id and stays hidden.
   const stmtGetMailboxArchive = db.prepare(`
     SELECT m.id as partner_message_id,
       m.week_key,
@@ -965,17 +1524,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     LEFT JOIN inbox_actions ia
       ON ia.user_id = ? AND ia.kind = 'mailbox' AND ia.ref_id = m.id
         AND ia.status IN ('trashed', 'purged')
-    WHERE m.user_id = ? AND ia.id IS NULL
+    WHERE m.pair_id = ? AND m.user_id = ? AND ia.id IS NULL
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT ?
   `);
-  // Outbox: my own mailbox letters from a single session (typically
-  // current session, before reveal). Lets the sender see what they've
-  // queued + when each lands.
+  // Outbox: my own mailbox letters in a single session, scoped to the
+  // current pair_id (re-pair scenarios don't leak earlier-pair queued
+  // letters that happen to share the session_key).
   const stmtGetMyMailboxInSession = db.prepare(`
     SELECT id, week_key, content, created_at
     FROM mailbox
-    WHERE user_id = ? AND week_key = ?
+    WHERE user_id = ? AND pair_id = ? AND week_key = ?
     ORDER BY created_at ASC, id ASC
   `);
   const stmtGetAllPairedTokens = db.prepare(
@@ -1003,11 +1562,11 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
   // Time capsule statements
   const stmtInsertCapsule = db.prepare(
-    'INSERT INTO time_capsules (user_id, partner_id, content, unlock_date, unlock_at, visibility) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO time_capsules (user_id, partner_id, pair_id, content, unlock_date, unlock_at, visibility) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
   const stmtGetCapsuleById = db.prepare('SELECT * FROM time_capsules WHERE id = ?');
   const stmtGetCapsules = db.prepare(
-    'SELECT * FROM time_capsules WHERE (user_id = ? OR user_id = ?) AND (partner_id = ? OR partner_id = ?) ORDER BY unlock_date ASC'
+    'SELECT * FROM time_capsules WHERE pair_id = ? ORDER BY unlock_date ASC'
   );
   const stmtOpenCapsule = db.prepare(
     'UPDATE time_capsules SET opened_at = CURRENT_TIMESTAMP WHERE id = ? AND opened_at IS NULL'
@@ -1021,11 +1580,11 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
   // Bucket list statements
   const stmtInsertBucket = db.prepare(
-    'INSERT INTO bucket_items (user_id, partner_id, title, category) VALUES (?, ?, ?, ?)'
+    'INSERT INTO bucket_items (user_id, partner_id, pair_id, title, category) VALUES (?, ?, ?, ?, ?)'
   );
   const stmtGetBucketById = db.prepare('SELECT * FROM bucket_items WHERE id = ?');
   const stmtGetBucketItems = db.prepare(
-    'SELECT * FROM bucket_items WHERE user_id IN (?, ?) AND partner_id IN (?, ?) ORDER BY completed ASC, created_at DESC'
+    'SELECT * FROM bucket_items WHERE pair_id = ? ORDER BY completed ASC, created_at DESC'
   );
   const stmtCompleteBucket = db.prepare(
     'UPDATE bucket_items SET completed = 1, completed_by = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?'
@@ -1042,8 +1601,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   // "one-shot" check (which currently runs same-tick under better-sqlite3
   // sync API; this is defense in depth for any future multi-instance setup).
   const stmtSetDailyReaction = db.prepare(`
-    INSERT INTO daily_reactions (reactor_id, target_user_id, target_date, target_type, reaction)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO daily_reactions (reactor_id, target_user_id, pair_id, target_date, target_type, reaction)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(reactor_id, target_user_id, target_date, target_type)
     DO NOTHING
   `);
@@ -1055,8 +1614,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
   // Inbox action statements (soft delete / restore / purge per recipient)
   const stmtSetInboxAction = db.prepare(`
-    INSERT INTO inbox_actions (user_id, kind, ref_id, status, updated_at)
-    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    INSERT INTO inbox_actions (user_id, pair_id, kind, ref_id, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(user_id, kind, ref_id)
     DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP
   `);
@@ -1107,7 +1666,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     "SELECT * FROM sticky_notes WHERE user_id = ? AND status = 'temp' LIMIT 1"
   );
   const stmtInsertTempSticky = db.prepare(
-    "INSERT INTO sticky_notes (user_id, partner_id, status) VALUES (?, ?, 'temp')"
+    "INSERT INTO sticky_notes (user_id, partner_id, pair_id, status) VALUES (?, ?, ?, 'temp')"
   );
   const stmtGetStickyById = db.prepare('SELECT * FROM sticky_notes WHERE id = ?');
   const stmtUpdateTempStickyContent = db.prepare(`
@@ -1141,15 +1700,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   // pairing don't leak into the current couple's wall after re-pairing.
   const stmtListWallStickies = db.prepare(`
     SELECT * FROM sticky_notes
-    WHERE status = 'posted'
-      AND ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?))
+    WHERE status = 'posted' AND pair_id = ?
     ORDER BY posted_at DESC, id DESC
     LIMIT ?
   `);
   const stmtGetStickyForCouple = db.prepare(`
     SELECT * FROM sticky_notes
-    WHERE id = ?
-      AND ((user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?))
+    WHERE id = ? AND pair_id = ?
     LIMIT 1
   `);
   const stmtMaxCommittedBlockIdOnSticky = db.prepare(`
@@ -1236,6 +1793,77 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       })();
     },
 
+    couplesGetActivePairId(userIdA: string, userIdB: string): string | null {
+      const [a, b] = sortedPair(userIdA, userIdB);
+      const row = stmtGetActivePairId.get(a, b) as { pair_id: string } | undefined;
+      return row?.pair_id ?? null;
+    },
+
+    couplesGetOrCreatePair(userIdA: string, userIdB: string): { pair_id: string; revived: boolean } {
+      const [a, b] = sortedPair(userIdA, userIdB);
+      return db.transaction(() => {
+        const existing = stmtGetCoupleByUsers.get(a, b) as Couple | undefined;
+        if (existing) {
+          if (existing.ended_at === null) {
+            // Already active — caller logic shouldn't reach here; pair
+            // route's "already paired" check upstream catches it. Returns
+            // existing pair_id as a no-op for safety.
+            return { pair_id: existing.pair_id, revived: false };
+          }
+          // Past TTL safety net: if cron didn't get to it yet, hard-clean
+          // here so the new pair starts fresh. Compare datetime() to
+          // normalize SQLite + ISO formats consistently.
+          const expiredCheck = db.prepare(
+            "SELECT 1 AS expired FROM couples WHERE pair_id = ? AND datetime(ended_at, '+90 days') < datetime('now')"
+          ).get(existing.pair_id) as { expired: number } | undefined;
+          if (expiredCheck?.expired) {
+            deleteCoupleData(existing.pair_id);
+            stmtDeleteCouple.run(existing.pair_id);
+            // fall through to fresh-create
+          } else {
+            // Within grace window — revive: clear ended_at, all data
+            // tagged with this pair_id resurfaces.
+            stmtClearCoupleEnded.run(existing.pair_id);
+            return { pair_id: existing.pair_id, revived: true };
+          }
+        }
+        // Brand new (or post-TTL fresh start). Generate pair_id with
+        // retry on the (extremely rare) collision.
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const candidate = generatePairId();
+          try {
+            stmtInsertCouple.run(candidate, a, b);
+            return { pair_id: candidate, revived: false };
+          } catch (e: any) {
+            if (e?.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY' && e?.code !== 'SQLITE_CONSTRAINT_UNIQUE') {
+              throw e;
+            }
+            // collision — try again
+          }
+        }
+        throw new Error('Failed to generate unique pair_id after 8 attempts');
+      })();
+    },
+
+    couplesEndPair(userIdA: string, userIdB: string): void {
+      const [a, b] = sortedPair(userIdA, userIdB);
+      const row = stmtGetActivePairId.get(a, b) as { pair_id: string } | undefined;
+      if (row) stmtSetCoupleEnded.run(row.pair_id);
+    },
+
+    couplesCleanupExpired(): string[] {
+      const expired = stmtExpiredCouples.all() as { pair_id: string; user_a_id: string; user_b_id: string; ended_at: string }[];
+      const deleted: string[] = [];
+      for (const c of expired) {
+        db.transaction(() => {
+          deleteCoupleData(c.pair_id);
+          stmtDeleteCouple.run(c.pair_id);
+        })();
+        deleted.push(c.pair_id);
+      }
+      return deleted;
+    },
+
     updatePairCode(userId: string, pairCode: string): void {
       stmtUpdatePairCode.run(pairCode, userId);
     },
@@ -1277,21 +1905,21 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return row?.id ?? 0;
     },
 
-    addAction(userId: string, actionType: string, senderTimezone: string, senderName: string): void {
-      insertAction.run(userId, actionType, senderTimezone, senderName);
+    addAction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string): void {
+      insertAction.run(userId, pairId, actionType, senderTimezone, senderName);
     },
 
     getAction(actionId: number): Action | undefined {
       return stmtGetAction.get(actionId) as Action | undefined;
     },
 
-    addReaction(userId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number {
+    addReaction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number {
       const existing = stmtGetReaction.get(replyTo, userId) as Action | undefined;
       if (existing) {
         stmtUpdateReaction.run(actionType, existing.id);
         return existing.id;
       }
-      const result = insertReaction.run(userId, actionType, senderTimezone, senderName, replyTo);
+      const result = insertReaction.run(userId, pairId, actionType, senderTimezone, senderName, replyTo);
       return Number(result.lastInsertRowid);
     },
 
@@ -1303,12 +1931,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtUpdateReaction.run(actionType, reactionId);
     },
 
-    getHistory(userId: string, limit: number): Action[] {
-      return getHistoryStmt.all(userId, userId, limit) as Action[];
+    getHistory(pairId: string, limit: number): Action[] {
+      return getHistoryStmt.all(pairId, limit) as Action[];
     },
 
-    getHistoryReactions(userId: string): Action[] {
-      return getReactionsStmt.all(userId, userId) as Action[];
+    getHistoryReactions(pairId: string): Action[] {
+      return getReactionsStmt.all(pairId) as Action[];
     },
 
     insertRefreshToken(userId: string, tokenHash: string, expiresAt: string): void {
@@ -1324,10 +1952,17 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     rotateRefreshToken(oldHash, userId, newHash, expiresAt): void {
+      // Mark old as superseded (no-op if already superseded — keeps the
+      // original superseded_at so the grace window doesn't keep extending
+      // on retries) and insert the new hash atomically.
       db.transaction(() => {
-        stmtDeleteRefreshToken.run(oldHash);
+        stmtMarkRefreshTokenSuperseded.run(oldHash);
         stmtInsertRefreshToken.run(userId, newHash, expiresAt);
       })();
+    },
+
+    pruneRefreshTokens(): void {
+      stmtPruneRefreshTokens.run();
     },
 
     deleteAllRefreshTokens(userId: string): void {
@@ -1343,38 +1978,38 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return row?.length ?? 0;
     },
 
-    createImportantDate(userId: string, partnerId: string, title: string, date: string, recurring: boolean): ImportantDate {
-      const result = stmtInsertDate.run(userId, partnerId, title, date, recurring ? 1 : 0);
+    createImportantDate(userId: string, partnerId: string, pairId: string, title: string, date: string, recurring: boolean): ImportantDate {
+      const result = stmtInsertDate.run(userId, partnerId, pairId, title, date, recurring ? 1 : 0);
       return stmtGetDateById.get(result.lastInsertRowid) as ImportantDate;
     },
 
-    getImportantDates(userId: string, partnerId: string): ImportantDate[] {
-      return stmtGetDates.all(userId, partnerId) as ImportantDate[];
+    getImportantDates(pairId: string): ImportantDate[] {
+      return stmtGetDates.all(pairId) as ImportantDate[];
     },
 
-    updateImportantDate(id: number, title: string, date: string, recurring: boolean, userId: string, partnerId: string): boolean {
-      const result = stmtUpdateDate.run(title, date, recurring ? 1 : 0, id, userId, partnerId);
+    updateImportantDate(id: number, title: string, date: string, recurring: boolean, pairId: string): boolean {
+      const result = stmtUpdateDate.run(title, date, recurring ? 1 : 0, id, pairId);
       return result.changes > 0;
     },
 
-    deleteImportantDate(id: number, userId: string, partnerId: string): boolean {
-      const result = stmtDeleteDate.run(id, userId, partnerId);
+    deleteImportantDate(id: number, pairId: string): boolean {
+      const result = stmtDeleteDate.run(id, pairId);
       return result.changes > 0;
     },
 
-    pinImportantDate(id: number, userId: string, partnerId: string): void {
+    pinImportantDate(id: number, pairId: string): void {
       db.transaction(() => {
-        stmtUnpinAll.run(userId, partnerId);
-        stmtPinDate.run(id, userId, partnerId);
+        stmtUnpinAll.run(pairId);
+        stmtPinDate.run(id, pairId);
       })();
     },
 
-    submitDailyAnswer(userId: string, questionDate: string, questionIndex: number, answer: string): void {
-      stmtSubmitAnswer.run(userId, questionDate, questionIndex, answer);
+    submitDailyAnswer(userId: string, pairId: string, questionDate: string, questionIndex: number, answer: string): void {
+      stmtSubmitAnswer.run(userId, pairId, questionDate, questionIndex, answer);
     },
 
-    getDailyAnswers(questionDate: string, userId: string, partnerId: string): { mine?: DailyAnswer; partner?: DailyAnswer } {
-      const rows = stmtGetDailyAnswers.all(questionDate, userId, partnerId) as DailyAnswer[];
+    getDailyAnswers(questionDate: string, pairId: string, userId: string): { mine?: DailyAnswer; partner?: DailyAnswer } {
+      const rows = stmtGetDailyAnswers.all(questionDate, pairId) as DailyAnswer[];
       let mine: DailyAnswer | undefined;
       let partner: DailyAnswer | undefined;
       for (const row of rows) {
@@ -1384,31 +2019,31 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return { mine, partner };
     },
 
-    getQuestionAssignment(questionDate: string): number | null {
-      const row = stmtGetAssignment.get(questionDate) as { question_index: number } | undefined;
+    getQuestionAssignment(pairId: string, questionDate: string): number | null {
+      const row = stmtGetAssignment.get(pairId, questionDate) as { question_index: number } | undefined;
       return row?.question_index ?? null;
     },
 
-    setQuestionAssignment(questionDate: string, questionIndex: number): void {
-      stmtSetAssignment.run(questionDate, questionIndex);
+    setQuestionAssignment(pairId: string, questionDate: string, questionIndex: number): void {
+      stmtSetAssignment.run(pairId, questionDate, questionIndex);
     },
 
-    getCompletedQuestionIndexes(userId: string, partnerId: string): Set<number> {
-      const rows = stmtCompletedIndexes.all(userId, partnerId, userId, partnerId) as { question_index: number }[];
+    getCompletedQuestionIndexes(pairId: string): Set<number> {
+      const rows = stmtCompletedIndexes.all(pairId) as { question_index: number }[];
       return new Set(rows.map(r => r.question_index));
     },
 
-    getStats(userId: string, partnerId: string): StatsData {
-      const byUser = stmtStatsTotalByUser.all(userId, partnerId) as { user_id: string; count: number }[];
+    getStats(pairId: string, userId: string): StatsData {
+      const byUser = stmtStatsTotalByUser.all(pairId) as { user_id: string; count: number }[];
       let myActions = 0, partnerActions = 0;
       for (const row of byUser) {
         if (row.user_id === userId) myActions = row.count;
         else partnerActions = row.count;
       }
-      const topActions = stmtStatsTopActions.all(userId, partnerId) as { action_type: string; count: number }[];
-      const hourly = stmtStatsHourly.all(userId, partnerId) as { hour: number; count: number }[];
-      const monthly = stmtStatsMonthly.all(userId, partnerId) as { month: string; count: number }[];
-      const firstRow = stmtStatsFirstDate.get(userId, partnerId) as { first_date: string | null } | undefined;
+      const topActions = stmtStatsTopActions.all(pairId) as { action_type: string; count: number }[];
+      const hourly = stmtStatsHourly.all(pairId) as { hour: number; count: number }[];
+      const monthly = stmtStatsMonthly.all(pairId) as { month: string; count: number }[];
+      const firstRow = stmtStatsFirstDate.get(pairId) as { first_date: string | null } | undefined;
 
       return {
         total_actions: myActions + partnerActions,
@@ -1443,20 +2078,26 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return { myMorning, myEvening, partnerMorning, partnerEvening };
     },
 
-    getDailyRecap(userId: string, partnerId: string, date: string): { total_interactions: number; top_action: string | null } {
-      const countRow = stmtDailyRecapCount.get(userId, partnerId, date) as { total: number };
-      const topRow = stmtDailyRecapTop.get(userId, partnerId, date) as { action_type: string } | undefined;
+    getDailyRecap(userId: string, partnerId: string, startUtcIso: string, endUtcIso: string): { total_interactions: number; top_action: string | null } {
+      // Convert ISO ('YYYY-MM-DDTHH:mm:ss.sssZ') to SQLite-stored format
+      // ('YYYY-MM-DD HH:MM:SS') so the lexicographic comparison against
+      // `created_at` is well-defined (T vs space lexicography would
+      // otherwise corrupt the range).
+      const start = startUtcIso.slice(0, 19).replace('T', ' ');
+      const end = endUtcIso.slice(0, 19).replace('T', ' ');
+      const countRow = stmtDailyRecapCount.get(userId, partnerId, start, end) as { total: number };
+      const topRow = stmtDailyRecapTop.get(userId, partnerId, start, end) as { action_type: string } | undefined;
       return { total_interactions: countRow.total, top_action: topRow?.action_type ?? null };
     },
 
     // Mailbox
-    submitMailboxMessage(userId: string, weekKey: string, content: string): boolean {
-      const result = stmtSubmitMailbox.run(userId, weekKey, content);
+    submitMailboxMessage(userId: string, pairId: string, weekKey: string, content: string): boolean {
+      const result = stmtSubmitMailbox.run(userId, pairId, weekKey, content);
       return result.changes > 0;
     },
 
-    getMailboxMessages(weekKey: string, userId: string, partnerId: string): { mine?: MailboxMessage; partner?: MailboxMessage } {
-      const rows = stmtGetMailboxMessages.all(weekKey, userId, partnerId) as MailboxMessage[];
+    getMailboxMessages(weekKey: string, pairId: string, userId: string): { mine?: MailboxMessage; partner?: MailboxMessage } {
+      const rows = stmtGetMailboxMessages.all(weekKey, pairId) as MailboxMessage[];
       let mine: MailboxMessage | undefined;
       let partner: MailboxMessage | undefined;
       for (const row of rows) {
@@ -1466,12 +2107,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return { mine, partner };
     },
 
-    getMailboxArchive(userId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[] {
-      // One row per partner-authored letter, soft-delete filtered. Pad in
-      // `my_content: null` so the response shape stays the same as before.
+    getMailboxArchive(userId: string, pairId: string, partnerId: string, limit: number): { week_key: string; my_content: string | null; partner_content: string | null; partner_message_id: number | null; partner_created_at: string | null }[] {
+      // One row per partner-authored letter in this pair, soft-delete
+      // filtered. `my_content: null` keeps the response shape stable for
+      // the inbox client.
       const rows = stmtGetMailboxArchive.all(
-        userId,         // ia.user_id (viewer's trash state)
-        partnerId,      // m.user_id (partner-authored only)
+        userId,    // ia.user_id (viewer's trash state)
+        pairId,    // m.pair_id  (only this couple's mail)
+        partnerId, // m.user_id  (partner-authored only)
         limit
       ) as { week_key: string; partner_content: string; partner_message_id: number; partner_created_at: string }[];
       return rows.map(r => ({
@@ -1483,8 +2126,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       }));
     },
 
-    getMyMailboxInSession(userId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[] {
-      return stmtGetMyMailboxInSession.all(userId, weekKey) as any[];
+    getMyMailboxInSession(userId: string, pairId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[] {
+      return stmtGetMyMailboxInSession.all(userId, pairId, weekKey) as any[];
+    },
+
+    markOutboxSeen(userId: string): void {
+      // Match SQLite default `CURRENT_TIMESTAMP` format ('YYYY-MM-DD HH:MM:SS'
+      // UTC, no T, no Z) so lex compare with `created_at` columns works.
+      const nowSqlite = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      stmtSetOutboxSeen.run(nowSqlite, userId);
     },
 
     getAllPairedUserTokens(): { device_token: string }[] {
@@ -1492,24 +2142,40 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     // Weekly Report
-    getWeeklyReportData(userId: string, partnerId: string, weekStart: string, weekEnd: string) {
-      const lastWeekStart = new Date(weekStart);
-      lastWeekStart.setDate(lastWeekStart.getDate() - 7);
-      const lastWeekStartStr = lastWeekStart.toISOString().slice(0, 10);
+    getWeeklyReportData(
+      userId: string, partnerId: string,
+      weekStart: string, weekEnd: string,
+      actionsStart: string, actionsEnd: string,
+    ) {
+      const lastWeekStartDate = new Date(weekStart);
+      lastWeekStartDate.setDate(lastWeekStartDate.getDate() - 7);
+      const lastWeekStart = lastWeekStartDate.toISOString().slice(0, 10);
 
-      const byUser = stmtWeekActions.all(userId, partnerId, weekStart, weekEnd) as { user_id: string; count: number }[];
+      // For the previous-week actions count, we need the equivalent UTC
+      // bound for the prior Monday at local-midnight. Derive from the
+      // current actionsStart by subtracting 7 days in ms — week boundaries
+      // are stable across DST except for the spring-forward / fall-back
+      // weekend, where this is at most ±1h off (acceptable for a weekly
+      // total displayed for trend context).
+      const lastActionsStart = new Date(new Date(actionsStart.replace(' ', 'T') + 'Z').getTime() - 7 * 24 * 3600 * 1000)
+        .toISOString().slice(0, 19).replace('T', ' ');
+
+      const byUser = stmtWeekActions.all(userId, partnerId, actionsStart, actionsEnd) as { user_id: string; count: number }[];
       let myCount = 0, partnerCount = 0;
       for (const r of byUser) {
         if (r.user_id === userId) myCount = r.count;
         else partnerCount = r.count;
       }
 
-      const lastByUser = stmtWeekActions.all(userId, partnerId, lastWeekStartStr, weekStart) as { user_id: string; count: number }[];
+      const lastByUser = stmtWeekActions.all(userId, partnerId, lastActionsStart, actionsStart) as { user_id: string; count: number }[];
       let lastWeekTotal = 0;
       for (const r of lastByUser) lastWeekTotal += r.count;
 
-      const topActions = stmtWeekTopActions.all(userId, partnerId, weekStart, weekEnd) as { action_type: string; count: number }[];
+      const topActions = stmtWeekTopActions.all(userId, partnerId, actionsStart, actionsEnd) as { action_type: string; count: number }[];
 
+      // question_date / ritual_date are stored as YYYY-MM-DD in the
+      // writer's local frame, so date-only weekStart/weekEnd are the
+      // right comparison values here.
       const qRow = stmtWeekQuestionDays.get(userId, partnerId, weekStart, weekEnd) as { days: number };
       const dailyQuestionDays = qRow?.days ?? 0;
 
@@ -1520,17 +2186,20 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         if (r.ritual_type === 'evening') ritualEveningDays = r.days;
       }
 
+      // lastWeekStart kept for callers that want it.
+      void lastWeekStart;
+
       return { total: myCount + partnerCount, lastWeekTotal, myCount, partnerCount, topActions, dailyQuestionDays, ritualMorningDays, ritualEveningDays };
     },
 
     // Time Capsules
-    createCapsule(userId: string, partnerId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule {
-      const result = stmtInsertCapsule.run(userId, partnerId, content, unlockDate, unlockAt, visibility);
+    createCapsule(userId: string, partnerId: string, pairId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule {
+      const result = stmtInsertCapsule.run(userId, partnerId, pairId, content, unlockDate, unlockAt, visibility);
       return stmtGetCapsuleById.get(result.lastInsertRowid) as TimeCapsule;
     },
 
-    getCapsules(userId: string, partnerId: string): TimeCapsule[] {
-      return stmtGetCapsules.all(userId, partnerId, userId, partnerId) as TimeCapsule[];
+    getCapsules(pairId: string): TimeCapsule[] {
+      return stmtGetCapsules.all(pairId) as TimeCapsule[];
     },
 
     openCapsule(id: number): boolean {
@@ -1551,13 +2220,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     },
 
     // Bucket List
-    createBucketItem(userId: string, partnerId: string, title: string, category: string | null): BucketItem {
-      const result = stmtInsertBucket.run(userId, partnerId, title, category);
+    createBucketItem(userId: string, partnerId: string, pairId: string, title: string, category: string | null): BucketItem {
+      const result = stmtInsertBucket.run(userId, partnerId, pairId, title, category);
       return stmtGetBucketById.get(result.lastInsertRowid) as BucketItem;
     },
 
-    getBucketItems(userId: string, partnerId: string): BucketItem[] {
-      return stmtGetBucketItems.all(userId, partnerId, userId, partnerId) as BucketItem[];
+    getBucketItems(pairId: string): BucketItem[] {
+      return stmtGetBucketItems.all(pairId) as BucketItem[];
     },
 
     completeBucketItem(id: number, userId: string): boolean {
@@ -1592,8 +2261,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetSnapsMonth.all(userId, partnerId, userId, partnerId, startDate, nextMonth) as any[];
     },
 
-    setDailyReaction(reactorId, targetUserId, targetDate, targetType, reaction): void {
-      stmtSetDailyReaction.run(reactorId, targetUserId, targetDate, targetType, reaction);
+    setDailyReaction(reactorId, targetUserId, pairId, targetDate, targetType, reaction): void {
+      stmtSetDailyReaction.run(reactorId, targetUserId, pairId, targetDate, targetType, reaction);
     },
 
     getDailyReaction(reactorId, targetUserId, targetDate, targetType): 'up' | 'down' | null {
@@ -1601,8 +2270,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return row?.reaction ?? null;
     },
 
-    setInboxAction(userId, kind, refId, status): void {
-      stmtSetInboxAction.run(userId, kind, refId, status);
+    setInboxAction(userId, pairId, kind, refId, status): void {
+      stmtSetInboxAction.run(userId, pairId, kind, refId, status);
     },
 
     clearInboxAction(userId, kind, refId): void {
@@ -1664,12 +2333,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetTempSticky.get(userId) as StickyNote | undefined;
     },
 
-    createTempSticky(userId, partnerId): { sticky: StickyNote; block: StickyBlock } {
+    createTempSticky(userId, partnerId, pairId): { sticky: StickyNote; block: StickyBlock } {
       // Atomic: a temp sticky always carries an initial empty temp block. The
       // route layer guarantees there's no existing temp first, so we don't
       // bother with INSERT OR IGNORE here.
       return db.transaction(() => {
-        const result = stmtInsertTempSticky.run(userId, partnerId);
+        const result = stmtInsertTempSticky.run(userId, partnerId, pairId);
         const stickyId = Number(result.lastInsertRowid);
         const blockResult = stmtInsertTempBlock.run(stickyId, userId);
         const sticky = stmtGetStickyById.get(stickyId) as StickyNote;
@@ -1716,12 +2385,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       })();
     },
 
-    getStickyForCouple(stickyId, userId, partnerId): StickyNote | undefined {
-      return stmtGetStickyForCouple.get(stickyId, userId, partnerId, partnerId, userId) as StickyNote | undefined;
+    getStickyForCouple(stickyId, pairId): StickyNote | undefined {
+      return stmtGetStickyForCouple.get(stickyId, pairId) as StickyNote | undefined;
     },
 
-    listWallStickies(userId, partnerId, limit): StickyNote[] {
-      return stmtListWallStickies.all(userId, partnerId, partnerId, userId, limit) as StickyNote[];
+    listWallStickies(pairId, limit): StickyNote[] {
+      return stmtListWallStickies.all(pairId, limit) as StickyNote[];
     },
 
     listCommittedBlocksForStickies(stickyIds): StickyBlock[] {

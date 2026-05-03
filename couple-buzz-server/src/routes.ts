@@ -5,7 +5,7 @@ import fs from 'fs';
 import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
-import { createWsTicket, emitToCouple, isUserOnline } from './socket';
+import { createWsTicket, disconnectCouple, emitToCouple, isUserOnline } from './socket';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -129,13 +129,68 @@ function getYesterdayDate(todayStr: string): string {
   return date.toISOString().slice(0, 10);
 }
 
-// Used by weekly report. Mailbox uses session keys, not week.
-function getCurrentWeekMonday(): string {
-  const now = new Date();
-  const day = now.getUTCDay();
-  const diff = (day === 0 ? -6 : 1) - day;
-  const monday = new Date(now);
-  monday.setUTCDate(now.getUTCDate() + diff);
+// Compute the offset (minutes, signed) such that
+//   localTime (in tz) = utcTime + offset*60_000
+// Two-pass to handle DST: format the candidate UTC date in tz, parse parts
+// back as UTC, refine. Mirrors the client-side helper.
+function tzOffsetMinutes(date: Date, tz: string): number {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(date);
+    const obj: Record<string, string> = {};
+    for (const p of parts) obj[p.type] = p.value;
+    const hour = obj.hour === '24' ? 0 : Number(obj.hour);
+    const asUtc = Date.UTC(
+      Number(obj.year), Number(obj.month) - 1, Number(obj.day),
+      hour, Number(obj.minute), Number(obj.second || 0),
+    );
+    return Math.round((asUtc - date.getTime()) / 60000);
+  } catch {
+    return 0;
+  }
+}
+
+// Convert "local 00:00 of YYYY-MM-DD in tz" to a UTC ISO instant. Used by
+// daily / weekly aggregations that need to slice on the user's local-day
+// boundary instead of UTC's.
+function localDateStartToUtcIso(localDate: string, tz: string): string {
+  const safeTz = safeTimezone(tz);
+  const [y, m, d] = localDate.split('-').map(Number);
+  const naiveMs = Date.UTC(y, m - 1, d, 0, 0);
+  const offset1 = tzOffsetMinutes(new Date(naiveMs), safeTz);
+  let utcMs = naiveMs - offset1 * 60_000;
+  const offset2 = tzOffsetMinutes(new Date(utcMs), safeTz);
+  if (offset2 !== offset1) utcMs = naiveMs - offset2 * 60_000;
+  return new Date(utcMs).toISOString();
+}
+
+// Same as above but advances the local date by `days` first.
+function localDateOffsetToUtcIso(localDate: string, tz: string, days: number): string {
+  const [y, m, d] = localDate.split('-').map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d));
+  next.setUTCDate(next.getUTCDate() + days);
+  return localDateStartToUtcIso(next.toISOString().slice(0, 10), tz);
+}
+
+// Used by weekly report. Returns the YYYY-MM-DD of this week's Monday in
+// the user's timezone — so a NY user gets their Monday-Sunday week, not
+// the UTC Monday-Sunday week (which starts ~Sunday-evening NY local).
+function getCurrentWeekMonday(timezone: string): string {
+  const tz = safeTimezone(timezone);
+  // Today's calendar date as the user sees it in their tz.
+  const todayLocal = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+  const [y, m, d] = todayLocal.split('-').map(Number);
+  // Build a UTC instant at midnight of (y,m,d) — its UTC weekday equals the
+  // user's local weekday because we used the local y/m/d. 0=Sun..6=Sat.
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  const diffToMonday = (dow === 0 ? -6 : 1) - dow;
+  const monday = new Date(Date.UTC(y, m - 1, d));
+  monday.setUTCDate(monday.getUTCDate() + diffToMonday);
   return monday.toISOString().slice(0, 10);
 }
 
@@ -290,19 +345,36 @@ export function createPublicRouter(dbOps: DbOps): Router {
       return res.status(401).json({ error: 'Refresh token expired' });
     }
 
+    // Grace window: if this token has already been rotated, accept the
+    // retry only within ~10s (covers a network failure mid-rotate where
+    // the client never received the new pair). Past the grace window, an
+    // already-rotated token is effectively a leaked / stolen credential
+    // and is rejected.
+    if (stored.superseded_at) {
+      const supersededMs = new Date(stored.superseded_at + 'Z').getTime();
+      if (Number.isNaN(supersededMs)) {
+        // Defensive: malformed timestamp shouldn't lock the user out.
+      } else if (Date.now() - supersededMs > 10_000) {
+        return res.status(401).json({ error: 'Refresh token already used' });
+      }
+    }
+
     const user = dbOps.getUser(stored.user_id);
     if (!user) {
       dbOps.deleteRefreshToken(tokenHash);
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Rotate atomically: delete old + insert new in a single transaction.
-    // If the insert ever fails, the delete rolls back too — the user keeps
-    // their existing refresh token instead of being locked out.
+    // Issue a new pair. The old hash is marked superseded but kept around
+    // for the 10s grace window so a network-glitch retry can repeat this
+    // path and get yet another fresh pair instead of being booted out.
     const accessToken = generateAccessToken(user.id, user.token_version);
     const refreshToken = generateRefreshToken();
     const expiresAt = getRefreshTokenExpiresAt();
     dbOps.rotateRefreshToken(tokenHash, user.id, hashToken(refreshToken), expiresAt);
+    // Opportunistic cleanup of expired / grace-elapsed rows. Cheap because
+    // refresh_tokens stays small; no separate cron needed.
+    dbOps.pruneRefreshTokens();
 
     res.json({ access_token: accessToken, refresh_token: refreshToken });
   });
@@ -324,10 +396,16 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (user.partner_id) {
       const partner = dbOps.getUser(user.partner_id);
       const streak = dbOps.getStreak(userId, user.partner_id);
+      // pair_id surfaces the relationship's stable handle to clients so
+      // Settings can show it ("你们的关系编号 KMRPQT4729"). Will be null
+      // only in the brief race window between pairUsers and couples row
+      // creation — Phase B routes ensure both happen in the same handler.
+      const pair_id = dbOps.couplesGetActivePairId(userId, user.partner_id);
       return res.json({
         paired: true,
         partner_id: user.partner_id,
         partner_name: partner?.name ?? null,
+        pair_id,
         name: user.name,
         timezone: user.timezone,
         partner_timezone: user.partner_timezone,
@@ -403,9 +481,14 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Partner is already paired with someone else' });
     }
 
+    // Resolve / generate the pair_id for this couple BEFORE flipping
+    // partner_id pointers — if the same two users had a previous pairing
+    // within the 90-day grace window, this revives it (ended_at cleared,
+    // all historical data resurfaces). Past TTL → fresh pair_id.
+    const { pair_id, revived } = dbOps.couplesGetOrCreatePair(userId, partner.id);
     dbOps.pairUsers(userId, partner.id);
 
-    res.json({ success: true, partner_name: partner.name });
+    res.json({ success: true, partner_name: partner.name, pair_id, revived });
   });
 
   // POST /api/action
@@ -426,7 +509,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Not paired yet' });
     }
 
-    dbOps.addAction(userId, action_type, timezone || user.timezone, user.name);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    dbOps.addAction(userId, pairId, action_type, timezone || user.timezone, user.name);
 
     const partner = dbOps.getUser(user.partner_id);
     // Skip the APNs push if the partner is foregrounded — the socket
@@ -465,7 +550,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (targetAction.user_id !== user.partner_id) return res.status(400).json({ error: 'Cannot react to this action' });
     if (targetAction.reply_to !== null) return res.status(400).json({ error: 'Cannot react to a reaction' });
 
-    const reactionId = dbOps.addReaction(userId, action_type, user.timezone, user.name, actionId);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    const reactionId = dbOps.addReaction(userId, pairId, action_type, user.timezone, user.name, actionId);
 
     const partner = dbOps.getUser(user.partner_id);
     // Same online-skip rationale as /api/actions above.
@@ -488,10 +575,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const actions = dbOps.getHistory(userId, Math.min(limit, 200));
+    // Solo users (no current partner) see an empty history — past
+    // relationships' actions are no longer mixed in by default.
+    if (!user.partner_id) {
+      return res.json({ actions: [], reactions: {}, last_read_action_id: user.last_read_action_id });
+    }
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) {
+      return res.json({ actions: [], reactions: {}, last_read_action_id: user.last_read_action_id });
+    }
+    const actions = dbOps.getHistory(pairId, Math.min(limit, 200));
 
     // Group reactions by parent action id
-    const allReactions = dbOps.getHistoryReactions(userId);
+    const allReactions = dbOps.getHistoryReactions(pairId);
     const reactions: Record<number, typeof allReactions> = {};
     for (const r of allReactions) {
       if (r.reply_to !== null) {
@@ -566,8 +662,18 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     const partner = dbOps.getUser(user.partner_id);
+    const partnerIdSnapshot = user.partner_id;
 
-    dbOps.unpairUsers(userId, user.partner_id);
+    // Mark the couples row as ended (TTL clock starts) BEFORE flipping
+    // partner_id pointers so a concurrent /api/status read can't catch
+    // an active row whose users no longer think they're paired.
+    dbOps.couplesEndPair(userId, partnerIdSnapshot);
+    dbOps.unpairUsers(userId, partnerIdSnapshot);
+
+    // Drop any live socket connections in the couple's room. Without this,
+    // either side could keep receiving the other's real-time events
+    // (touch / sticky_update / presence) until the natural disconnect.
+    disconnectCouple(userId, partnerIdSnapshot);
 
     // Generate new pair codes for both
     let newPairCode = generatePairCode();
@@ -599,7 +705,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ dates: [], nearest: null });
 
-    const dates = dbOps.getImportantDates(userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.json({ dates: [], pinned: null });
+    const dates = dbOps.getImportantDates(pairId);
 
     // Compute pinned date countdown (only pinned date shows on homepage).
     // For non-recurring dates, the date may be in the past (e.g. "在一起的
@@ -648,10 +756,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const existing = dbOps.getImportantDates(userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    const existing = dbOps.getImportantDates(pairId);
     if (existing.length >= 20) return res.status(400).json({ error: 'Maximum 20 dates' });
 
-    const created = dbOps.createImportantDate(userId, user.partner_id, title.trim(), date, !!recurring);
+    const created = dbOps.createImportantDate(userId, user.partner_id, pairId, title.trim(), date, !!recurring);
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
@@ -678,7 +788,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (title.length > DATE_TITLE_MAX) return res.status(400).json({ error: `title max ${DATE_TITLE_MAX} characters` });
     if (!isValidDateString(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
 
-    const updated = dbOps.updateImportantDate(id, title.trim(), date, !!recurring, userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    const updated = dbOps.updateImportantDate(id, title.trim(), date, !!recurring, pairId);
     if (!updated) return res.status(404).json({ error: 'Date not found' });
 
     res.json({ success: true });
@@ -694,7 +806,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    dbOps.pinImportantDate(id, userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    dbOps.pinImportantDate(id, pairId);
     res.json({ success: true });
   });
 
@@ -708,7 +822,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const deleted = dbOps.deleteImportantDate(id, userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    const deleted = dbOps.deleteImportantDate(id, pairId);
     if (!deleted) return res.status(404).json({ error: 'Date not found' });
 
     res.json({ success: true });
@@ -724,10 +840,16 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Daily question rolls at 7am Beijing time (matches the client countdown).
     const today = getBjt7amDate();
 
-    // Get or assign today's question (avoid repeating completed ones)
-    let index = dbOps.getQuestionAssignment(today);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+
+    // Get or assign today's question for THIS couple. Each couple gets
+    // their own (pair_id, date) → question_index mapping; their "no
+    // repeat" promise actually holds since the completed set is also
+    // pair-scoped now.
+    let index = dbOps.getQuestionAssignment(pairId, today);
     if (index === null) {
-      const completed = dbOps.getCompletedQuestionIndexes(userId, user.partner_id);
+      const completed = dbOps.getCompletedQuestionIndexes(pairId);
       const available = Array.from({ length: QUESTIONS.length }, (_, i) => i).filter(i => !completed.has(i));
       if (available.length === 0) {
         // All questions answered — reset by picking from full pool
@@ -735,11 +857,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       } else {
         index = available[Math.floor(Math.random() * available.length)];
       }
-      dbOps.setQuestionAssignment(today, index);
+      dbOps.setQuestionAssignment(pairId, today, index);
     }
     const question = QUESTIONS[index];
 
-    const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+    const answers = dbOps.getDailyAnswers(today, pairId, userId);
     const bothAnswered = !!answers.mine && !!answers.partner;
 
     // Reactions only meaningful once both answered. Send the partner's date
@@ -784,18 +906,21 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const today = getBjt7amDate();
 
-    // Get today's assigned question index
-    let index = dbOps.getQuestionAssignment(today);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+
+    // Get today's assigned question index for this couple
+    let index = dbOps.getQuestionAssignment(pairId, today);
     if (index === null) {
-      const completed = dbOps.getCompletedQuestionIndexes(userId, user.partner_id);
+      const completed = dbOps.getCompletedQuestionIndexes(pairId);
       const available = Array.from({ length: QUESTIONS.length }, (_, i) => i).filter(i => !completed.has(i));
       index = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : Math.floor(Math.random() * QUESTIONS.length);
-      dbOps.setQuestionAssignment(today, index);
+      dbOps.setQuestionAssignment(pairId, today, index);
     }
 
-    dbOps.submitDailyAnswer(userId, today, index, answer.trim());
+    dbOps.submitDailyAnswer(userId, pairId, today, index, answer.trim());
 
-    const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+    const answers = dbOps.getDailyAnswers(today, pairId, userId);
     const bothAnswered = !!answers.mine && !!answers.partner;
 
     const partner = dbOps.getUser(user.partner_id);
@@ -820,8 +945,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ total_actions: 0, my_actions: 0, partner_actions: 0, top_actions: [], hourly: [], monthly: [], first_action_date: null });
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.json({ total_actions: 0, my_actions: 0, partner_actions: 0, top_actions: [], hourly: [], monthly: [], first_action_date: null });
 
-    const stats = dbOps.getStats(userId, user.partner_id);
+    const stats = dbOps.getStats(pairId, userId);
     res.json(stats);
   });
 
@@ -918,7 +1045,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     let dailyRecap = null;
     if (eveningBoth) {
-      dailyRecap = dbOps.getDailyRecap(userId, user.partner_id, myEveningDate);
+      // Slice on the user's local-day boundary, not UTC — otherwise a NY
+      // user (UTC-4) doing 50 taps after 8pm local sees 0 interactions
+      // because UTC has already rolled to next day.
+      const startUtc = localDateStartToUtcIso(myEveningDate, user.timezone);
+      const endUtc = localDateOffsetToUtcIso(myEveningDate, user.timezone, 1);
+      dailyRecap = dbOps.getDailyRecap(userId, user.partner_id, startUtc, endUtc);
     }
 
     res.json({
@@ -949,7 +1081,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const now = new Date();
     const phase = now >= revealAt ? 'revealed' : 'writing';
 
-    const messages = dbOps.getMailboxMessages(sessionKey, userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    const messages = dbOps.getMailboxMessages(sessionKey, pairId, userId);
 
     // Multi-letter sends per session are allowed; the writer can keep
     // shipping until reveal time. `my_sealed` / `can_edit` are kept in the
@@ -993,9 +1127,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Writing period has ended' });
     }
 
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
     // Multiple letters per session are allowed — every send produces a new
     // sealed row that opens at the next reveal boundary alongside the rest.
-    dbOps.submitMailboxMessage(userId, sessionKey, content.trim());
+    dbOps.submitMailboxMessage(userId, pairId, sessionKey, content.trim());
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
@@ -1013,11 +1149,13 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ weeks: [] });
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.json({ weeks: [] });
 
     // One row per partner-authored letter. Hide rows whose session reveal
     // time hasn't arrived yet — those are still in transit on the
     // recipient's side.
-    const allLetters = dbOps.getMailboxArchive(userId, user.partner_id, Math.min(limit, 50));
+    const allLetters = dbOps.getMailboxArchive(userId, pairId, user.partner_id, Math.min(limit, 50));
     const now = new Date();
     const weeks = allLetters.filter(w => now >= getRevealTime(w.week_key));
 
@@ -1029,11 +1167,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // passed yet. Capsule: my capsules whose unlock_at is in the future.
   // Once a letter "arrives" (reveal time / unlock time elapses), it
   // disappears from the outbox automatically.
+  //
+  // Also returns `has_fresh`: true iff at least one pending letter was
+  // queued AFTER the user's stored `outbox_last_seen` marker. Drives the
+  // 🚩 next to 发件箱 + the 信箱 tab dot. Stored server-side so it
+  // survives logout / reinstall — clearing the client's local storage
+  // can't lose this state.
   router.get('/outbox', (req: Request, res: Response) => {
     const userId = req.userId!;
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.json({ mailbox_pending: [], capsule_pending: [] });
+    if (!user.partner_id) return res.json({ mailbox_pending: [], capsule_pending: [], has_fresh: false });
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.json({ mailbox_pending: [], capsule_pending: [], has_fresh: false });
 
     const now = new Date();
     const sessionKey = getCurrentSessionKey();
@@ -1045,7 +1191,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // moment, return none.
     let mailbox_pending: { id: number; week_key: string; content: string; created_at: string; reveal_at: string }[] = [];
     if (now < revealAt) {
-      mailbox_pending = dbOps.getMyMailboxInSession(userId, sessionKey).map(r => ({
+      mailbox_pending = dbOps.getMyMailboxInSession(userId, pairId, sessionKey).map(r => ({
         id: r.id,
         week_key: r.week_key,
         content: r.content,
@@ -1058,7 +1204,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // partner-bound and self-bound — the user wrote them, so seeing them
     // in their own outbox is the expected mental model.
     const nowIso = now.toISOString();
-    const capsule_pending = dbOps.getCapsules(userId, user.partner_id)
+    const capsule_pending = dbOps.getCapsules(pairId)
       .filter(c => c.user_id === userId && c.unlock_at > nowIso && !c.opened_at)
       .map(c => ({
         id: c.id,
@@ -1069,7 +1215,31 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         created_at: c.created_at,
       }));
 
-    res.json({ mailbox_pending, capsule_pending });
+    // Empty marker = "user has never opened the outbox" → every pending
+    // letter counts as fresh (epoch-style anchor, same effect as comparing
+    // against '1970-01-01'). Both sides of the lex compare are SQLite
+    // datetime format so direct `>` is well-defined.
+    const seen = user.outbox_last_seen || '';
+    let has_fresh = false;
+    for (const m of mailbox_pending) {
+      if (m.created_at > seen) { has_fresh = true; break; }
+    }
+    if (!has_fresh) {
+      for (const c of capsule_pending) {
+        if (c.created_at > seen) { has_fresh = true; break; }
+      }
+    }
+
+    res.json({ mailbox_pending, capsule_pending, has_fresh });
+  });
+
+  // POST /api/outbox/seen — advance the user's outbox-seen marker to now.
+  // Called from OutboxScreen close so subsequent /api/outbox responses
+  // report `has_fresh: false` until the user sends another letter.
+  router.post('/outbox/seen', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    dbOps.markOutboxSeen(userId);
+    res.json({ success: true });
   });
 
   // Inbox soft-delete endpoints — used by the inbox & trash views.
@@ -1078,7 +1248,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // Helper: validate kind + ref_id and resolve referenced row exists + is
   // visible to this user as a recipient. Returns null on validation failure
   // (and writes the error response); a parsed { kind, refId } on success.
-  function validateInboxRef(req: Request, res: Response): { kind: 'mailbox' | 'capsule'; refId: number; userId: string } | null {
+  function validateInboxRef(req: Request, res: Response): { kind: 'mailbox' | 'capsule'; refId: number; userId: string; pairId: string } | null {
     const userId = req.userId!;
     const { kind, ref_id } = req.body || {};
     if (kind !== 'mailbox' && kind !== 'capsule') {
@@ -1092,6 +1262,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user || !user.partner_id) {
       res.status(400).json({ error: 'Not paired' });
+      return null;
+    }
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) {
+      res.status(409).json({ error: 'Pair state inconsistent' });
       return null;
     }
 
@@ -1123,7 +1298,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       }
     }
 
-    return { kind, refId: ref_id, userId };
+    return { kind, refId: ref_id, userId, pairId };
   }
 
   // POST /api/inbox/trash — move letter to trash
@@ -1141,7 +1316,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         return res.status(400).json({ error: 'Cannot trash an unopened capsule' });
       }
     }
-    dbOps.setInboxAction(v.userId, v.kind, v.refId, 'trashed');
+    dbOps.setInboxAction(v.userId, v.pairId, v.kind, v.refId, 'trashed');
     res.json({ success: true });
   });
 
@@ -1157,7 +1332,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   router.post('/inbox/purge', (req: Request, res: Response) => {
     const v = validateInboxRef(req, res);
     if (!v) return;
-    dbOps.setInboxAction(v.userId, v.kind, v.refId, 'purged');
+    dbOps.setInboxAction(v.userId, v.pairId, v.kind, v.refId, 'purged');
     res.json({ success: true });
   });
 
@@ -1186,13 +1361,18 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ total: 0 });
 
-    // Default to current week Monday
-    const weekStart = week || getCurrentWeekMonday();
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekEnd.getDate() + 7);
-    const weekEndStr = weekEnd.toISOString().slice(0, 10);
+    // Default to this week's Monday in the user's timezone (not UTC). The
+    // start/end below pin to local-midnight in the user's tz, expressed as
+    // SQLite-format UTC ('YYYY-MM-DD HH:MM:SS') so a NY user's "this week"
+    // begins at UTC Mon-04:00 (= NY Mon-00:00 EDT), not UTC Mon-00:00.
+    const weekStart = week || getCurrentWeekMonday(user.timezone);
+    const weekEndDate = new Date(weekStart);
+    weekEndDate.setDate(weekEndDate.getDate() + 7);
+    const weekEnd = weekEndDate.toISOString().slice(0, 10);
+    const actionsStart = localDateStartToUtcIso(weekStart, user.timezone).slice(0, 19).replace('T', ' ');
+    const actionsEnd = localDateStartToUtcIso(weekEnd, user.timezone).slice(0, 19).replace('T', ' ');
 
-    const data = dbOps.getWeeklyReportData(userId, user.partner_id, weekStart, weekEndStr);
+    const data = dbOps.getWeeklyReportData(userId, user.partner_id, weekStart, weekEnd, actionsStart, actionsEnd);
     const streak = dbOps.getStreak(userId, user.partner_id);
 
     const changePct = data.lastWeekTotal > 0
@@ -1273,12 +1453,15 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'unlock_at must be in the future' });
     }
 
-    const existing = dbOps.getCapsules(userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+
+    const existing = dbOps.getCapsules(pairId);
     if (existing.filter(c => !c.opened_at).length >= 50) {
       return res.status(400).json({ error: 'Maximum 50 pending capsules' });
     }
 
-    const capsule = dbOps.createCapsule(userId, user.partner_id, content.trim(), unlock_date, unlockAtIso, vis);
+    const capsule = dbOps.createCapsule(userId, user.partner_id, pairId, content.trim(), unlock_date, unlockAtIso, vis);
 
     // Notify partner only when this capsule is meant for them. Body includes a
     // day+hour countdown so the partner knows when to expect it.
@@ -1299,6 +1482,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ capsules: [] });
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.json({ capsules: [] });
 
     const nowIso = new Date().toISOString();
     // 'self' capsules are private to the author. 'partner' (default) capsules
@@ -1306,7 +1491,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Recipient-side soft-deletes (trashed/purged) hide the capsule from the
     // current user's listing, but only if they're a recipient (not the author
     // of an outgoing partner-vis capsule — that's their sent-mail).
-    const capsules = dbOps.getCapsules(userId, user.partner_id)
+    const capsules = dbOps.getCapsules(pairId)
       .filter(c => c.visibility !== 'self' || c.user_id === userId)
       .filter(c => {
         // Outgoing (author=me, visibility=partner) is never affected by inbox
@@ -1342,7 +1527,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const capsules = user.partner_id ? dbOps.getCapsules(userId, user.partner_id) : [];
+    const pairId = user.partner_id ? dbOps.couplesGetActivePairId(userId, user.partner_id) : null;
+    const capsules = pairId ? dbOps.getCapsules(pairId) : [];
     const capsule = capsules.find(c => c.id === id);
     if (!capsule) return res.status(404).json({ error: 'Capsule not found' });
 
@@ -1384,8 +1570,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ items: [], total: 0, completed_count: 0 });
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.json({ items: [], total: 0, completed_count: 0 });
 
-    const items = dbOps.getBucketItems(userId, user.partner_id).map(i => ({
+    const items = dbOps.getBucketItems(pairId).map(i => ({
       ...i,
       created_by: i.user_id === userId ? 'me' : 'partner',
     }));
@@ -1408,10 +1596,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
-    const existingItems = dbOps.getBucketItems(userId, user.partner_id);
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+    const existingItems = dbOps.getBucketItems(pairId);
     if (existingItems.length >= 100) return res.status(400).json({ error: 'Maximum 100 items' });
 
-    const item = dbOps.createBucketItem(userId, user.partner_id, title.trim(), category || null);
+    const item = dbOps.createBucketItem(userId, user.partner_id, pairId, title.trim(), category || null);
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
@@ -1431,8 +1621,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
     // Verify item belongs to this couple
-    const items = dbOps.getBucketItems(userId, user.partner_id);
+    const items = dbOps.getBucketItems(pairId);
     const item = items.find(i => i.id === id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
 
@@ -1459,8 +1651,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
     // Verify item belongs to this couple
-    const items = dbOps.getBucketItems(userId, user.partner_id);
+    const items = dbOps.getBucketItems(pairId);
     if (!items.some(i => i.id === id)) return res.status(404).json({ error: 'Item not found' });
 
     const updated = dbOps.uncompleteBucketItem(id);
@@ -1622,7 +1816,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const today = getBjt7amDate();
     if (type === 'question') {
-      const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+      const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+      if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
+      const answers = dbOps.getDailyAnswers(today, pairId, userId);
       if (!answers.mine) return res.status(400).json({ error: 'Answer your own first' });
       if (answers.partner) return res.status(400).json({ error: 'Partner already answered' });
     } else {
@@ -1656,8 +1852,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
     const today = getBjt7amDate();
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
     if (type === 'question') {
-      const answers = dbOps.getDailyAnswers(today, userId, user.partner_id);
+      const answers = dbOps.getDailyAnswers(today, pairId, userId);
       if (!answers.mine || !answers.partner) {
         return res.status(400).json({ error: 'Both must answer before reacting' });
       }
@@ -1676,7 +1874,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: '已经评价过了，不能修改' });
     }
 
-    dbOps.setDailyReaction(userId, user.partner_id, targetDate, type, reaction);
+    dbOps.setDailyReaction(userId, user.partner_id, pairId, targetDate, type, reaction);
 
     const partner = dbOps.getUser(user.partner_id);
     if (partner?.device_token) {
@@ -1709,7 +1907,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
   // Resolve the requester + partner; bail with the right error if not paired.
   // Returns null and sends the response on failure.
-  function requirePair(req: Request, res: Response): { userId: string; partnerId: string; userName: string } | null {
+  function requirePair(req: Request, res: Response): { userId: string; partnerId: string; pairId: string; userName: string } | null {
     const userId = req.userId!;
     const user = dbOps.getUser(userId);
     if (!user) {
@@ -1720,19 +1918,24 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       res.status(400).json({ error: 'Not paired' });
       return null;
     }
-    return { userId, partnerId: user.partner_id, userName: user.name };
+    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
+    if (!pairId) {
+      res.status(409).json({ error: 'Pair state inconsistent' });
+      return null;
+    }
+    return { userId, partnerId: user.partner_id, pairId, userName: user.name };
   }
 
   // Given a posted sticky id from path params, ensure the requester is part of
   // the couple stamped on the sticky. Returns the row or null after writing
   // the response.
-  function loadStickyOrFail(req: Request, res: Response, ctx: { userId: string; partnerId: string }): ReturnType<DbOps['getStickyForCouple']> | null {
+  function loadStickyOrFail(req: Request, res: Response, ctx: { userId: string; partnerId: string; pairId: string }): ReturnType<DbOps['getStickyForCouple']> | null {
     const id = parseId(req.params.id as string);
     if (id === null) {
       res.status(400).json({ error: 'Invalid ID' });
       return null;
     }
-    const sticky = dbOps.getStickyForCouple(id, ctx.userId, ctx.partnerId);
+    const sticky = dbOps.getStickyForCouple(id, ctx.pairId);
     if (!sticky) {
       res.status(404).json({ error: 'Sticky not found' });
       return null;
@@ -1748,9 +1951,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   router.get('/stickies', (req: Request, res: Response) => {
     const ctx = requirePair(req, res);
     if (!ctx) return;
-    const { userId, partnerId } = ctx;
+    const { userId, partnerId, pairId } = ctx;
 
-    const stickies = dbOps.listWallStickies(userId, partnerId, STICKY_WALL_LIMIT);
+    const stickies = dbOps.listWallStickies(pairId, STICKY_WALL_LIMIT);
     const stickyIds = stickies.map(s => s.id);
     const blocks = dbOps.listCommittedBlocksForStickies(stickyIds);
     const seen = dbOps.listSeenForStickies(userId, stickyIds);
@@ -1827,7 +2030,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         created_at: existing.created_at,
       });
     }
-    const { sticky, block } = dbOps.createTempSticky(userId, partnerId);
+    const { sticky, block } = dbOps.createTempSticky(userId, partnerId, ctx.pairId);
     res.json({
       sticky_id: sticky.id,
       content: block.content,

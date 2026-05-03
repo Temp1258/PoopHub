@@ -53,27 +53,18 @@ export async function hasUnreadInboxItems(): Promise<boolean> {
 }
 
 // True iff the outbox holds at least one pending letter that was queued
-// AFTER the user last opened the outbox view. Drives the outbox 🚩 in
-// MailboxScreen and the 信箱 tab red dot post-send. Cold-launches with
-// no marker anchor at "now" so a backlog of pre-existing pending letters
-// doesn't flag-bomb the user — only newly-sent letters get the indicator.
+// after the user's server-side `outbox_last_seen` marker. Drives the
+// outbox 🚩 in MailboxScreen and the 信箱 tab red dot post-send.
+//
+// Marker lives on the server so that logout / clearAll / reinstall can't
+// silently lose it: if the user wrote a letter on Tuesday and never opened
+// the outbox before Wednesday's logout, they reinstall on Friday and the
+// 🚩 still surfaces. The marker only advances when the user actively
+// opens OutboxScreen.
 export async function hasFreshOutboxItems(): Promise<boolean> {
   try {
-    let seen = await storage.getOutboxLastSeen();
-    if (!seen) {
-      seen = new Date().toISOString();
-      await storage.setOutboxLastSeen(seen);
-      return false;
-    }
     const outbox = await api.getOutbox().catch(() => null);
-    if (!outbox) return false;
-    for (const m of outbox.mailbox_pending || []) {
-      if (normalizeIso(m.created_at) > seen) return true;
-    }
-    for (const c of outbox.capsule_pending || []) {
-      if (normalizeIso(c.created_at) > seen) return true;
-    }
-    return false;
+    return outbox?.has_fresh ?? false;
   } catch {
     return false;
   }

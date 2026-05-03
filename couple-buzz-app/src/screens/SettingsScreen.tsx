@@ -61,6 +61,8 @@ export default function SettingsScreen() {
   const [pendingTimezone, setPendingTimezone] = useState<string>('');
   const [userId, setUserId] = useState('');
   const [partnerId, setPartnerId] = useState('');
+  const [pairId, setPairId] = useState<string | null>(null);
+  const [unpairing, setUnpairing] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -77,7 +79,10 @@ export default function SettingsScreen() {
       if (status.partner_id) {
         setPartnerId(status.partner_id);
         await storage.setPartnerId(status.partner_id);
+      } else {
+        setPartnerId('');
       }
+      setPairId(status.pair_id ?? null);
     } catch {
       const localName = await storage.getUserName();
       if (localName) setName(localName);
@@ -178,6 +183,81 @@ export default function SettingsScreen() {
     setModalTarget(target);
   };
 
+  // 4-step diff'd confirmation gauntlet so a casual mis-tap can never
+  // tear down a relationship's data. Each step asks something different
+  // (not the same dialog spammed) — we want the user to actually read.
+  const startUnpairFlow = () => {
+    if (unpairing) return;
+    if (!partnerId) {
+      Alert.alert('', '当前没有绑定的对象');
+      return;
+    }
+    const partnerLabel = partnerRemark.trim() || 'ta';
+    const step4 = () => {
+      Alert.alert(
+        '最后一次确认',
+        `点确定后立即解除与 ${partnerLabel} 的绑定。\n\n之后双方共享的数据会进入 90 天保留期 —— 在此期间你们任意一方重新绑定，所有历史会原样恢复；过了 90 天就永久删除，无法恢复。`,
+        [
+          { text: '我再想想', style: 'cancel' },
+          { text: '确定解绑', style: 'destructive', onPress: doUnpair },
+        ],
+      );
+    };
+    const step3 = () => {
+      Alert.alert(
+        '想清楚了吗？',
+        `解绑会断开你们当前所有连接 —— 实时拍拍、便利贴、信件统统不再互通。\n\n如果只是想暂时安静一下，关 push 就行了，不用走这一步。`,
+        [
+          { text: '取消', style: 'cancel' },
+          { text: '继续', style: 'destructive', onPress: step4 },
+        ],
+      );
+    };
+    const step2 = () => {
+      Alert.alert(
+        '不再考虑一下吗？',
+        `${partnerLabel} 不会收到提示后被询问 —— 你点完确定，对方那边就直接被解绑了。`,
+        [
+          { text: '再想想', style: 'cancel' },
+          { text: '已经决定了', style: 'destructive', onPress: step3 },
+        ],
+      );
+    };
+    Alert.alert(
+      '你真的要和 ta 解除绑定吗？',
+      `这是不可逆操作的开始。${partnerLabel} 那边会立即看到"已解绑"。`,
+      [
+        { text: '不了', style: 'cancel' },
+        { text: '是的', style: 'destructive', onPress: step2 },
+      ],
+    );
+  };
+
+  const doUnpair = async () => {
+    setUnpairing(true);
+    try {
+      await api.unpair();
+      // Wipe local cached partner-bound state so the UI immediately
+      // reflects the unpaired state without a stale flash.
+      await Promise.all([
+        storage.setPartnerId(''),
+        storage.setPartnerName(''),
+        storage.setPartnerRemark(''),
+      ]);
+      setPartnerId('');
+      setPartnerRemark('');
+      setOriginalPartnerRemark('');
+      Alert.alert('已解绑', '你们的数据将保留 90 天。期间任意一方重新和 ta 绑定就会自动恢复。');
+      // Trigger a status reload so other screens (Mailbox / Daily / etc)
+      // see the unpaired state on next focus.
+      loadStatus();
+    } catch (e: any) {
+      Alert.alert('解绑失败', e?.message || '请稍后重试');
+    } finally {
+      setUnpairing(false);
+    }
+  };
+
   const handleConfirmTimezone = async () => {
     const target = modalTarget;
     const tz = pendingTimezone;
@@ -239,6 +319,17 @@ export default function SettingsScreen() {
               {partnerId || '— —'}
             </Text>
           </View>
+        </View>
+      ) : null}
+
+      {/* 关系编号 — pair_id is the stable handle for this relationship.
+          Persists across unpair/repair within the 90-day grace window;
+          re-pairing the same partner brings the same number back. */}
+      {pairId ? (
+        <View style={styles.pairIdCard}>
+          <Text style={styles.pairIdLabel}>你们的关系编号</Text>
+          <Text style={styles.pairIdValue}>{pairId}</Text>
+          <Text style={styles.pairIdHint}>解绑后 90 天内重新和 ta 绑定，所有数据按此编号原样恢复</Text>
         </View>
       ) : null}
 
@@ -306,6 +397,22 @@ export default function SettingsScreen() {
           <Text style={styles.tzCardValue} numberOfLines={1}>{formatTzDisplay(partnerTimezone)}</Text>
         </TouchableOpacity>
       </View>
+
+      {partnerId ? (
+        <View style={styles.unpairBlock}>
+          <SpringPressable
+            onPress={startUnpairFlow}
+            disabled={unpairing}
+            scaleTo={1.04}
+            style={[styles.unpairPill, unpairing && styles.unpairPillDisabled]}
+          >
+            <Text style={styles.unpairPillText}>{unpairing ? '解绑中...' : '解除绑定'}</Text>
+          </SpringPressable>
+          <Text style={styles.unpairCaption}>
+            解绑后双方数据保留 90 天，期间重新绑定可恢复
+          </Text>
+        </View>
+      ) : null}
 
       <Modal
         visible={modalTarget !== null}
@@ -571,5 +678,63 @@ const styles = StyleSheet.create({
   tzOffset: {
     fontSize: 14,
     color: COLORS.textLight,
+  },
+  unpairBlock: {
+    alignItems: 'center',
+    marginTop: 48,
+    marginBottom: 8,
+    gap: 8,
+  },
+  unpairPill: {
+    paddingHorizontal: 28,
+    paddingVertical: 11,
+    borderRadius: 22,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'rgba(220, 60, 60, 0.45)',
+    minWidth: 140,
+    alignItems: 'center',
+  },
+  unpairPillDisabled: {
+    opacity: 0.4,
+  },
+  unpairPillText: {
+    color: '#C84040',
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+  },
+  unpairCaption: {
+    fontSize: 11,
+    color: COLORS.textLight,
+    textAlign: 'center',
+  },
+  pairIdCard: {
+    marginTop: 14,
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+  },
+  pairIdLabel: {
+    fontSize: 12,
+    color: COLORS.textLight,
+  },
+  pairIdValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.kiss,
+    letterSpacing: 3,
+    marginTop: 6,
+    fontVariant: ['tabular-nums'],
+  },
+  pairIdHint: {
+    fontSize: 11,
+    color: COLORS.textLight,
+    marginTop: 6,
+    textAlign: 'center',
   },
 });

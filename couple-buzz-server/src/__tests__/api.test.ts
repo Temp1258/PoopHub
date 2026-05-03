@@ -129,20 +129,29 @@ describe('POST /api/auth/refresh', () => {
     expect(res.status).toBe(401);
   });
 
-  it('should reject already-used refresh token (rotation)', async () => {
+  it('accepts refresh-token retry within the rotation grace window', async () => {
+    // Network-glitch protection: if the client sends a refresh, the
+    // server rotates, but the response gets dropped, the client's retry
+    // with the OLD token must still succeed (and return another fresh
+    // pair). Otherwise a Wi-Fi blip would silently log the user out.
     const { app } = createTestApp();
     const user = await registerUser(app, 'Alice');
 
-    // Use the refresh token once
-    await request(app)
+    const first = await request(app)
       .post('/api/auth/refresh')
       .send({ refresh_token: user.refresh_token });
+    expect(first.status).toBe(200);
 
-    // Try to use the same refresh token again
-    const res = await request(app)
+    // Replay same token immediately — within the 10s grace window.
+    const replay = await request(app)
       .post('/api/auth/refresh')
       .send({ refresh_token: user.refresh_token });
-    expect(res.status).toBe(401);
+    expect(replay.status).toBe(200);
+    expect(replay.body.access_token).toBeTruthy();
+    expect(replay.body.refresh_token).toBeTruthy();
+    // Each rotation issues a different new refresh token; the chain may
+    // grow within the grace window, but the user is never locked out.
+    expect(replay.body.refresh_token).not.toBe(first.body.refresh_token);
   });
 });
 
@@ -456,6 +465,104 @@ describe('PUT /api/device-token', () => {
       .set('Authorization', `Bearer ${alice.access_token}`)
       .send({});
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Couples lifecycle (pair_id)', () => {
+  it('pair generates a 10-char pair_id and unpair sets ended_at', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    const pid1 = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id);
+    expect(pid1).toBeTruthy();
+    expect(pid1!.length).toBe(10);
+    // 6 letters then 4 digits
+    expect(/^[A-Z]{6}\d{4}$/.test(pid1!)).toBe(true);
+
+    // Unpair via route
+    await request(app)
+      .post('/api/unpair')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+
+    const activeAfter = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id);
+    expect(activeAfter).toBeNull();
+  });
+
+  it('re-pair within grace window revives the same pair_id (data restored)', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    const originalPairId = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+
+    // Alice unpairs Bob.
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+
+    // Re-pair via route — should revive (clear ended_at), same pair_id.
+    const pairRes = await request(app)
+      .post('/api/pair')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ partner_id: bob.user_id });
+    expect(pairRes.status).toBe(200);
+    expect(pairRes.body.pair_id).toBe(originalPairId);
+    expect(pairRes.body.revived).toBe(true);
+
+    const activeNow = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id);
+    expect(activeNow).toBe(originalPairId);
+  });
+
+  it('pairing with a different partner generates a fresh pair_id', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const carol = await registerUser(app, 'Carol');
+
+    const pidAB = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+
+    // Alice unpairs Bob, then pairs Carol.
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    const pairAC = await request(app)
+      .post('/api/pair')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ partner_id: carol.user_id });
+    expect(pairAC.status).toBe(200);
+    expect(pairAC.body.pair_id).not.toBe(pidAB);
+    expect(pairAC.body.revived).toBe(false);
+
+    // (A,B) row still exists in DORMANT state — still queryable by users.
+    // (A,B) data is preserved for the 90-day grace window.
+    const pidABStillThere = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id);
+    expect(pidABStillThere).toBeNull(); // not active
+  });
+
+  it('history feed is pair-isolated — old relationships do not leak', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const carol = await registerUser(app, 'Carol');
+
+    // Alice + Bob: send some actions
+    await request(app).post('/api/action').set('Authorization', `Bearer ${alice.access_token}`).send({ action_type: 'kiss' });
+    await request(app).post('/api/action').set('Authorization', `Bearer ${bob.access_token}`).send({ action_type: 'hug' });
+
+    // Snapshot: Alice's history with Bob has 2 entries.
+    const histAB = await request(app).get('/api/history').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(histAB.body.actions.length).toBe(2);
+
+    // Unpair, pair Carol.
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: carol.user_id });
+
+    // Alice's history with Carol is empty — old (A,B) actions don't leak.
+    const histAC = await request(app).get('/api/history').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(histAC.body.actions.length).toBe(0);
+
+    // Re-pair with Bob — old (A,B) actions resurface.
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: bob.user_id });
+
+    const histAB2 = await request(app).get('/api/history').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(histAB2.body.actions.length).toBe(2);
+
+    // Reference dbOps to keep TypeScript happy.
+    expect(dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)).toBeTruthy();
   });
 });
 
@@ -1165,7 +1272,8 @@ describe('Inbox trash / restore / purge', () => {
     // Bob writes a capsule for alice with a past unlock_date so it's
     // immediately openable. Direct DB insert bypasses the API's future-date
     // guard (which is correct for normal flows but blocks this test setup).
-    const cap = dbOps.createCapsule(bob.user_id, alice.user_id, 'a letter from the past', '2020-01-01', '2020-01-01T00:00:00.000Z', 'partner');
+    const pairId = dbOps.couplesGetActivePairId(bob.user_id, alice.user_id)!;
+    const cap = dbOps.createCapsule(bob.user_id, alice.user_id, pairId, 'a letter from the past', '2020-01-01', '2020-01-01T00:00:00.000Z', 'partner');
 
     // First open succeeds (sanity check).
     const open1 = await request(app)
@@ -1217,7 +1325,8 @@ describe('Inbox trash / restore / purge', () => {
     const { alice, bob } = await registerPairedUsers(app);
 
     // Alice writes for bob (partner-vis).
-    const cap = dbOps.createCapsule(alice.user_id, bob.user_id, 'for bob', '2020-01-01', '2020-01-01T00:00:00.000Z', 'partner');
+    const pairId = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+    const cap = dbOps.createCapsule(alice.user_id, bob.user_id, pairId, 'for bob', '2020-01-01', '2020-01-01T00:00:00.000Z', 'partner');
 
     // Bob trashes it after first open.
     await request(app)

@@ -86,6 +86,15 @@ const urlForResponse = (response: Notifications.NotificationResponse): string =>
   return targetToUrl(tabForActionType(data?.actionType));
 };
 
+// Defer cold-start notification routing until the app is fully `ready`
+// (logged in + paired + main tabs mounted). Without the deferral, taps
+// from a logged-out / mid-pairing state get silently consumed because
+// the target tab doesn't exist yet, leaving the user staring at the
+// wrong screen until they navigate manually.
+//
+// Runtime taps (app already in foreground / background) are still
+// handled by the standard linking subscription — those land on a fully-
+// mounted nav tree.
 const notificationLinking: LinkingOptions<ReactNavigation.RootParamList> = {
   prefixes: ['couplebuzz://'],
   config: {
@@ -98,14 +107,8 @@ const notificationLinking: LinkingOptions<ReactNavigation.RootParamList> = {
       Settings: 'settings',
     },
   },
-  async getInitialURL() {
-    const response = await Notifications.getLastNotificationResponseAsync();
-    if (!response) return null;
-    // Consume — otherwise the next icon-launch keeps re-routing to the same
-    // stale notification's tab (cache persists until cleared).
-    Notifications.clearLastNotificationResponseAsync();
-    return urlForResponse(response);
-  },
+  // No getInitialURL here — cold-start is handled by the App-level effect
+  // that runs after appState transitions to 'ready'.
   subscribe(listener) {
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
       listener(urlForResponse(response));
@@ -528,6 +531,30 @@ export default function App() {
     });
     return () => sub.remove();
   }, [setUnreadForTab]);
+
+  // Cold-start notification handoff. If the user launched the app by
+  // tapping a notification but wasn't logged in / paired yet, the URL
+  // would land on a navigator that hadn't mounted the target tab. We
+  // wait until appState='ready' (MainTabs is in the tree), then read
+  // the cached response, navigate, and clear so a subsequent icon-
+  // launch doesn't re-route to the same stale push.
+  const coldStartConsumedRef = useRef(false);
+  useEffect(() => {
+    if (appState !== 'ready' || coldStartConsumedRef.current) return;
+    coldStartConsumedRef.current = true;
+    (async () => {
+      try {
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (!response) return;
+        const data = response.notification.request.content.data as { actionType?: string };
+        const target = tabForActionType(data?.actionType);
+        if (navigationRef.isReady()) {
+          navigationRef.navigate(target as never);
+        }
+        Notifications.clearLastNotificationResponseAsync();
+      } catch {}
+    })();
+  }, [appState]);
 
   // Foreground 拍拍 (touch) arrives via socket — server skips the push when
   // both sides have a live socket. Mirror it into hasUnreadHome so the red

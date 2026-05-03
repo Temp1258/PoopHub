@@ -64,6 +64,28 @@ export function isUserOnline(userId: string): boolean {
   return false;
 }
 
+// Forcibly tear down every live socket for a couple. Called from /unpair
+// so neither side can keep receiving the partner's `touch_start`,
+// `sticky_update`, etc. via an already-established connection — without
+// this, the room stays joined until each client naturally drops or
+// restarts. Also evicts the in-memory presence row + pat tally.
+export function disconnectCouple(userIdA: string, userIdB: string): void {
+  if (!ioRef) return;
+  const key = coupleKey(userIdA, userIdB);
+  const presence = presenceMap.get(key);
+  if (!presence) return;
+  for (const set of presence.sockets.values()) {
+    for (const sid of set) {
+      const socket = ioRef.sockets.sockets.get(sid);
+      if (socket) socket.disconnect(true);
+    }
+  }
+  if (presence.bothOnlineTimer) {
+    clearTimeout(presence.bothOnlineTimer);
+  }
+  presenceMap.delete(key);
+}
+
 function coupleKey(a: string, b: string): string {
   return [a, b].sort().join(':');
 }

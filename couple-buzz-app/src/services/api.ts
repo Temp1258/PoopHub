@@ -145,6 +145,10 @@ export interface StatusResponse {
   paired: boolean;
   partner_id?: string;
   partner_name?: string;
+  // Stable 10-char relationship handle (e.g. "KMRPQT4729"). Surfaced in
+  // Settings as the couple's "ID". Persists across unpair/repair within
+  // the 90-day TTL.
+  pair_id?: string | null;
   name: string;
   timezone: string;
   partner_timezone: string;
@@ -298,6 +302,9 @@ export interface OutboxCapsuleItem {
 export interface OutboxResponse {
   mailbox_pending: OutboxMailboxItem[];
   capsule_pending: OutboxCapsuleItem[];
+  // True iff at least one pending letter was queued after the user's
+  // server-stored "outbox last seen" marker. Drives 🚩 / tab dot.
+  has_fresh: boolean;
 }
 
 export interface TrashedInboxItem {
@@ -443,6 +450,10 @@ export const api = {
     });
   },
 
+  unpair(): Promise<{ success: boolean; new_pair_code: string }> {
+    return request('/api/unpair', { method: 'POST' });
+  },
+
   getStatus(): Promise<StatusResponse> {
     return request('/api/status');
   },
@@ -552,6 +563,11 @@ export const api = {
 
   getOutbox(): Promise<OutboxResponse> {
     return request('/api/outbox');
+  },
+  // Advance the server-stored outbox-seen marker — called from
+  // OutboxScreen close so the 🚩 stays off until the next send.
+  markOutboxSeen(): Promise<{ success: boolean }> {
+    return request('/api/outbox/seen', { method: 'POST' });
   },
 
   getWeeklyReport(week?: string): Promise<WeeklyReportResponse> {
