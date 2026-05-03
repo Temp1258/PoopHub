@@ -49,6 +49,12 @@ type Recipient = 'self' | 'partner';
 type DateTimePart = 'year' | 'month' | 'day' | 'hour' | 'minute' | null;
 
 const SCREEN_H = Dimensions.get('window').height;
+const SCREEN_W = Dimensions.get('window').width;
+// Letter-paper inner padding scales with viewport width so the
+// "salutation / body / signature" margins feel consistent on small and
+// large iPhones — clamped to [20, 36] so it never collapses too tight
+// or balloons absurdly on a hypothetical iPad layout.
+const LETTER_PAPER_PAD = Math.max(20, Math.min(36, Math.round(SCREEN_W * 0.06)));
 // nativeID linking the editor's TextInput to its iOS InputAccessoryView. The
 // accessory bar shows above the keyboard with a "完成" button so the user
 // can dismiss the keyboard from a fixed location no matter where they're
@@ -761,7 +767,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: PAPER,
     borderRadius: 4,
-    paddingHorizontal: 24,
+    paddingHorizontal: LETTER_PAPER_PAD,
     paddingTop: 20,
     paddingBottom: 16,
     shadowColor: '#000',

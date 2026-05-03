@@ -57,10 +57,12 @@ interface OutboxCard {
 
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
-const CARD_HEIGHT = 220;
+// CARD_HEIGHT scales with viewport height — see InboxScreen for the
+// reasoning behind the [220, 280] clamp.
+const CARD_HEIGHT = Math.max(220, Math.min(280, Math.round(SCREEN_H * 0.28)));
 const CARD_GAP = 16;
 const SNAP_INTERVAL = CARD_HEIGHT + CARD_GAP;
-const STACK_OFFSET = 55;
+const STACK_OFFSET = Math.round(CARD_HEIGHT * 0.25);
 
 const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partnerName }, ref) => {
   const insets = useSafeAreaInsets();

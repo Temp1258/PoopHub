@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl, Animated, AppState as RNAppState } from 'react-native';
+import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl, Animated, AppState as RNAppState, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -18,6 +18,15 @@ import { SpringPressable } from '../components/SpringPressable';
 
 export default function MailboxScreen() {
   const insets = useSafeAreaInsets();
+  const { width: screenW } = useWindowDimensions();
+  // PillTabBar's height is computed in App.tsx as roughly
+  //   pillH (= width * 0.14) + paddingTop (width * 0.02) + paddingBottom
+  //   (insets.bottom + width * 0.015)
+  // ≈ width * 0.175 + insets.bottom. The 写信 pill sits 16pt above
+  // that — proportional to screen so visual gap stays consistent across
+  // SE / standard / Pro Max instead of being a hardcoded "+96 from
+  // insets.bottom" estimate that drifted on different device widths.
+  const writePillBottom = insets.bottom + Math.round(screenW * 0.175) + 16;
   const [refreshing, setRefreshing] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [outboxOpen, setOutboxOpen] = useState(false);
@@ -119,7 +128,7 @@ export default function MailboxScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
       <Animated.ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: 140 + insets.bottom }]}
+        contentContainerStyle={[styles.content, { paddingBottom: writePillBottom + 60 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -212,7 +221,7 @@ export default function MailboxScreen() {
           the home indicator + tab bar. Replaces the old MailboxCard +
           TimeCapsuleCard cards inline; tapping it opens the unified
           letter-writing flow that branches to 次日达 / 择日达 after sealing. */}
-      <View style={[styles.writePillSlot, { bottom: insets.bottom + 96 }]} pointerEvents="box-none">
+      <View style={[styles.writePillSlot, { bottom: writePillBottom }]} pointerEvents="box-none">
         <SpringPressable
           onPress={() => setWriteOpen(true)}
           style={styles.writePill}
@@ -308,9 +317,10 @@ const styles = StyleSheet.create({
     fontSize: 18,
     marginRight: 6,
   },
-  // Floating 写信 pill anchored above the bottom tab bar. The bottom offset
-  // (insets.bottom + 96) accounts for safe area + the PillTabBar's height
-  // (~width*0.175) on typical iPhone widths.
+  // Floating 写信 pill anchored above the bottom tab bar. Bottom offset
+  // is computed at render time as `insets.bottom + width * 0.175 + 16`
+  // so it always sits exactly 16pt above the PillTabBar regardless of
+  // device width — see writePillBottom in the component body.
   writePillSlot: {
     position: 'absolute',
     left: 0,

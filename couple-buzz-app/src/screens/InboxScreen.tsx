@@ -65,13 +65,20 @@ const CAPSULE_ACCENT = '#C3AED6';
 const SCREEN_W = Dimensions.get('window').width;
 
 // Layout interval — drives snapping. Cards lay out at i*SNAP_INTERVAL apart.
-const CARD_HEIGHT = 220;
+//
+// CARD_HEIGHT clamps to [220, 280] from screen height. Floor at 220 so
+// content (kind row + 2 stamp lines + divider + sender row + 3 snippet
+// lines + footer + 36pt vertical padding ≈ 200pt) never gets clipped
+// on small screens. Ceiling at 280 keeps the card from looking absurd
+// on iPad-sized viewports. In between, scales as 28% of viewport height
+// so SE / Pro Max / iPad each feel proportionally consistent.
+const CARD_HEIGHT = Math.max(220, Math.min(280, Math.round(SCREEN_H * 0.28)));
 const CARD_GAP = 16;
 const SNAP_INTERVAL = CARD_HEIGHT + CARD_GAP;
 
-// Visual stacking offset — peek cards expose 25% (55pt of CARD_HEIGHT 220pt),
-// so each card overlaps the previous by 75%.
-const STACK_OFFSET = 55;
+// Visual stacking offset — peek cards expose 25% of card height, so
+// each card overlaps the previous by 75% regardless of CARD_HEIGHT.
+const STACK_OFFSET = Math.round(CARD_HEIGHT * 0.25);
 
 // Right-swipe threshold to trigger deletion (~38% of screen width).
 const SWIPE_THRESHOLD = SCREEN_W * 0.38;

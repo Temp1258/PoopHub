@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Pressable, StyleSheet, Animated, AppState } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { View, Pressable, StyleSheet, Animated, AppState, useWindowDimensions } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { emitTouchStart, emitTouchEnd, subscribe } from '../services/socket';
@@ -16,6 +16,26 @@ export default function TouchArea({ onSendStart, onSendEnd }: Props = {}) {
   const receiveAnim = useRef(new Animated.Value(0)).current;
   const hapticInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const sendHapticInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Touch circle scales with viewport so SE and Pro Max both feel the
+  // same proportionally. Cap at 220 so on hypothetical iPad it doesn't
+  // become absurdly large. Min via the Math.min/Math.max bracket below.
+  const { width: screenW } = useWindowDimensions();
+  const circleSize = useMemo(() => Math.round(Math.min(220, Math.max(160, screenW * 0.55))), [screenW]);
+  const dynamicStyles = useMemo(() => ({
+    touchCircle: {
+      width: circleSize,
+      height: circleSize,
+    },
+    ripple: {
+      borderRadius: circleSize / 2,
+    },
+    innerCircle: {
+      width: circleSize * 0.7,
+      height: circleSize * 0.7,
+      borderRadius: circleSize * 0.35,
+    },
+  }), [circleSize]);
 
   // When the app backgrounds, any pending receive haptic must be cleared.
   // Otherwise: partner ends the touch while we're disconnected, our app
@@ -124,21 +144,21 @@ export default function TouchArea({ onSendStart, onSendEnd }: Props = {}) {
   return (
     <View style={styles.wrapper}>
       <Pressable
-        style={styles.touchCircle}
+        style={[styles.touchCircle, dynamicStyles.touchCircle]}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
       >
         {/* Send ripple */}
         <Animated.View
-          style={[styles.ripple, { transform: [{ scale: sendScale }], opacity: sendOpacity }]}
+          style={[styles.ripple, dynamicStyles.ripple, { transform: [{ scale: sendScale }], opacity: sendOpacity }]}
         />
         {/* Receive ripple */}
         {receiving && (
           <Animated.View
-            style={[styles.rippleReceive, { transform: [{ scale: recvScale }], opacity: recvOpacity }]}
+            style={[styles.rippleReceive, dynamicStyles.ripple, { transform: [{ scale: recvScale }], opacity: recvOpacity }]}
           />
         )}
-        <View style={[styles.innerCircle, receiving && styles.innerCircleReceiving]}>
+        <View style={[styles.innerCircle, dynamicStyles.innerCircle, receiving && styles.innerCircleReceiving]}>
           {partnerOnline && <View style={styles.onlineDot} />}
         </View>
       </Pressable>
@@ -146,33 +166,26 @@ export default function TouchArea({ onSendStart, onSendEnd }: Props = {}) {
   );
 }
 
-const CIRCLE_SIZE = 200;
-
 const styles = StyleSheet.create({
   wrapper: {
     alignItems: 'center',
     paddingVertical: 20,
   },
+  // width/height/borderRadius come from `dynamicStyles` (responsive to
+  // screen width). Static styles here are layout-agnostic visuals only.
   touchCircle: {
-    width: CIRCLE_SIZE,
-    height: CIRCLE_SIZE,
     justifyContent: 'center',
     alignItems: 'center',
   },
   ripple: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: COLORS.kiss,
-    borderRadius: CIRCLE_SIZE / 2,
   },
   rippleReceive: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: '#FF6B8A',
-    borderRadius: CIRCLE_SIZE / 2,
   },
   innerCircle: {
-    width: CIRCLE_SIZE * 0.7,
-    height: CIRCLE_SIZE * 0.7,
-    borderRadius: CIRCLE_SIZE * 0.35,
     backgroundColor: 'rgba(255, 143, 171, 0.15)',
     borderWidth: 2,
     borderColor: COLORS.kiss,

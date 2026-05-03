@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, Animated as RNAnimated } from 'react-native';
+import { View, Text, StyleSheet, Animated as RNAnimated, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../constants';
@@ -14,6 +14,11 @@ interface Props {
 
 export default function HomeScreen({ partnerName, streak }: Props) {
   const insets = useSafeAreaInsets();
+  // Heart fontSize scales with screen so SE (375) and Pro Max (430)
+  // both show the heart at ~70% of viewport width — keeps the visual
+  // weight constant. Heartbeat scale 1.18 still leaves margin on SE.
+  const { width: screenW } = useWindowDimensions();
+  const heartFontSize = Math.round(screenW * 0.7);
   const [pinnedDate, setPinnedDate] = useState<DatesResponse['pinned']>(null);
   const [presenceBoth, setPresenceBoth] = useState(false);
   const presenceAnim = useRef(new RNAnimated.Value(0)).current;
@@ -123,7 +128,7 @@ export default function HomeScreen({ partnerName, streak }: Props) {
               { transform: [{ scale: heartScale }], opacity: heartOpacity },
             ]}
           >
-            <Text style={styles.heartEmoji}>❤️</Text>
+            <Text style={[styles.heartEmoji, { fontSize: heartFontSize }]}>❤️</Text>
           </RNAnimated.View>
         )}
         <TouchArea
@@ -193,6 +198,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   heartEmoji: {
-    fontSize: 280,
+    // fontSize set inline from heartFontSize (screenW * 0.7); keeping
+    // the style hook here so future tweaks (color, shadow) land here.
   },
 });

@@ -23,7 +23,11 @@ const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const ENV_W = Math.min(280, SCREEN_W - 60);
 const ENV_H = Math.round(ENV_W * 0.62);
 const FLAP_H = Math.round(ENV_H * 0.6);
-const LETTER_W = SCREEN_W - 40;
+// Cap LETTER_W at 420 — on iPhone (max 430 width) this is effectively
+// SCREEN_W - 40, but if iPad support is ever turned on, the letter
+// won't blow out to 700+pt and become unreadable; instead it stays at
+// a comfortable book-page width.
+const LETTER_W = Math.min(420, SCREEN_W - 40);
 const LETTER_MAX_H = Math.round(SCREEN_H * 0.7);
 
 type Stage = 'idle' | 'envelope' | 'letter';

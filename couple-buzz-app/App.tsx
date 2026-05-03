@@ -1,7 +1,19 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { ActivityIndicator, View, Text, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, View, Text, TextInput, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
+
+// Global cap on Dynamic Type scaling. RN Text/TextInput respect the
+// system font scale by default — at extreme accessibility settings (up
+// to 3.1× on iOS) labels would overflow our fixed-height buttons / pills
+// and clip badly. Capping at 1.4 lets users with mild large-text needs
+// still get bigger text while protecting layout integrity. Setting
+// defaultProps once here applies app-wide; individual Text components
+// can override via their own `maxFontSizeMultiplier` prop.
+(Text as any).defaultProps = (Text as any).defaultProps || {};
+(Text as any).defaultProps.maxFontSizeMultiplier = 1.4;
+(TextInput as any).defaultProps = (TextInput as any).defaultProps || {};
+(TextInput as any).defaultProps.maxFontSizeMultiplier = 1.4;
 import { NavigationContainer, createNavigationContainerRef, LinkingOptions } from '@react-navigation/native';
 import { createMaterialTopTabNavigator, MaterialTopTabBarProps } from '@react-navigation/material-top-tabs';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
