@@ -255,6 +255,12 @@ export interface DbOps {
   // Outbox: my mailbox letters in a single session (typically the current
   // session, before reveal). Used to render the 发件箱.
   getMyMailboxInSession(userId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[];
+  // Outbox cancel — hard-delete a pending letter authored by this user.
+  // Returns true iff a row was actually removed (false = wrong author or
+  // already opened/missing). The route layer additionally enforces the
+  // time gate (mailbox: pre-reveal; capsule: pre-unlock).
+  deleteMyMailbox(id: number, userId: string): boolean;
+  deleteMyCapsule(id: number, userId: string): boolean;
   getAllPairedUserTokens(): { device_token: string }[];
   // Weekly Report
   getWeeklyReportData(userId: string, partnerId: string, weekStart: string, weekEnd: string): {
@@ -978,6 +984,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     WHERE user_id = ? AND week_key = ?
     ORDER BY created_at ASC, id ASC
   `);
+  // Outbox cancel — hard-delete the row only when the caller authored it
+  // and the session hasn't reveal-passed (caller enforces the time check
+  // since week_key reveal logic lives in the route layer).
+  const stmtDeleteMyMailbox = db.prepare(
+    'DELETE FROM mailbox WHERE id = ? AND user_id = ?'
+  );
+  const stmtDeleteMyCapsule = db.prepare(
+    'DELETE FROM time_capsules WHERE id = ? AND user_id = ? AND opened_at IS NULL'
+  );
   const stmtGetAllPairedTokens = db.prepare(
     'SELECT device_token FROM users WHERE partner_id IS NOT NULL AND device_token IS NOT NULL'
   );
@@ -1485,6 +1500,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     getMyMailboxInSession(userId: string, weekKey: string): { id: number; week_key: string; content: string; created_at: string }[] {
       return stmtGetMyMailboxInSession.all(userId, weekKey) as any[];
+    },
+
+    deleteMyMailbox(id: number, userId: string): boolean {
+      return stmtDeleteMyMailbox.run(id, userId).changes > 0;
+    },
+
+    deleteMyCapsule(id: number, userId: string): boolean {
+      return stmtDeleteMyCapsule.run(id, userId).changes > 0;
     },
 
     getAllPairedUserTokens(): { device_token: string }[] {

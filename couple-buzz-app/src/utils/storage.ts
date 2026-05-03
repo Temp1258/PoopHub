@@ -14,6 +14,7 @@ const KEYS = {
   DAILY_SEEN_PA: 'couple_buzz_daily_seen_pa',
   DAILY_SEEN_PS: 'couple_buzz_daily_seen_ps',
   INBOX_LAST_SEEN: 'couple_buzz_inbox_last_seen',
+  OUTBOX_LAST_SEEN: 'couple_buzz_outbox_last_seen',
   WRITE_LETTER_DRAFT: 'couple_buzz_write_letter_draft',
 };
 
@@ -126,6 +127,18 @@ export const storage = {
 
   async setInboxLastSeen(iso: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.INBOX_LAST_SEEN, iso);
+  },
+
+  // Outbox-side equivalent of INBOX_LAST_SEEN. Drives the outbox 🚩 + the
+  // 信箱 tab dot for fresh outgoing letters: any pending letter created
+  // after this marker counts as "fresh" until the user opens OutboxScreen,
+  // which advances the marker to "now".
+  async getOutboxLastSeen(): Promise<string | null> {
+    return AsyncStorage.getItem(KEYS.OUTBOX_LAST_SEEN);
+  },
+
+  async setOutboxLastSeen(iso: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.OUTBOX_LAST_SEEN, iso);
   },
 
   // Draft body of an in-progress letter from WriteLetterScreen. Persists

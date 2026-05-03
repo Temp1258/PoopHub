@@ -8,7 +8,7 @@ import DailyQuestionCard from '../components/DailyQuestionCard';
 import DailySnapCard from '../components/DailySnapCard';
 import { useNextDailyRefreshAt } from '../utils/countdown';
 import { storage } from '../utils/storage';
-import { friendlyTzName } from '../utils/postmark';
+import { formatPostmark } from '../utils/postmark';
 
 type Reloadable = { reload: () => Promise<void> };
 
@@ -23,19 +23,12 @@ export default function DailyScreen() {
   useEffect(() => {
     storage.getTimezone().then(tz => { if (tz) setMyTz(tz); }).catch(() => {});
   }, []);
-  // Render the daily refresh moment as wall-clock time in the user's tz —
-  // e.g. "下次更新于 纽约时间 18:00:00". The instant itself is fixed (next
-  // 7am BJT), so the displayed value only changes across DST or a tz
-  // setting change.
-  const refreshClock = (() => {
+  // Render the daily refresh moment as month-day + hh:mm in the user's
+  // tz — e.g. "纽约时间 05-03 19:00". formatPostmark already produces this
+  // exact shape, so we reuse it for postmark/refresh consistency.
+  const refreshStamp = (() => {
     try {
-      return new Date(nextRefreshAt).toLocaleTimeString('en-GB', {
-        timeZone: myTz,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      });
+      return formatPostmark(new Date(nextRefreshAt).toISOString(), myTz);
     } catch {
       return '';
     }
@@ -87,7 +80,7 @@ export default function DailyScreen() {
         <DailyQuestionCard ref={questionRef} />
         <DailySnapCard ref={snapRef} />
         <Text style={styles.refreshHint}>
-          {refreshClock ? `下次更新于 ${friendlyTzName(myTz)} ${refreshClock}` : ''}
+          {refreshStamp ? `下次更新于 ${refreshStamp}` : ''}
         </Text>
       </Animated.ScrollView>
       {/* Scroll-bound fade: invisible at rest, fades in once the user

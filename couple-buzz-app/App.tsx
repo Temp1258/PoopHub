@@ -17,7 +17,8 @@ import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
 import { api, AuthError } from './src/services/api';
 import { connectSocket, disconnectSocket, subscribe } from './src/services/socket';
-import { hasUnreadInboxItems } from './src/utils/inboxUnread';
+import { hasUnreadInboxItems, hasFreshOutboxItems } from './src/utils/inboxUnread';
+import { subscribeOutboxChanged } from './src/utils/outboxEvents';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -575,12 +576,13 @@ export default function App() {
 
     const check = async () => {
       try {
-        const [stickyRes, inboxUnread] = await Promise.all([
+        const [stickyRes, inboxUnread, outboxFresh] = await Promise.all([
           api.getStickies().catch(() => null),
           hasUnreadInboxItems().catch(() => false),
+          hasFreshOutboxItems().catch(() => false),
         ]);
         const stickyUnread = stickyRes?.stickies.some(s => s.unread) ?? false;
-        if (stickyUnread || inboxUnread) setUnreadForTab('Mailbox');
+        if (stickyUnread || inboxUnread || outboxFresh) setUnreadForTab('Mailbox');
       } catch {}
     };
 
@@ -592,10 +594,16 @@ export default function App() {
       if (data?.from && data.from === myUserIdRef.current) return;
       check();
     });
+    // Local "I just sent a letter" signal — flips the 信箱 tab dot
+    // immediately, no need to wait for a poll cycle.
+    const unsubOutbox = subscribeOutboxChanged(() => {
+      setUnreadForTab('Mailbox');
+    });
 
     return () => {
       appSub.remove();
       unsubSocket();
+      unsubOutbox();
     };
   }, [appState, setUnreadForTab]);
 

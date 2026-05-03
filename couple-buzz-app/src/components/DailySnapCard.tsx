@@ -118,9 +118,12 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
               slot keeps both columns the same vertical height. */}
           <View style={styles.reactionUnderPhoto}>
             {data.my_snapped && data.partner_snapped && data.partner_reaction_to_me ? (
-              <Text style={styles.reactionEmojiLg}>
-                {data.partner_reaction_to_me === 'up' ? '👍' : '👎'}
-              </Text>
+              <View style={styles.reactionInline}>
+                <Text style={styles.reactionLabel}>ta 的评价</Text>
+                <Text style={styles.reactionEmojiLg}>
+                  {data.partner_reaction_to_me === 'up' ? '👍' : '👎'}
+                </Text>
+              </View>
             ) : null}
           </View>
         </View>
@@ -136,9 +139,12 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
           <View style={styles.reactionUnderPhoto}>
             {data.my_snapped && data.partner_snapped ? (
               data.my_reaction_to_partner ? (
-                <Text style={styles.reactionEmojiLg}>
-                  {data.my_reaction_to_partner === 'up' ? '👍' : '👎'}
-                </Text>
+                <View style={styles.reactionInline}>
+                  <Text style={styles.reactionLabel}>我的评价</Text>
+                  <Text style={styles.reactionEmojiLg}>
+                    {data.my_reaction_to_partner === 'up' ? '👍' : '👎'}
+                  </Text>
+                </View>
               ) : (
                 <View style={styles.reactRowInline}>
                   <TouchableOpacity
@@ -247,7 +253,9 @@ const styles = StyleSheet.create({
   // aligned even when one side has buttons and the other an emoji (or
   // an empty placeholder while ta hasn't reacted yet).
   reactionUnderPhoto: { height: 36, marginTop: 8, justifyContent: 'center', alignItems: 'center' },
-  reactionEmojiLg: { fontSize: 26 },
+  reactionInline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  reactionLabel: { fontSize: 12, color: COLORS.textLight, fontWeight: '500' },
+  reactionEmojiLg: { fontSize: 24 },
   reactRowInline: { flexDirection: 'row', gap: 8 },
   reactBtnInline: { width: 44, height: 32, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1 },
   reactUp: { borderColor: '#B8E6CF', backgroundColor: '#F0FBF5' },

@@ -24,6 +24,7 @@ import { api } from '../services/api';
 import { SpringPressable } from '../components/SpringPressable';
 import { storage } from '../utils/storage';
 import { formatPostmark, toUtcIsoFromLocalParts, daysInMonth, localDateParts, friendlyTzName } from '../utils/postmark';
+import { notifyOutboxChanged } from '../utils/outboxEvents';
 import SealAnimation from '../components/SealAnimation';
 
 interface Props {
@@ -277,6 +278,9 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
         // an empty page.
         await storage.clearWriteLetterDraft();
         setContent('');
+        // Broadcast so MailboxScreen + App.tsx can light up the 发件箱 🚩
+        // and 信箱 tab dot without prop drilling.
+        notifyOutboxChanged();
         onClose();
       } catch (e: any) {
         Alert.alert('', e?.message || '寄送失败');

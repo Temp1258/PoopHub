@@ -9,10 +9,11 @@ import OutboxScreen, { OutboxHandle } from './OutboxScreen';
 import TrashScreen, { TrashHandle } from './TrashScreen';
 import StickyWallScreen, { StickyWallHandle } from './StickyWallScreen';
 import WriteLetterScreen from './WriteLetterScreen';
-import { hasUnreadInboxItems } from '../utils/inboxUnread';
+import { hasUnreadInboxItems, hasFreshOutboxItems } from '../utils/inboxUnread';
 import { api } from '../services/api';
 import { subscribe } from '../services/socket';
 import { storage } from '../utils/storage';
+import { subscribeOutboxChanged } from '../utils/outboxEvents';
 import { SpringPressable } from '../components/SpringPressable';
 
 export default function MailboxScreen() {
@@ -24,6 +25,7 @@ export default function MailboxScreen() {
   const [stickyOpen, setStickyOpen] = useState(false);
   const [writeOpen, setWriteOpen] = useState(false);
   const [inboxHasUnread, setInboxHasUnread] = useState(false);
+  const [outboxHasFresh, setOutboxHasFresh] = useState(false);
   const [stickyHasUnread, setStickyHasUnread] = useState(false);
   const [partnerName, setPartnerName] = useState<string>('');
   const inboxRef = useRef<InboxHandle>(null);
@@ -32,7 +34,12 @@ export default function MailboxScreen() {
   const stickyRef = useRef<StickyWallHandle>(null);
 
   const refreshUnreadFlag = useCallback(async () => {
-    setInboxHasUnread(await hasUnreadInboxItems());
+    const [inbox, outbox] = await Promise.all([
+      hasUnreadInboxItems(),
+      hasFreshOutboxItems(),
+    ]);
+    setInboxHasUnread(inbox);
+    setOutboxHasFresh(outbox);
   }, []);
 
   // Sticky wall state — drives the entry card's 小红旗 and auto-opens the
@@ -76,6 +83,15 @@ export default function MailboxScreen() {
       refreshStickyFlag({ autoOpenIfTemp: false });
     });
   }, [refreshStickyFlag]);
+
+  // Outbox-side: refresh 🚩 the moment WriteLetterScreen reports a
+  // successful send, so the user gets immediate visual confirmation
+  // without waiting for the next focus event.
+  useEffect(() => {
+    return subscribeOutboxChanged(() => {
+      refreshUnreadFlag();
+    });
+  }, [refreshUnreadFlag]);
 
   // Scroll-bound fade — see UsScreen for the same pattern + rationale.
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -142,6 +158,7 @@ export default function MailboxScreen() {
             <Text style={styles.entryTitle}>发件箱</Text>
             <Text style={styles.entrySub}>在途的次日达 · 待解锁的择日达</Text>
           </View>
+          {outboxHasFresh && <Text style={styles.unreadFlag}>🚩</Text>}
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
 
@@ -218,7 +235,13 @@ export default function MailboxScreen() {
       <OutboxScreen
         ref={outboxRef}
         visible={outboxOpen}
-        onClose={() => setOutboxOpen(false)}
+        onClose={async () => {
+          setOutboxOpen(false);
+          // Opening the outbox marks all currently-pending letters as
+          // seen — clears the 🚩 + 信箱 tab dot until the next send.
+          await storage.setOutboxLastSeen(new Date().toISOString()).catch(() => {});
+          refreshUnreadFlag();
+        }}
         partnerName={partnerName}
       />
       <TrashScreen

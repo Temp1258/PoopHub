@@ -553,6 +553,10 @@ export const api = {
   getOutbox(): Promise<OutboxResponse> {
     return request('/api/outbox');
   },
+  // Cancel an in-transit letter from the sender side (hard delete).
+  cancelOutboxItem(kind: 'mailbox' | 'capsule', refId: number): Promise<{ success: boolean }> {
+    return request('/api/outbox/cancel', { method: 'POST', body: JSON.stringify({ kind, ref_id: refId }) });
+  },
 
   getWeeklyReport(week?: string): Promise<WeeklyReportResponse> {
     return request(`/api/weekly-report${week ? `?week=${week}` : ''}`);
