@@ -481,12 +481,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Partner is already paired with someone else' });
     }
 
-    // Resolve / generate the pair_id for this couple BEFORE flipping
-    // partner_id pointers — if the same two users had a previous pairing
-    // within the 90-day grace window, this revives it (ended_at cleared,
-    // all historical data resurfaces). Past TTL → fresh pair_id.
-    const { pair_id, revived } = dbOps.couplesGetOrCreatePair(userId, partner.id);
-    dbOps.pairUsers(userId, partner.id);
+    // Single atomic combo: claim/revive pair_id + flip partner_id
+    // pointers. If the same two users had a previous pairing within the
+    // 90-day grace window, the historical data resurfaces (revived).
+    // Past TTL → fresh pair_id.
+    const { pair_id, revived } = dbOps.pairCouple(userId, partner.id);
 
     res.json({ success: true, partner_name: partner.name, pair_id, revived });
   });
@@ -664,11 +663,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const partner = dbOps.getUser(user.partner_id);
     const partnerIdSnapshot = user.partner_id;
 
-    // Mark the couples row as ended (TTL clock starts) BEFORE flipping
-    // partner_id pointers so a concurrent /api/status read can't catch
-    // an active row whose users no longer think they're paired.
-    dbOps.couplesEndPair(userId, partnerIdSnapshot);
-    dbOps.unpairUsers(userId, partnerIdSnapshot);
+    // Atomic: mark couples row ended (starts 90-day TTL) + clear both
+    // users' partner_id pointers in one transaction. Closes the window
+    // where a server kill mid-handler could leave them desynced.
+    dbOps.unpairCouple(userId, partnerIdSnapshot);
 
     // Drop any live socket connections in the couple's room. Without this,
     // either side could keep receiving the other's real-time events

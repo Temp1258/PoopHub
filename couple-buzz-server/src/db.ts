@@ -258,6 +258,15 @@ export interface DbOps {
   couplesGetOrCreatePair(userIdA: string, userIdB: string): { pair_id: string; revived: boolean };
   // Mark the current active pair as ended; starts the 90-day TTL.
   couplesEndPair(userIdA: string, userIdB: string): void;
+  // Atomic combo: "claim a pair_id (creating or reviving)" + "set both
+  // users' partner_id pointers". Either both succeed or neither — closes
+  // the narrow crash-mid-handler window where couples.ended_at could be
+  // cleared but users.partner_id never got set.
+  pairCouple(userIdA: string, userIdB: string): { pair_id: string; revived: boolean };
+  // Atomic combo: end the couple's pair_id + clear both users'
+  // partner_id pointers. Symmetric to pairCouple — couldn't leave the
+  // DB in "partner_id still set but ended_at also set" state.
+  unpairCouple(userIdA: string, userIdB: string): void;
   // Hard-delete every couples row + all data tagged with that pair_id
   // when the row's ended_at + 90 days have elapsed. Returns the deleted
   // pair_ids for logging / observability.
@@ -408,9 +417,17 @@ export interface DbOps {
   deleteCommittedBlock(stickyId: number, blockId: number, authorId: string): { ok: boolean; reason?: 'not_found' | 'first_block' };
 }
 
-// One-shot D+ backfill: tags every legacy couple-scoped row with a
-// pair_id using the strategies decided in design:
-//
+// One-shot D+ backfill — wrapped in a single OUTER transaction so a
+// process kill mid-migration rolls everything back; next boot retries
+// from scratch (couples table is still empty, so the gate at the top of
+// createDatabase fires again). Without this wrap, a partial migration
+// would leave the couples table half-populated, fail the empty check,
+// and silently skip the rest of the backfill forever.
+function runPairIdBackfill(db: DatabaseType): void {
+  db.transaction(() => _backfillBody(db))();
+}
+
+// Internal: the actual backfill steps. Always called inside a tx.
 //   1. ACTIVE pairs: read from users.partner_id; one couples row per
 //      currently-paired (a, b); UPDATE all matching data rows.
 //   2. HISTORICAL pairs reconstructable from rows that carry both
@@ -424,11 +441,7 @@ export interface DbOps {
 //      window [min(created_at), max(created_at)] (computed from
 //      partner_id-bearing tables) contains the row's created_at.
 //   4. ORPHANS we still can't attribute → hard delete.
-//
-// Wraps each phase in a transaction; the whole thing aborts on error
-// rather than leaving the DB partly migrated.
-function runPairIdBackfill(db: DatabaseType): void {
-  // ─ helpers ─
+function _backfillBody(db: DatabaseType): void {
   const insertCouple = db.prepare(
     'INSERT OR IGNORE INTO couples (pair_id, user_a_id, user_b_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?)'
   );
@@ -1851,15 +1864,44 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       if (row) stmtSetCoupleEnded.run(row.pair_id);
     },
 
+    pairCouple(userIdA: string, userIdB: string): { pair_id: string; revived: boolean } {
+      // Single outer transaction so a kill-9 between the two ops can't
+      // leave the DB in "couples row active but users.partner_id null"
+      // state. better-sqlite3 nests via SAVEPOINT — the inner
+      // `couplesGetOrCreatePair` transaction joins this one cleanly.
+      return db.transaction(() => {
+        const r = this.couplesGetOrCreatePair(userIdA, userIdB);
+        updatePartner.run(userIdB, userIdA);
+        updatePartner.run(userIdA, userIdB);
+        return r;
+      })();
+    },
+
+    unpairCouple(userIdA: string, userIdB: string): void {
+      db.transaction(() => {
+        this.couplesEndPair(userIdA, userIdB);
+        clearPartner.run(userIdA);
+        clearPartner.run(userIdB);
+      })();
+    },
+
     couplesCleanupExpired(): string[] {
       const expired = stmtExpiredCouples.all() as { pair_id: string; user_a_id: string; user_b_id: string; ended_at: string }[];
       const deleted: string[] = [];
       for (const c of expired) {
-        db.transaction(() => {
-          deleteCoupleData(c.pair_id);
-          stmtDeleteCouple.run(c.pair_id);
-        })();
-        deleted.push(c.pair_id);
+        // Per-couple try/catch so one bad row (FK weirdness, deadlock
+        // simulation, etc.) doesn't block the rest of the batch from
+        // being cleaned this run. Logged for observability; a stuck
+        // couple will be retried on tomorrow's cron tick.
+        try {
+          db.transaction(() => {
+            deleteCoupleData(c.pair_id);
+            stmtDeleteCouple.run(c.pair_id);
+          })();
+          deleted.push(c.pair_id);
+        } catch (err) {
+          console.error(`[TTL] Failed to clean up couple ${c.pair_id}:`, err);
+        }
       }
       return deleted;
     },

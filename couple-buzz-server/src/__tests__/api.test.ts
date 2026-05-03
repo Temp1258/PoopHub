@@ -8,7 +8,7 @@ import { createAuthMiddleware } from '../auth';
 process.env.JWT_SECRET = 'test-jwt-secret-for-testing-only';
 
 function createTestApp() {
-  const { dbOps } = createDatabase(':memory:');
+  const { db, dbOps } = createDatabase(':memory:');
   const mockPush: SendPushFn = jest.fn().mockResolvedValue(true);
 
   const app = express();
@@ -21,7 +21,7 @@ function createTestApp() {
   app.use('/api', publicRouter);
   app.use('/api', authMiddleware, protectedRouter);
 
-  return { app, dbOps, mockPush };
+  return { app, db, dbOps, mockPush };
 }
 
 // Helper: register a user and return tokens + user data
@@ -563,6 +563,167 @@ describe('Couples lifecycle (pair_id)', () => {
 
     // Reference dbOps to keep TypeScript happy.
     expect(dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)).toBeTruthy();
+  });
+
+  it('important_dates resurface after re-pair (B → C → B sequence)', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const carol = await registerUser(app, 'Carol');
+
+    // (A,B) era: create 2 dates
+    await request(app).post('/api/dates').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '在一起', date: '2024-01-01', recurring: false });
+    await request(app).post('/api/dates').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '生日', date: '2024-06-15', recurring: true });
+    const datesAB1 = await request(app).get('/api/dates').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(datesAB1.body.dates.length).toBe(2);
+
+    // Cycle through Carol
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: carol.user_id });
+
+    // (A,C) era: dates should be empty (own pair_id, no rows yet)
+    const datesAC = await request(app).get('/api/dates').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(datesAC.body.dates.length).toBe(0);
+
+    // Add one date in (A,C) era to test isolation
+    await request(app).post('/api/dates').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: 'Carol 周年', date: '2024-09-09', recurring: false });
+    const datesAC2 = await request(app).get('/api/dates').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(datesAC2.body.dates.length).toBe(1);
+
+    // Back to Bob
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: bob.user_id });
+
+    // (A,B) dates should resurface — and (A,C) Carol-era stays hidden.
+    const datesAB2 = await request(app).get('/api/dates').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(datesAB2.body.dates.length).toBe(2);
+    const titles = datesAB2.body.dates.map((d: any) => d.title).sort();
+    expect(titles).toEqual(['在一起', '生日']);
+  });
+
+  it('bucket items resurface after re-pair', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const carol = await registerUser(app, 'Carol');
+
+    await request(app).post('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '一起去日本' });
+    await request(app).post('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '看夜樱' });
+
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: carol.user_id });
+
+    const bucketAC = await request(app).get('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(bucketAC.body.items.length).toBe(0);
+
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: bob.user_id });
+
+    const bucketAB = await request(app).get('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(bucketAB.body.items.length).toBe(2);
+  });
+
+  it('time_capsules resurface after re-pair', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const carol = await registerUser(app, 'Carol');
+
+    // Create 2 capsules (one self, one partner-bound)
+    const pidAB = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+    dbOps.createCapsule(alice.user_id, bob.user_id, pidAB, 'self letter', '2030-01-01', '2030-01-01T00:00:00.000Z', 'self');
+    dbOps.createCapsule(alice.user_id, bob.user_id, pidAB, 'partner letter', '2030-01-01', '2030-01-01T00:00:00.000Z', 'partner');
+
+    const before = await request(app).get('/api/capsules').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(before.body.capsules.length).toBe(2);
+
+    // Cycle through Carol
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: carol.user_id });
+
+    const inAC = await request(app).get('/api/capsules').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(inAC.body.capsules.length).toBe(0);
+
+    // Back to Bob
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: bob.user_id });
+
+    const after = await request(app).get('/api/capsules').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(after.body.capsules.length).toBe(2);
+  });
+
+  it('pair_id is exposed on /api/status and matches dbOps lookup', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    const status = await request(app).get('/api/status').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(status.body.paired).toBe(true);
+    expect(status.body.pair_id).toBeTruthy();
+    expect(status.body.pair_id).toBe(dbOps.couplesGetActivePairId(alice.user_id, bob.user_id));
+
+    // After unpair, pair_id is no longer surfaced (paired: false).
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    const status2 = await request(app).get('/api/status').set('Authorization', `Bearer ${alice.access_token}`);
+    expect(status2.body.paired).toBe(false);
+    expect(status2.body.pair_id).toBeUndefined();
+  });
+
+  it('TTL cleanup leaves a recently-ended couple alone (within grace window)', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    // Just-ended couple is well within the 90-day grace window — TTL
+    // sweep should be a no-op.
+    expect(dbOps.couplesCleanupExpired()).toEqual([]);
+    expect(dbOps.couplesCleanupExpired()).toEqual([]); // idempotent
+  });
+
+  it('TTL cleanup hard-deletes data when ended_at is 100 days in the past', async () => {
+    const { app, db, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const pidAB = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+
+    // Seed data across multiple couple-scoped tables.
+    await request(app).post('/api/action').set('Authorization', `Bearer ${alice.access_token}`).send({ action_type: 'kiss' });
+    await request(app).post('/api/dates').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: 'foo', date: '2024-01-01', recurring: false });
+    await request(app).post('/api/bucket').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: '一起出去玩' });
+    dbOps.createCapsule(alice.user_id, bob.user_id, pidAB, 'x', '2030-01-01', '2030-01-01T00:00:00.000Z', 'partner');
+
+    // Unpair, then backdate ended_at 100 days into the past so the TTL
+    // sweep matches it. Direct SQL on the test DB handle is the cleanest
+    // way to time-travel for this branch.
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    db.prepare("UPDATE couples SET ended_at = datetime('now', '-100 days') WHERE pair_id = ?").run(pidAB);
+
+    // Pre-cleanup sanity: rows still present in DB.
+    expect((db.prepare('SELECT COUNT(*) AS n FROM actions WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM important_dates WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM bucket_items WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM time_capsules WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+
+    const deleted = dbOps.couplesCleanupExpired();
+    expect(deleted).toContain(pidAB);
+
+    // Post-cleanup: zero rows everywhere + couples row gone.
+    expect((db.prepare('SELECT COUNT(*) AS n FROM actions WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM important_dates WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM bucket_items WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM time_capsules WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM couples WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBe(0);
+
+    // Subsequent re-pair after TTL expiry generates a FRESH pair_id,
+    // not the old one (it's gone) — verifies "stale couple beyond TTL"
+    // safety net in couplesGetOrCreatePair.
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ partner_id: bob.user_id });
+    const pidAfter = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id);
+    expect(pidAfter).toBeTruthy();
+    expect(pidAfter).not.toBe(pidAB); // brand new id
   });
 });
 
