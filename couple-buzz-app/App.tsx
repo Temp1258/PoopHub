@@ -596,8 +596,13 @@ export default function App() {
     });
     // Local "I just sent a letter" signal — flips the 信箱 tab dot
     // immediately, no need to wait for a poll cycle.
+    //
+    // We bypass setUnreadForTab on purpose: that helper short-circuits if
+    // the user is already on the target tab, which is precisely the case
+    // when they wrote from inside the 信箱 tab. The user explicitly asked
+    // to see the dot light up post-send regardless of where they are.
     const unsubOutbox = subscribeOutboxChanged(() => {
-      setUnreadForTab('Mailbox');
+      setHasUnreadMail(true);
     });
 
     return () => {

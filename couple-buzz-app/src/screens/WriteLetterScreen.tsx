@@ -26,6 +26,7 @@ import { storage } from '../utils/storage';
 import { formatPostmark, toUtcIsoFromLocalParts, daysInMonth, localDateParts, friendlyTzName } from '../utils/postmark';
 import { notifyOutboxChanged } from '../utils/outboxEvents';
 import SealAnimation from '../components/SealAnimation';
+import IslandToast, { IslandToastHandle } from '../components/IslandToast';
 
 interface Props {
   visible: boolean;
@@ -71,6 +72,10 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   const [datePart, setDatePart] = useState<DateTimePart>(null);
   const [recipient, setRecipient] = useState<Recipient>('partner');
   const [submitting, setSubmitting] = useState(false);
+  // Flips once the API call has confirmed the send. Drives the post-
+  // animation "已寄出 ✓" copy at the bottom of the sending stage so the
+  // hint matches the top IslandToast during the close-out beat.
+  const [submitted, setSubmitted] = useState(false);
 
   // User-side data for the formal letter heading + footer signature. Pulled
   // from local storage on each open so a fresh nickname / timezone / partner
@@ -86,6 +91,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   // explicit, costs nothing, and keeps the intent clear.
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
+  const toastRef = useRef<IslandToastHandle>(null);
   // 1-minute tick so the footer time keeps up with the wall clock if the
   // user lingers in the editor. Uses a state stub since we only need a
   // re-render trigger, not the value.
@@ -100,6 +106,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       setStage('write');
       setRecipient('partner');
       setSubmitting(false);
+      setSubmitted(false);
       setDatePart(null);
       // Reset animated values so the next sending stage starts fresh.
       letterY.setValue(0);
@@ -281,7 +288,16 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
         // Broadcast so MailboxScreen + App.tsx can light up the 发件箱 🚩
         // and 信箱 tab dot without prop drilling.
         notifyOutboxChanged();
-        onClose();
+        // Brief on-screen confirmation before the modal closes — the
+        // delivery animation already flew the letter away, the toast is
+        // the textual "got it, it's queued" beat. Hold long enough for the
+        // user to read it; the modal closes mid-fadeout for a smooth
+        // handoff. Also flip the bottom hint so it reads "已寄出 ✓"
+        // instead of the now-stale "寄出中..." during this beat.
+        if (mountedRef.current) setSubmitted(true);
+        toastRef.current?.show('信已寄出 · 发件箱可查看', 1400);
+        await new Promise<void>(resolve => setTimeout(resolve, 700));
+        if (mountedRef.current) onClose();
       } catch (e: any) {
         Alert.alert('', e?.message || '寄送失败');
         // Roll back to the relevant stage so the user can retry.
@@ -649,7 +665,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
         >
           📮
         </Animated.Text>
-        <Text style={styles.sendingHint}>寄出中...</Text>
+        <Text style={styles.sendingHint}>{submitted ? '已寄出 ✓' : '寄出中...'}</Text>
       </View>
     );
   };
@@ -699,6 +715,11 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
           {stage === 'capsuleDetails' && renderCapsuleDetailsStage()}
           {stage === 'sending' && renderSendingStage()}
           {renderDateTimePickerModal()}
+          {/* Top-of-modal pill for "信已寄出" confirmation. Anchored above
+              the safe area so it visually mimics iOS Dynamic Island. The
+              modal closes ~700ms after `show()`, mid-fade-out, so the
+              user sees the toast appear and dissolve smoothly. */}
+          <IslandToast ref={toastRef} top={insets.top + 8} />
         </View>
       </KeyboardAvoidingView>
     </Modal>

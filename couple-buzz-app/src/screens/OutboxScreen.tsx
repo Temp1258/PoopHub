@@ -39,8 +39,11 @@ type LetterKind = 'mailbox' | 'capsule';
 interface OutboxCard {
   key: string;
   kind: LetterKind;
-  // Used to sort newest-last (matches inbox flow: scroll up = older).
+  // Primary sort: delivery instant (mailbox reveal_at, capsule unlock_at).
   sortAt: string;
+  // Tiebreaker: when two letters land at the same instant, the one
+  // written later sinks to the bottom of the same group.
+  writtenIso: string;
   kindLabel: string;
   accent: string;
   // Wall-clock postmarks rendered in the writer/recipient timezones.
@@ -94,6 +97,7 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
           key: `m-${m.id}`,
           kind: 'mailbox',
           sortAt: revealIso,
+          writtenIso,
           kindLabel: '次日达 · 寄给 ' + ta,
           accent: MAILBOX_ACCENT,
           writtenLine: `写于 ${formatPostmark(writtenIso, myZone)}`,
@@ -113,6 +117,7 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
           key: `c-${c.id}`,
           kind: 'capsule',
           sortAt: unlockIso,
+          writtenIso,
           kindLabel: c.visibility === 'self' ? '择日达 · 给自己' : `择日达 · 寄给 ${ta}`,
           accent: CAPSULE_ACCENT,
           writtenLine: `写于 ${formatPostmark(writtenIso, myZone)}`,
@@ -125,8 +130,15 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
         });
       }
 
-      // Newest-last: scrolling up reveals older items, matching InboxScreen.
-      out.sort((a, b) => (a.sortAt < b.sortAt ? -1 : a.sortAt > b.sortAt ? 1 : 0));
+      // Soonest delivery sits at the BOTTOM (initial scroll position = the
+      // letter the user will receive next). Furthest delivery floats to
+      // the top. Within the same delivery instant, the letter written
+      // later sinks to the bottom of that group.
+      out.sort((a, b) => {
+        if (a.sortAt !== b.sortAt) return a.sortAt > b.sortAt ? -1 : 1;
+        if (a.writtenIso !== b.writtenIso) return a.writtenIso < b.writtenIso ? -1 : 1;
+        return 0;
+      });
       setCards(out);
     } finally {
       setLoading(false);
