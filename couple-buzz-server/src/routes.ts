@@ -995,9 +995,15 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     const status = dbOps.getRitualsByDates(ritualDate, partnerRitualDate, userId, user.partner_id);
-    const bothCompleted = ritual_type === 'morning'
-      ? status.myMorning && status.partnerMorning
-      : status.myEvening && status.partnerEvening;
+    // Same-date gate matches the weekly stat's join condition: if my
+    // ritual_date and partner's ritual_date diverge (cross-day window),
+    // the response says "not both yet" and the lagging partner's later
+    // submission of the SAME date will be the trigger that flips it.
+    const bothCompleted = (ritualDate === partnerRitualDate) && (
+      ritual_type === 'morning'
+        ? status.myMorning && status.partnerMorning
+        : status.myEvening && status.partnerEvening
+    );
     if (partner?.device_token) {
       if (bothCompleted) {
         await pushFn(partner.device_token, ritual_type === 'morning' ? 'ritual_both_morning' : 'ritual_both_evening', user.name);
@@ -1038,8 +1044,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const morningStatus = dbOps.getRitualsByDates(myDate, partnerDate, userId, user.partner_id);
     const eveningStatus = dbOps.getRitualsByDates(myEveningDate, partnerEveningDate, userId, user.partner_id);
 
-    const morningBoth = morningStatus.myMorning && morningStatus.partnerMorning;
-    const eveningBoth = eveningStatus.myEvening && eveningStatus.partnerEvening;
+    // "Both" requires the SAME calendar date (each in their own tz). If
+    // the two clocks are mid-cross-day (e.g. NY at 11pm yesterday, BJT
+    // at noon today), the live status temporarily shows "not yet both"
+    // until the lagging side catches up — keeps the live UI aligned
+    // with the weekly stat's same-date join, so a ritual that doesn't
+    // count in the 7-day total never falsely lights "both completed"
+    // in the live card either.
+    const morningBoth = (myDate === partnerDate)
+      && morningStatus.myMorning && morningStatus.partnerMorning;
+    const eveningBoth = (myEveningDate === partnerEveningDate)
+      && eveningStatus.myEvening && eveningStatus.partnerEvening;
 
     let dailyRecap = null;
     if (eveningBoth) {

@@ -681,6 +681,85 @@ describe('Couples lifecycle (pair_id)', () => {
     expect(dbOps.couplesCleanupExpired()).toEqual([]); // idempotent
   });
 
+  it('re-pair clears ended_at — revived couple is NEVER touched by TTL cleanup', async () => {
+    // Direct stress test of the user's concern: "if I unpair, wait, then
+    // re-pair the same person, is the 90-day deletion timer truly
+    // cancelled, or will my data silently disappear later?"
+    const { app, db, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const pidAB = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+
+    // Seed some data we want to confirm survives.
+    await request(app).post('/api/action').set('Authorization', `Bearer ${alice.access_token}`).send({ action_type: 'kiss' });
+    await request(app).post('/api/dates').set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ title: 'in love', date: '2024-01-01', recurring: false });
+    dbOps.createCapsule(alice.user_id, bob.user_id, pidAB, 'letter', '2030-01-01', '2030-01-01T00:00:00.000Z', 'partner');
+
+    // Unpair, then backdate ended_at to 89 days ago — within grace window
+    // but very close to the cliff. Worst-case scenario for the user.
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    db.prepare("UPDATE couples SET ended_at = datetime('now', '-89 days') WHERE pair_id = ?").run(pidAB);
+
+    // Re-pair: the couple is revived (still within grace window).
+    const repair = await request(app).post('/api/pair')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ partner_id: bob.user_id });
+    expect(repair.body.pair_id).toBe(pidAB);
+    expect(repair.body.revived).toBe(true);
+
+    // ended_at is now NULL (timer cancelled).
+    const row = db.prepare('SELECT ended_at FROM couples WHERE pair_id = ?').get(pidAB) as { ended_at: string | null };
+    expect(row.ended_at).toBeNull();
+
+    // Run TTL cleanup — must NOT touch this couple even though it was
+    // 89 days old at the time of revival. ended_at IS NULL filters it
+    // out of the expired-couples query entirely.
+    const deleted = dbOps.couplesCleanupExpired();
+    expect(deleted).not.toContain(pidAB);
+
+    // Data is intact — none of the seed rows were swept.
+    expect((db.prepare('SELECT COUNT(*) AS n FROM actions WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM important_dates WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM time_capsules WHERE pair_id = ?').get(pidAB) as { n: number }).n).toBeGreaterThan(0);
+
+    // Even running cleanup repeatedly leaves it alone (idempotent on
+    // active couples).
+    expect(dbOps.couplesCleanupExpired()).toEqual([]);
+    expect(dbOps.couplesCleanupExpired()).toEqual([]);
+
+    // The couple's pair_id is still active and discoverable.
+    expect(dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)).toBe(pidAB);
+  });
+
+  it('repeated unpair/re-pair cycle keeps each grace window FRESH (no carryover)', async () => {
+    // Sanity: if user unpairs at day 0, re-pairs at day 30, then unpairs
+    // again, the TTL clock should be RESET — counting from the new
+    // unpair, not the original one. Otherwise a yo-yo'ing relationship
+    // could quietly drop into the irreversible window.
+    const { app, db, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const pidAB = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+
+    // First unpair at "now - 30 days" (we backdate to simulate the gap).
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    db.prepare("UPDATE couples SET ended_at = datetime('now', '-30 days') WHERE pair_id = ?").run(pidAB);
+
+    // Re-pair → ended_at = NULL.
+    await request(app).post('/api/pair').set('Authorization', `Bearer ${alice.access_token}`).send({ partner_id: bob.user_id });
+
+    // Second unpair → ended_at = CURRENT_TIMESTAMP (fresh, NOT the
+    // original 30-days-ago value).
+    await request(app).post('/api/unpair').set('Authorization', `Bearer ${alice.access_token}`);
+    const after = db.prepare('SELECT ended_at FROM couples WHERE pair_id = ?').get(pidAB) as { ended_at: string };
+    // 'now' written by SQLite — should be within seconds of test runtime.
+    const ageSeconds = (Date.now() - new Date(after.ended_at + 'Z').getTime()) / 1000;
+    expect(Math.abs(ageSeconds)).toBeLessThan(10); // fresh, not 30 days old
+
+    // TTL cleanup at this point treats it as a brand-new ended couple
+    // and leaves it alone for another 90 days.
+    expect(dbOps.couplesCleanupExpired()).toEqual([]);
+  });
+
   it('TTL cleanup hard-deletes data when ended_at is 100 days in the past', async () => {
     const { app, db, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);

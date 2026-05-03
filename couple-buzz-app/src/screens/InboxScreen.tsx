@@ -20,6 +20,7 @@ import { SpringPressable } from '../components/SpringPressable';
 const SCREEN_H = Dimensions.get('window').height;
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import { api, CapsuleItem } from '../services/api';
 import { storage } from '../utils/storage';
@@ -43,26 +44,20 @@ interface LetterCard {
   key: string;
   kind: LetterKind;
   refId: number;
-  // ISO timestamp the letter "arrived" (mailbox: reveal time of the session;
-  // capsule: opened_at). Used both for sort and for unread comparison
-  // against the user's last inbox-open marker.
+  // ISO timestamp the letter "arrived" (mailbox: reveal time of the
+  // session; capsule: opened_at). Used for sort + unread comparison.
   arrivedAt: string;
-  // Free-form display string (was used for sort previously, kept for the
-  // sort comparison so capsule and mailbox can co-mingle in one list).
   sortAt: string;
-  date: string;
+  // Two postmark lines, formatted in their respective timezones.
+  //   writtenStamp = "写于 [partner tz time when ta wrote it]"
+  //   receivedStamp = "收于 [my tz time when it arrived in my inbox]"
+  writtenStamp: string;
+  receivedStamp: string;
   from: string;
   to: string;
   body: string;
   kindLabel: string;
   accent: string;
-  // Partner-side timezone — formats the postmark in the writer's frame.
-  fromTz: string;
-  // Receiver's own timezone — used to render a second postmark line so the
-  // recipient sees the moment the letter was written in BOTH the sender's
-  // local clock and their own clock. ISO of the send moment used by both.
-  toTz: string;
-  arrivedIso: string;
 }
 
 const MAILBOX_ACCENT = '#FFB5C2';
@@ -133,15 +128,16 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           refId: w.partner_message_id,
           arrivedAt,
           sortAt: arrivedAt,
-          date: formatPostmark(writtenAt, partnerZone),
+          // 写于: ta's wall-clock when they hit send (partner tz)
+          writtenStamp: `写于 ${formatPostmark(writtenAt, partnerZone)}`,
+          // 收于: my wall-clock when the letter was revealed in my inbox
+          // (= session reveal time, in my tz)
+          receivedStamp: `收于 ${formatPostmark(arrivedAt, myZone)}`,
           from: ta,
           to: me,
           body: w.partner_content,
           kindLabel: '次日达 · 来自 ta',
           accent: MAILBOX_ACCENT,
-          fromTz: partnerZone,
-          toTz: myZone,
-          arrivedIso: writtenAt,
         });
       }
 
@@ -170,15 +166,15 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           refId: c.id,
           arrivedAt: capsuleArrived,
           sortAt: capsuleArrived,
-          date: formatPostmark(writtenIso, writerZone),
+          // For self-vis capsules the "ta" is also me, so 写于 still uses
+          // writerZone (which equals myZone in that case).
+          writtenStamp: `写于 ${formatPostmark(writtenIso, writerZone)}`,
+          receivedStamp: `收于 ${formatPostmark(capsuleArrived, myZone)}`,
           from,
           to,
           body: c.content,
           kindLabel,
           accent: CAPSULE_ACCENT,
-          fromTz: writerZone,
-          toTz: myZone,
-          arrivedIso: writtenIso,
         });
       }
 
@@ -410,17 +406,18 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
                               </View>
                             )}
                           </View>
-                          {/* Two-line postmark — same write moment shown
-                              in both timezones. Lets the recipient see
-                              what local-time the writer wrote it AND what
-                              local-time it was for them, without doing
-                              tz math themselves. */}
+                          {/* Two-line postmark with the actual semantic
+                              moments in their respective timezones:
+                              first line = when ta wrote it (their tz),
+                              second line = when it landed in my inbox
+                              (my tz). The recipient gets both halves of
+                              the journey without doing tz math. */}
                           <View style={styles.cardStampStack}>
                             <Text style={styles.cardStampLine}>
-                              ta：{card.date}
+                              {card.writtenStamp}
                             </Text>
                             <Text style={styles.cardStampLine}>
-                              我：{formatPostmark(card.arrivedIso, card.toTz)}
+                              {card.receivedStamp}
                             </Text>
                           </View>
                         </View>
@@ -449,6 +446,24 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           )}
         </Pressable>
 
+        {/* Title-edge soft fade — anchored below the title bar so cards
+            sliding up under it dissolve smoothly into the background
+            instead of meeting a hard cut. Multi-stop gradient gives a
+            longer, gentler dissolve than a single 2-stop ramp. Rendered
+            after the list so it visually sits above the cards. */}
+        <LinearGradient
+          colors={[
+            COLORS.background,
+            COLORS.background,
+            'rgba(255, 245, 245, 0.6)',
+            'rgba(255, 245, 245, 0.2)',
+            'rgba(255, 245, 245, 0)',
+          ]}
+          locations={[0, 0.2, 0.55, 0.85, 1]}
+          pointerEvents="none"
+          style={styles.titleEdgeFade}
+        />
+
         {/* "收起" 灵动岛 pill — primary close affordance, anchored to the bottom
             center of the modal. Mirrors the StickyWallScreen toolbar pattern. */}
         <View style={[styles.pillSlot, { paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
@@ -464,7 +479,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           kindLabel={revealAnim?.kindLabel}
           from={revealAnim?.from}
           to={revealAnim?.to}
-          date={revealAnim?.date}
+          date={revealAnim?.writtenStamp}
           content={revealAnim?.body ?? ''}
           onClose={() => setRevealAnim(null)}
         />
@@ -574,6 +589,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
     textAlign: 'center',
+  },
+  // Container paddingTop is 24, header minHeight 32 + paddingBottom 12,
+  // so top:64 lands right below the title text. Height 56 gives a
+  // long, gentle dissolve over which cards softly disappear.
+  titleEdgeFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 64,
+    height: 56,
   },
   // Bottom-center "收起" pill toolbar (灵动岛 styling).
   pillSlot: {

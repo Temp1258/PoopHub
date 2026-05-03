@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import { api, OutboxCapsuleItem, OutboxMailboxItem } from '../services/api';
 import { storage } from '../utils/storage';
@@ -315,6 +316,21 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
           )}
         </Pressable>
 
+        {/* Title-edge soft fade — mirrors InboxScreen so cards sliding
+            up under the title don't end on a hard cut. */}
+        <LinearGradient
+          colors={[
+            COLORS.background,
+            COLORS.background,
+            'rgba(255, 245, 245, 0.6)',
+            'rgba(255, 245, 245, 0.2)',
+            'rgba(255, 245, 245, 0)',
+          ]}
+          locations={[0, 0.2, 0.55, 0.85, 1]}
+          pointerEvents="none"
+          style={styles.titleEdgeFade}
+        />
+
         {/* "收起" pill at bottom-center — same pattern as InboxScreen. */}
         <View style={[styles.pillSlot, { paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
           <SpringPressable onPress={onClose} style={styles.dismissPill} scaleTo={1.06}>
@@ -345,6 +361,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
     textAlign: 'center',
+  },
+  // Mirror InboxScreen's titleEdgeFade — see there for the geometry.
+  titleEdgeFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 64,
+    height: 56,
   },
   pillSlot: {
     position: 'absolute',

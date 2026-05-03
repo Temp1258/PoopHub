@@ -1,6 +1,7 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, RefreshControl, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 import RitualButton from '../components/RitualButton';
@@ -20,9 +21,14 @@ export default function DailyScreen() {
   const snapRef = useRef<Reloadable>(null);
   const nextRefreshAt = useNextDailyRefreshAt();
   const [myTz, setMyTz] = useState('Asia/Shanghai');
-  useEffect(() => {
-    storage.getTimezone().then(tz => { if (tz) setMyTz(tz); }).catch(() => {});
-  }, []);
+  // Re-fetch tz on every focus so a Settings tz change is picked up the
+  // next time the user navigates back to the daily tab — a one-shot
+  // mount-time read would freeze on the boot-time tz forever.
+  useFocusEffect(
+    useCallback(() => {
+      storage.getTimezone().then(tz => { if (tz) setMyTz(tz); }).catch(() => {});
+    }, [])
+  );
   // Render the daily refresh moment as month-day + hh:mm in the user's
   // tz — e.g. "纽约时间 05-03 19:00". formatPostmark already produces this
   // exact shape, so we reuse it for postmark/refresh consistency.
