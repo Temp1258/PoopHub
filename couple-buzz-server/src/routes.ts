@@ -1072,52 +1072,6 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ mailbox_pending, capsule_pending });
   });
 
-  // POST /api/outbox/cancel — sender-side cancel of an in-transit letter.
-  // Hard-deletes the row (recipient hasn't seen it yet, no soft-delete
-  // bookkeeping needed). Mailbox letters can only be canceled before the
-  // session reveal moment; capsules only before unlock_at.
-  router.post('/outbox/cancel', (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const { kind, ref_id } = req.body || {};
-    if (kind !== 'mailbox' && kind !== 'capsule') {
-      return res.status(400).json({ error: 'Invalid kind' });
-    }
-    if (typeof ref_id !== 'number' || !Number.isInteger(ref_id) || ref_id <= 0) {
-      return res.status(400).json({ error: 'Invalid ref_id' });
-    }
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    const now = new Date();
-
-    if (kind === 'mailbox') {
-      const row = dbOps.getMailboxMessageById(ref_id);
-      if (!row || row.user_id !== userId) {
-        return res.status(404).json({ error: 'Letter not found' });
-      }
-      if (now >= getRevealTime(row.week_key)) {
-        return res.status(400).json({ error: '已经送达，无法撤回' });
-      }
-      const ok = dbOps.deleteMyMailbox(ref_id, userId);
-      if (!ok) return res.status(404).json({ error: 'Letter not found' });
-      return res.json({ success: true });
-    }
-
-    // capsule
-    const capsule = dbOps.getCapsuleById(ref_id);
-    if (!capsule || capsule.user_id !== userId) {
-      return res.status(404).json({ error: 'Letter not found' });
-    }
-    if (capsule.opened_at) {
-      return res.status(400).json({ error: '已经开启，无法撤回' });
-    }
-    if (capsule.unlock_at <= now.toISOString()) {
-      return res.status(400).json({ error: '已经送达，无法撤回' });
-    }
-    const ok = dbOps.deleteMyCapsule(ref_id, userId);
-    if (!ok) return res.status(404).json({ error: 'Letter not found' });
-    return res.json({ success: true });
-  });
-
   // Inbox soft-delete endpoints — used by the inbox & trash views.
   // Body: { kind: 'mailbox' | 'capsule', ref_id: number }
 

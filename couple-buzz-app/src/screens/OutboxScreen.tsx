@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   Modal,
   View,
@@ -6,13 +6,12 @@ import {
   StyleSheet,
   ActivityIndicator,
   Animated,
-  Easing,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Dimensions,
-  PanResponder,
   Pressable,
   ScrollView,
+  TouchableOpacity,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -22,7 +21,6 @@ import { storage } from '../utils/storage';
 import { normalizeIso } from '../utils/inboxUnread';
 import { formatPostmark } from '../utils/postmark';
 import { SpringPressable } from '../components/SpringPressable';
-import IslandToast, { IslandToastHandle } from '../components/IslandToast';
 
 const SCREEN_H = Dimensions.get('window').height;
 
@@ -41,7 +39,6 @@ type LetterKind = 'mailbox' | 'capsule';
 interface OutboxCard {
   key: string;
   kind: LetterKind;
-  refId: number;
   // Used to sort newest-last (matches inbox flow: scroll up = older).
   sortAt: string;
   kindLabel: string;
@@ -53,9 +50,6 @@ interface OutboxCard {
   recipientLabel: string;
   charCount: number;
 }
-
-const SCREEN_W = Dimensions.get('window').width;
-const SWIPE_THRESHOLD = SCREEN_W * 0.38;
 
 const MAILBOX_ACCENT = '#FFB5C2';
 const CAPSULE_ACCENT = '#C3AED6';
@@ -75,7 +69,6 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const lastTickedIdxRef = useRef(0);
-  const toastRef = useRef<IslandToastHandle>(null);
 
   const load = useCallback(async () => {
     try {
@@ -100,7 +93,6 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
         out.push({
           key: `m-${m.id}`,
           kind: 'mailbox',
-          refId: m.id,
           sortAt: revealIso,
           kindLabel: '次日达 · 寄给 ' + ta,
           accent: MAILBOX_ACCENT,
@@ -120,7 +112,6 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
         out.push({
           key: `c-${c.id}`,
           kind: 'capsule',
-          refId: c.id,
           sortAt: unlockIso,
           kindLabel: c.visibility === 'self' ? '择日达 · 给自己' : `择日达 · 寄给 ${ta}`,
           accent: CAPSULE_ACCENT,
@@ -173,19 +164,6 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
     });
   }, [visible, loading, cards.length, scrollY]);
 
-  const handleCancel = useCallback(async (card: OutboxCard) => {
-    // Optimistic removal — remove from local state immediately, fire API.
-    // If it fails, reload to restore the truth (mirrors InboxScreen pattern).
-    setCards(prev => prev.filter(c => c.key !== card.key));
-    toastRef.current?.show('已取消寄出');
-    try {
-      await api.cancelOutboxItem(card.kind, card.refId);
-    } catch (e: any) {
-      toastRef.current?.show(e?.message || '取消失败');
-      load();
-    }
-  }, [load]);
-
   const onScroll = Animated.event(
     [{ nativeEvent: { contentOffset: { y: scrollY } } }],
     {
@@ -201,6 +179,13 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
       },
     }
   );
+
+  // Tap a peek card to bring it to focus — matches the inbox UX so the
+  // user can jump between letters by tap as well as flick.
+  const handleCardPress = (index: number) => {
+    if (index === centerIdx) return;
+    scrollViewRef.current?.scrollTo({ y: index * SNAP_INTERVAL, animated: true });
+  };
 
   return (
     <Modal
@@ -289,31 +274,28 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
                       },
                     ]}
                   >
-                    <SwipeableCard
-                      enabled={index === centerIdx}
-                      onSwipeOut={() => handleCancel(card)}
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => handleCardPress(index)}
+                      style={[styles.card, { backgroundColor: card.accent }]}
                     >
-                      <View style={[styles.card, { backgroundColor: card.accent }]}>
-                        <View style={styles.cardHeader}>
-                          <Text style={styles.cardKind}>{card.kindLabel}</Text>
-                          <View style={styles.transitPill}>
-                            <Text style={styles.transitPillText}>在途</Text>
-                          </View>
-                        </View>
-                        <View style={styles.cardDivider} />
-                        <Text style={styles.cardRecipient}>{card.recipientLabel}</Text>
-                        <View style={styles.cardBody}>
-                          <Text style={styles.cardLine}>{card.writtenLine}</Text>
-                          <Text style={styles.cardLine}>{card.arriveLineMine}</Text>
-                          <Text style={styles.cardLineMuted}>{card.arriveLineTheirs}</Text>
-                        </View>
-                        <View style={styles.cardFooter}>
-                          <Text style={styles.cardCount}>
-                            {card.charCount} 字 · {index === centerIdx ? '右划撤回' : '轻点居中'}
-                          </Text>
+                      <View style={styles.cardHeader}>
+                        <Text style={styles.cardKind}>{card.kindLabel}</Text>
+                        <View style={styles.transitPill}>
+                          <Text style={styles.transitPillText}>在途</Text>
                         </View>
                       </View>
-                    </SwipeableCard>
+                      <View style={styles.cardDivider} />
+                      <Text style={styles.cardRecipient}>{card.recipientLabel}</Text>
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardLine}>{card.writtenLine}</Text>
+                        <Text style={styles.cardLine}>{card.arriveLineMine}</Text>
+                        <Text style={styles.cardLineMuted}>{card.arriveLineTheirs}</Text>
+                      </View>
+                      <View style={styles.cardFooter}>
+                        <Text style={styles.cardCount}>{card.charCount} 字</Text>
+                      </View>
+                    </TouchableOpacity>
                   </Animated.View>
                 );
               })}
@@ -327,83 +309,12 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
             <Text style={styles.dismissPillText}>收起</Text>
           </SpringPressable>
         </View>
-
-        <IslandToast ref={toastRef} top={insets.top + 8} />
       </View>
     </Modal>
   );
 });
 
 export default OutboxScreen;
-
-// Cancel-on-swipe gesture — same physics as InboxScreen.SwipeableCard:
-// only horizontal motion claims the gesture, vertical is yielded to the
-// outer ScrollView, and only the focused card is interactive so adjacent
-// peek cards can't be accidentally canceled.
-function SwipeableCard({
-  children,
-  onSwipeOut,
-  enabled,
-}: {
-  children: React.ReactNode;
-  onSwipeOut: () => void;
-  enabled: boolean;
-}) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  const opacity = useRef(new Animated.Value(1)).current;
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) => {
-          if (!enabled) return false;
-          return Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy) * 1.6;
-        },
-        onMoveShouldSetPanResponderCapture: (_, g) => {
-          if (!enabled) return false;
-          return Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 2.2;
-        },
-        onPanResponderMove: (_, g) => {
-          translateX.setValue(Math.max(0, g.dx));
-          opacity.setValue(Math.max(0.4, 1 - g.dx / SCREEN_W));
-        },
-        onPanResponderRelease: (_, g) => {
-          if (g.dx >= SWIPE_THRESHOLD) {
-            Animated.parallel([
-              Animated.timing(translateX, {
-                toValue: SCREEN_W * 1.1,
-                duration: 220,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-              }),
-              Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }),
-            ]).start(() => onSwipeOut());
-          } else {
-            Animated.parallel([
-              Animated.spring(translateX, { toValue: 0, friction: 7, tension: 70, useNativeDriver: true }),
-              Animated.spring(opacity, { toValue: 1, friction: 7, useNativeDriver: true }),
-            ]).start();
-          }
-        },
-        onPanResponderTerminate: () => {
-          Animated.parallel([
-            Animated.spring(translateX, { toValue: 0, friction: 7, tension: 70, useNativeDriver: true }),
-            Animated.spring(opacity, { toValue: 1, friction: 7, useNativeDriver: true }),
-          ]).start();
-        },
-      }),
-    [enabled, onSwipeOut, translateX, opacity]
-  );
-
-  return (
-    <Animated.View
-      {...panResponder.panHandlers}
-      style={[styles.swipeWrap, { transform: [{ translateX }], opacity }]}
-    >
-      {children}
-    </Animated.View>
-  );
-}
 
 const styles = StyleSheet.create({
   container: {
@@ -466,9 +377,6 @@ const styles = StyleSheet.create({
   },
   cardSlot: {
     height: CARD_HEIGHT,
-  },
-  swipeWrap: {
-    flex: 1,
   },
   card: {
     flex: 1,
