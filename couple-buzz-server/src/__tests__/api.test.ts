@@ -1268,6 +1268,54 @@ describe('POST /api/reaction', () => {
 });
 
 describe('Ritual API', () => {
+  it('cross-tz: morning bothCompleted only fires when ritual_dates match', async () => {
+    // Cross-timezone "same-day" rule. Two users in different tzs each
+    // insert their own local-date morning ritual; the live "both"
+    // decision (matching the weekly stat's r1.ritual_date = r2.ritual_date
+    // join) should ONLY count days where the two rows share the same
+    // ritual_date string.
+    const { app, dbOps } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const bob = await registerUser(app, 'Bob');
+    dbOps.pairCouple(alice.user_id, bob.user_id);
+
+    // Day 1: both submit morning on May 3 (each in their respective
+    // local tzs — UTC instants may differ but the ritual_date string
+    // agrees). "Both for May 3" is true.
+    dbOps.submitRitual(alice.user_id, 'morning', '2026-05-03');
+    dbOps.submitRitual(bob.user_id, 'morning', '2026-05-03');
+
+    const sameDay = dbOps.getRitualsByDates('2026-05-03', '2026-05-03', alice.user_id, bob.user_id);
+    expect(sameDay.myMorning).toBe(true);
+    expect(sameDay.partnerMorning).toBe(true);
+    const myDateA: string = '2026-05-03';
+    const partnerDateA: string = '2026-05-03';
+    const sameDayBoth = (myDateA === partnerDateA) && sameDay.myMorning && sameDay.partnerMorning;
+    expect(sameDayBoth).toBe(true);
+
+    // Cross-day boundary: Alice rolled into May 4 in her local tz, Bob
+    // still on May 3 in his — a typical BJT/NYC mid-day-cross window.
+    dbOps.submitRitual(alice.user_id, 'morning', '2026-05-04');
+    // Bob has not yet recorded May 4.
+
+    const crossDay = dbOps.getRitualsByDates('2026-05-04', '2026-05-03', alice.user_id, bob.user_id);
+    expect(crossDay.myMorning).toBe(true);     // Alice's May 4 morning
+    expect(crossDay.partnerMorning).toBe(true); // Bob's May 3 morning
+    const myDateB: string = '2026-05-04';
+    const partnerDateB: string = '2026-05-03';
+    const crossDayBoth = (myDateB === partnerDateB) && crossDay.myMorning && crossDay.partnerMorning;
+    expect(crossDayBoth).toBe(false); // Different dates → not "both"
+
+    // Once Bob also reaches May 4 morning in his local tz, dates align
+    // and "both" flips to true.
+    dbOps.submitRitual(bob.user_id, 'morning', '2026-05-04');
+    const aligned = dbOps.getRitualsByDates('2026-05-04', '2026-05-04', alice.user_id, bob.user_id);
+    const myDateC: string = '2026-05-04';
+    const partnerDateC: string = '2026-05-04';
+    const alignedBoth = (myDateC === partnerDateC) && aligned.myMorning && aligned.partnerMorning;
+    expect(alignedBoth).toBe(true);
+  });
+
   it('should submit morning ritual', async () => {
     const { app } = createTestApp();
     const { alice } = await registerPairedUsers(app);

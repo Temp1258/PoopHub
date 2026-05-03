@@ -69,6 +69,8 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
   // listHeight seeded with a screen-derived guess for the same reason
   // InboxScreen does — the pageSheet slide-in can defer onLayout.
   const [listHeight, setListHeight] = useState(SCREEN_H * 0.7);
+  // Mirror InboxScreen's onLayout-based gradient anchor — see there.
+  const [headerBottomY, setHeaderBottomY] = useState(64);
   const [centerIdx, setCenterIdx] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
@@ -208,7 +210,13 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
       presentationStyle="pageSheet"
     >
       <View style={[styles.container, { paddingTop: 24 }]}>
-        <View style={styles.header}>
+        <View
+          style={styles.header}
+          onLayout={(e) => {
+            const { y, height } = e.nativeEvent.layout;
+            setHeaderBottomY(y + height);
+          }}
+        >
           <Text style={styles.headerTitle}>📤 发件箱</Text>
         </View>
 
@@ -316,8 +324,8 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
           )}
         </Pressable>
 
-        {/* Title-edge soft fade — mirrors InboxScreen so cards sliding
-            up under the title don't end on a hard cut. */}
+        {/* Title-edge soft fade — pinned to the header's measured bottom
+            edge so it seamlessly extends the title bar without any gap. */}
         <LinearGradient
           colors={[
             COLORS.background,
@@ -328,7 +336,7 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
           ]}
           locations={[0, 0.2, 0.55, 0.85, 1]}
           pointerEvents="none"
-          style={styles.titleEdgeFade}
+          style={[styles.titleEdgeFade, { top: headerBottomY }]}
         />
 
         {/* "收起" pill at bottom-center — same pattern as InboxScreen. */}
@@ -362,12 +370,11 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     textAlign: 'center',
   },
-  // Mirror InboxScreen's titleEdgeFade — see there for the geometry.
+  // top set dynamically from the header's onLayout — see InboxScreen.
   titleEdgeFade: {
     position: 'absolute',
     left: 0,
     right: 0,
-    top: 64,
     height: 56,
   },
   pillSlot: {

@@ -89,6 +89,10 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
   // mount, leaving cards stuck at uncomputed positions until a finger drag
   // forced a re-layout.
   const [listHeight, setListHeight] = useState(SCREEN_H * 0.7);
+  // Captured from the header's onLayout so the title-edge gradient sits
+  // EXACTLY at the header's bottom edge (no visible gap between title
+  // bar and fade). Default 64 is a sensible pre-layout fallback.
+  const [headerBottomY, setHeaderBottomY] = useState(64);
   const [centerIdx, setCenterIdx] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
@@ -297,7 +301,17 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       presentationStyle="pageSheet"
     >
       <View style={[styles.container, { paddingTop: 24 }]}>
-        <View style={styles.header}>
+        <View
+          style={styles.header}
+          onLayout={(e) => {
+            // y is relative to the container's padding box; padding is
+            // 24, so y here is 24. Adding height yields the header's
+            // absolute bottom edge — used to anchor the title-edge fade
+            // so the gradient touches the title bar with no gap.
+            const { y, height } = e.nativeEvent.layout;
+            setHeaderBottomY(y + height);
+          }}
+        >
           <Text style={styles.headerTitle}>📬 收件箱</Text>
         </View>
 
@@ -446,11 +460,11 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           )}
         </Pressable>
 
-        {/* Title-edge soft fade — anchored below the title bar so cards
-            sliding up under it dissolve smoothly into the background
-            instead of meeting a hard cut. Multi-stop gradient gives a
-            longer, gentler dissolve than a single 2-stop ramp. Rendered
-            after the list so it visually sits above the cards. */}
+        {/* Title-edge soft fade — pinned to the header's measured bottom
+            edge (via onLayout above) so the solid first stop seamlessly
+            extends the title bar, then dissolves to transparent over
+            the next 56pt. Cards sliding up disappear gradually instead
+            of meeting a hard cut. */}
         <LinearGradient
           colors={[
             COLORS.background,
@@ -461,7 +475,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           ]}
           locations={[0, 0.2, 0.55, 0.85, 1]}
           pointerEvents="none"
-          style={styles.titleEdgeFade}
+          style={[styles.titleEdgeFade, { top: headerBottomY }]}
         />
 
         {/* "收起" 灵动岛 pill — primary close affordance, anchored to the bottom
@@ -590,14 +604,14 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     textAlign: 'center',
   },
-  // Container paddingTop is 24, header minHeight 32 + paddingBottom 12,
-  // so top:64 lands right below the title text. Height 56 gives a
-  // long, gentle dissolve over which cards softly disappear.
+  // top is set dynamically from the header's onLayout-measured bottom
+  // edge so the gradient seamlessly continues the title bar, regardless
+  // of how RN renders the title text height on this device. Height 56
+  // gives a long, gentle dissolve over which cards softly disappear.
   titleEdgeFade: {
     position: 'absolute',
     left: 0,
     right: 0,
-    top: 64,
     height: 56,
   },
   // Bottom-center "收起" pill toolbar (灵动岛 styling).
