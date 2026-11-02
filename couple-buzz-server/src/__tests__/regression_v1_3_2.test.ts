@@ -11,8 +11,7 @@
  *        bottom-right. Cells render only the selected side's photo,
  *        the preview overlay respects the same mode, the polaroid
  *        accent stripe colour follows the mode (pink for me, blue
- *        for ta), and anti-peek is still enforced server-side
- *        (partner_photo=null when the caller hasn't snapped that day).
+ *        for ta). Calendar photos are shared independently of submissions.
  */
 
 import fs from 'fs';
@@ -151,8 +150,7 @@ describe('#2 — SnapCalendarScreen has a bottom-right ta｜我 segmented toggle
     expect(SC_SRC).toMatch(
       /function\s+SnapPreviewOverlay\(\{[\s\S]*?viewMode[\s\S]*?\}: \{[\s\S]*?viewMode:\s*'ta'\s*\|\s*'me'/,
     );
-    // Mode → which path to render. Anti-peek (partner_photo=null when
-    // I haven't snapped) is still preserved by the early-out below.
+    // Mode selects the photo; the early-out handles a missing photo.
     expect(SC_SRC).toMatch(/path\s*=\s*viewMode\s*===\s*'me'\s*\?\s*snap\.my_photo\s*:\s*snap\.partner_photo/);
     expect(SC_SRC).toMatch(/if\s*\(!path\)\s*return\s+null/);
   });

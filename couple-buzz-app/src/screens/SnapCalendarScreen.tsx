@@ -26,8 +26,8 @@ import { SpringPressable } from '../components/SpringPressable';
 // existing entry-card rhythm.
 //
 // Content is read-only: every cell is either empty (no snap that day),
-// a single polaroid thumbnail (one partner snapped, anti-peek rules
-// enforced server-side), or a two-photo composite (both snapped). Tap
+// a single polaroid thumbnail (one partner snapped), or a two-photo
+// composite (both snapped). Tap
 // a cell with content to enlarge.
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -246,10 +246,8 @@ const SnapCalendarScreen = forwardRef<SnapCalendarHandle, Props>(({ visible, onC
                   return <View key={`pad-${idx}`} style={styles.cellEmpty} />;
                 }
                 const snap = byDate.get(cell.dateKey);
-                // v1.3.2 — filter by the current ta/me toggle. Anti-peek
-                // is still enforced server-side (partner_photo=null when
-                // I haven't snapped that day), so a "ta" cell where I
-                // never snapped is naturally empty.
+                // Filter by the current ta/me toggle. Available partner photos
+                // are visible even when I did not snap that day.
                 const visiblePhoto =
                   viewMode === 'me' ? snap?.my_photo : snap?.partner_photo;
                 const hasVisible = !!visiblePhoto;

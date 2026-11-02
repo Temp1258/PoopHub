@@ -2454,6 +2454,14 @@ describe('Daily Snaps', () => {
     // Reveal gating: ta's photo URL must NOT leak before I've snapped.
     expect(beforeAlice.body.partner_photo).toBeNull();
 
+    // The calendar already shares today's photo, while the today card stays gated.
+    const calendar = await request(app)
+      .get(`/api/snaps?month=${today.slice(0, 7)}`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(calendar.status).toBe(200);
+    expect(calendar.body.snaps[0].partner_photo).toContain(`${bob.user_id}/${today}.jpg`);
+    expect(calendar.body.snaps[0].both_snapped).toBe(false);
+
     // Once Alice also snaps, ta's photo unlocks.
     dbOps.saveSnapAtomic(alice.user_id, bob.user_id, today, `${alice.user_id}/${today}.jpg`);
     const afterAlice = await request(app)
@@ -2465,7 +2473,7 @@ describe('Daily Snaps', () => {
     expect(afterAlice.body.my_photo).toBeTruthy();
   });
 
-  it('should hide partner photo on /snaps month list for days I never snapped', async () => {
+  it('should show partner photo on /snaps month list for days I never snapped', async () => {
     const { app, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
 
@@ -2484,9 +2492,9 @@ describe('Daily Snaps', () => {
     const byDate: Record<string, any> = {};
     for (const s of res.body.snaps) byDate[s.date] = s;
 
-    // Day 1: Alice never snapped → ta's photo must stay hidden.
+    // Day 1: Alice never snapped, but can still see Bob's photo.
     expect(byDate[day1].my_photo).toBeNull();
-    expect(byDate[day1].partner_photo).toBeNull();
+    expect(byDate[day1].partner_photo).toBeTruthy();
     expect(byDate[day1].both_snapped).toBe(false);
 
     // Day 2: both snapped → both photos visible.

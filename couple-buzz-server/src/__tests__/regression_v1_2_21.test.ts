@@ -255,7 +255,7 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(res.body.snaps[0].partner_photo).toBeTruthy();
   });
 
-  it('hides partner photo when caller never snapped that day (anti-peek)', async () => {
+  it('shows partner photo when caller never snapped that day', async () => {
     const { app, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
 
@@ -269,7 +269,19 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(res.body.snaps).toHaveLength(1);
     expect(res.body.snaps[0].both_snapped).toBe(false);
     expect(res.body.snaps[0].my_photo).toBeNull();
-    expect(res.body.snaps[0].partner_photo).toBeNull(); // anti-peek
+    expect(res.body.snaps[0].partner_photo).toBeTruthy(); // Calendar shares available photos
+  });
+
+  it('returns no entries when neither partner snapped', async () => {
+    const { app } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    for (const who of [alice, bob]) {
+      const res = await request(app)
+        .get('/api/snaps?month=2026-05')
+        .set('Authorization', `Bearer ${who.access_token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.snaps).toEqual([]);
+    }
   });
 
   it('rejects malformed month strings', async () => {
@@ -281,16 +293,8 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(bad.status).toBe(400);
   });
 
-  // ── Anti-peek — exhaustive scenarios from BOTH sides ─────────────────
-  // The reveal rule: a day's photo URLs are only delivered when the
-  // caller has ALSO snapped that same day. So:
-  //   only ta snapped → I see nothing (anti-peek); ta sees own only
-  //   only I snapped  → ta sees nothing; I see own only
-  //   both snapped     → both see both
-  // Below tests verify each case from BOTH sides (server is the source
-  // of truth for visibility, not the client).
-
-  it('anti-peek: only ta snapped — I see nothing, ta sees ta`s own', async () => {
+  // Calendar visibility is independent of the viewer's own submission.
+  it('only Bob snapped — both partners can see Bob`s photo', async () => {
     const { app, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
     const date = '2026-05-15';
@@ -304,7 +308,7 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(aliceView.body.snaps[0].date).toBe(date);
     expect(aliceView.body.snaps[0].both_snapped).toBe(false);
     expect(aliceView.body.snaps[0].my_photo).toBeNull(); // Alice didn't snap
-    expect(aliceView.body.snaps[0].partner_photo).toBeNull(); // anti-peek
+    expect(aliceView.body.snaps[0].partner_photo).toBeTruthy(); // Calendar shares available photos
 
     const bobView = await request(app)
       .get('/api/snaps?month=2026-05')
@@ -315,7 +319,7 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(bobView.body.snaps[0].partner_photo).toBeNull(); // Alice hasn't snapped yet
   });
 
-  it('anti-peek: only I snapped — ta sees nothing, I see my own', async () => {
+  it('only Alice snapped — both partners can see Alice`s photo', async () => {
     // Mirror case of the previous test, from the opposite POV.
     const { app, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
@@ -328,7 +332,7 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(bobView.body.snaps).toHaveLength(1);
     expect(bobView.body.snaps[0].both_snapped).toBe(false);
     expect(bobView.body.snaps[0].my_photo).toBeNull();
-    expect(bobView.body.snaps[0].partner_photo).toBeNull(); // anti-peek
+    expect(bobView.body.snaps[0].partner_photo).toBeTruthy(); // Calendar shares available photos
 
     const aliceView = await request(app)
       .get('/api/snaps?month=2026-05')
@@ -339,7 +343,7 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     expect(aliceView.body.snaps[0].partner_photo).toBeNull();
   });
 
-  it('anti-peek: once both snap, both photos unlock for both partners', async () => {
+  it('both snapped — both photos are visible to both partners', async () => {
     const { app, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
     const date = '2026-05-21';
@@ -357,11 +361,7 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
     }
   });
 
-  it('anti-peek is per-day: snapping ONE day does not retroactively unlock OTHER days', async () => {
-    // Subtle attack vector: if I snap on day X, do I unlock ta's day Y
-    // photos too? Answer must be NO — anti-peek is a per-day check.
-    // Build a month where ta snapped two days, I only snapped one of
-    // them. Only the "both" day should expose ta's photo.
+  it('shows partner photos across days regardless of my submissions', async () => {
     const { app, dbOps } = createTestApp();
     const { alice, bob } = await registerPairedUsers(app);
     const dayOnlyBob = '2026-05-25';
@@ -384,10 +384,10 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
       (aliceView.body.snaps as SnapRow[]).map((s) => [s.date, s]),
     ) as Record<string, SnapRow>;
 
-    // Day Alice never snapped: must NOT leak Bob's photo.
+    // Day Alice never snapped: Bob's photo is still visible.
     expect(byDate[dayOnlyBob].both_snapped).toBe(false);
     expect(byDate[dayOnlyBob].my_photo).toBeNull();
-    expect(byDate[dayOnlyBob].partner_photo).toBeNull();
+    expect(byDate[dayOnlyBob].partner_photo).toBeTruthy();
 
     // Day BOTH snapped: Bob's photo unlocked.
     expect(byDate[dayBoth].both_snapped).toBe(true);

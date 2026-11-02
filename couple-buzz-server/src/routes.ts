@@ -2156,9 +2156,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return {
         date: s.snap_date,
         my_photo: s.user_photo ? signImagePath(s.user_photo) : null,
-        // Same gating as /snaps/today: don't expose ta's photo on past days
-        // where I never snapped, otherwise the calendar can be used to peek.
-        partner_photo: both && s.partner_photo ? signImagePath(s.partner_photo) : null,
+        // The calendar shares any available partner photo, independently of
+        // whether the caller snapped that day. Today-card gating is separate.
+        partner_photo: s.partner_photo ? signImagePath(s.partner_photo) : null,
         both_snapped: both,
       };
     });
